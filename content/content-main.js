@@ -2730,6 +2730,9 @@
   let ytBoundVideoEl = null;
   let ytAudioRecorder = null;
   let ytAudioListenActive = false;
+  let ytAudioSession = 0;
+  let ytAudioStream = null;
+  let ytAudioButton = null;
   const ytLiveCaptionCache = new Map();
   const ytLiveCaptionInFlight = new Set();
 
@@ -2817,10 +2820,14 @@
       const isVideoPage =
         window.location.pathname.startsWith('/watch') ||
         window.location.pathname.startsWith('/shorts');
-      if (!isVideoPage) return;
+      if (!isVideoPage) {
+        if (ytAudioListenActive) stopYoutubeAudioListen();
+        return;
+      }
 
       const currentVid = getCurrentYoutubeVideoId();
       if (currentVid && currentVid !== ytCurrentVideoId) {
+        stopYoutubeAudioListen();
         ytCurrentVideoId = currentVid;
         ytCues = [];
         ytInFlightBatchIds.clear();
@@ -3044,6 +3051,9 @@
     if (!batch || batch.length === 0) return;
     batch.forEach((c) => ytInFlightBatchIds.add(c.id));
 
+    const requestCues = ytCues;
+    const requestVideoId = getCurrentYoutubeVideoId();
+    const isCurrent = () => requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
     const firstId = batch[0].id;
     const lastId = batch[batch.length - 1].id;
     const contextBefore = ytCues
@@ -3066,6 +3076,7 @@
         }
       });
 
+      if (!isCurrent()) return;
       if (res && res.ok && Array.isArray(res.data?.cues)) {
         for (const item of res.data.cues) {
           const target = ytCues.find((c) => Number(c.id) === Number(item.id));
@@ -3084,6 +3095,7 @@
         batch.forEach((c) => ytInFlightBatchIds.delete(c.id));
       }
     } catch {
+      if (!isCurrent()) return;
       batch.forEach((c) => ytInFlightBatchIds.delete(c.id));
     }
   }
@@ -3140,6 +3152,9 @@
     if (!rawText || ytLiveCaptionCache.has(rawText) || ytLiveCaptionInFlight.has(rawText)) return;
     if (isMostlyChineseText(rawText) && /^zh/i.test(settings.targetLang || 'zh-CN')) return;
     if (isUnexpectedArabicCaption(rawText)) return;
+    const requestCues = ytCues;
+    const requestVideoId = getCurrentYoutubeVideoId();
+    const isCurrent = () => requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
     ytLiveCaptionInFlight.add(rawText);
     try {
       const res = await safeRuntimeSendMessage({
@@ -3151,13 +3166,14 @@
           videoTitle: ytVideoTitle || document.title
         }
       });
+      if (!isCurrent()) return;
       const trans = res?.ok && res?.data?.cues?.[0]?.translation;
       if (trans) {
         ytLiveCaptionCache.set(rawText, trans);
         ytLastRenderedSig = '';
       }
     } finally {
-      ytLiveCaptionInFlight.delete(rawText);
+      if (isCurrent()) ytLiveCaptionInFlight.delete(rawText);
     }
   }
 
@@ -3294,18 +3310,29 @@
   /**
    * Experimental Gemini Multimodal Live Audio Listen-and-Translate for videos without native captions.
    */
+  function stopYoutubeAudioListen() {
+    ytAudioListenActive = false;
+    ytAudioSession++;
+    if (ytAudioRecorder && ytAudioRecorder.state !== 'inactive') ytAudioRecorder.stop();
+    ytAudioStream?.getTracks().forEach(track => track.stop());
+    ytAudioStream = null;
+    ytAudioRecorder = null;
+    if (ytAudioButton) {
+      ytAudioButton.classList.remove('is-active');
+      ytAudioButton.textContent = '🎙️ 音频听译';
+    }
+  }
+
   async function toggleExperimentalAudioListen(btnEl) {
     if (ytAudioListenActive) {
-      ytAudioListenActive = false;
-      btnEl.classList.remove('is-active');
-      btnEl.textContent = '🎙️ 音频听译';
-      if (ytAudioRecorder && ytAudioRecorder.state !== 'inactive') {
-        ytAudioRecorder.stop();
-      }
-      showPageToast('已停止 AI 音频实时听译', 'info');
+      stopYoutubeAudioListen();
+      showPageToast('已停止 AI 音频切片听译', 'info');
       return;
     }
-
+    if (settings.apiProtocol !== 'gemini') {
+      showPageToast('音频听译需要支持音频的 Gemini 原生协议模型，当前 OpenAI 兼容接口不支持。', 'warn', true);
+      return;
+    }
     const video = document.querySelector('video');
     if (!video) {
       showPageToast('未找到正在播放的视频元素', 'warn');
@@ -3322,11 +3349,19 @@
       const stream = captureFn.call(video);
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length === 0) {
+        stream.getTracks().forEach(track => track.stop());
         showPageToast('请确保视频未静音且正在播放', 'warn');
         return;
       }
 
       const audioStream = new MediaStream(audioTracks);
+      ytAudioStream = stream;
+      ytAudioButton = btnEl;
+      const session = ++ytAudioSession;
+      const videoId = getCurrentYoutubeVideoId();
+      const isCurrent = () => ytAudioListenActive && session === ytAudioSession && videoId === getCurrentYoutubeVideoId();
+      let pendingSlices = 0;
+      let latestSliceStart = -1;
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
@@ -3334,28 +3369,37 @@
       ytAudioListenActive = true;
       btnEl.classList.add('is-active');
       btnEl.textContent = '⏹ 停止听译';
-      showPageToast('🎙️ 已开启 AI 多模态音频实时听译 (每 7 秒切片)', 'success');
+      showPageToast('🎙️ 已开启 AI 音频切片听译（每 7 秒上传，另需模型响应时间）', 'success');
 
       let previousSpoken = '';
 
       const recordSlice = () => {
-        if (!ytAudioListenActive || video.paused) {
-          if (ytAudioListenActive) setTimeout(recordSlice, 1500);
+        if (!isCurrent()) return;
+        if (video.paused) {
+          setTimeout(recordSlice, 1500);
           return;
         }
         const sliceStart = video.currentTime;
         const chunks = [];
-        ytAudioRecorder = new MediaRecorder(audioStream, { mimeType });
+        const recorder = new MediaRecorder(audioStream, { mimeType });
+        ytAudioRecorder = recorder;
 
-        ytAudioRecorder.ondataavailable = (ev) => {
+        recorder.ondataavailable = (ev) => {
           if (ev.data && ev.data.size > 0) chunks.push(ev.data);
         };
 
-        ytAudioRecorder.onstop = async () => {
-          if (chunks.length === 0) return;
+        recorder.onstop = async () => {
+          if (!isCurrent() || chunks.length === 0) return;
+          if (pendingSlices >= 2) {
+            stopYoutubeAudioListen();
+            showPageToast('模型响应过慢，已停止听译以避免请求积压，请稍后重试。', 'warn');
+            return;
+          }
+          pendingSlices++;
           const blob = new Blob(chunks, { type: mimeType });
-          const base64 = await blobToBase64(blob);
           try {
+            const base64 = await blobToBase64(blob);
+            if (!isCurrent()) return;
             const res = await chrome.runtime.sendMessage({
               type: 'TRANSLATE_YOUTUBE_AUDIO',
               payload: {
@@ -3365,8 +3409,13 @@
                 videoTitle: ytVideoTitle || document.title
               }
             });
-            if (res && res.ok && res.data?.original) {
-              previousSpoken = res.data.original;
+            if (!isCurrent()) return;
+            if (!res?.ok) throw new Error(res?.error || '音频翻译失败');
+            if (res.data?.original) {
+              if (sliceStart >= latestSliceStart) {
+                previousSpoken = res.data.original;
+                latestSliceStart = sliceStart;
+              }
               const newCue = {
                 id: ytCues.length,
                 start: sliceStart,
@@ -3374,8 +3423,12 @@
                 text: res.data.original,
                 translation: res.data.translation || ''
               };
-              ytCues.push(newCue);
-              if (ytOverlayEl) {
+              // Reindexing changes cue identity: invalidate old batch callbacks too.
+              ytCues = [...ytCues, newCue].sort((a, b) => a.start - b.start)
+                .map((cue, index) => ({ ...cue, id: index }));
+              ytInFlightBatchIds.clear();
+              ytLiveCaptionInFlight.clear();
+              if (ytOverlayEl && sliceStart === latestSliceStart) {
                 ytOverlayEl.innerHTML = `
                   <div class="ig-yt-sub-box">
                     <div class="ig-yt-line-orig">${escapeText(newCue.text)}</div>
@@ -3385,17 +3438,21 @@
               }
               renderYoutubeTimelineList(false);
             }
-          } catch {
-            // ignore slice error
+          } catch (err) {
+            if (isCurrent()) {
+              stopYoutubeAudioListen();
+              showPageToast(`音频听译已停止: ${err?.message || err}`, 'warn');
+            }
+          } finally {
+            pendingSlices--;
           }
         };
 
-        ytAudioRecorder.start();
+        recorder.start();
         setTimeout(() => {
-          if (ytAudioRecorder && ytAudioRecorder.state === 'recording') {
-            ytAudioRecorder.stop();
-          }
-          if (ytAudioListenActive) {
+          if (!isCurrent()) return;
+          if (recorder.state === 'recording') recorder.stop();
+          if (isCurrent()) {
             recordSlice();
           }
         }, 7000);
@@ -3403,8 +3460,7 @@
 
       recordSlice();
     } catch (err) {
-      ytAudioListenActive = false;
-      btnEl.classList.remove('is-active');
+      stopYoutubeAudioListen();
       showPageToast(`音频听译启动失败: ${err?.message || err}`, 'warn');
     }
   }

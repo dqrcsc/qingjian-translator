@@ -63,7 +63,7 @@ function updatePopupStatusBadge(settings) {
   const hasKey = Boolean(settings.apiKey && settings.apiKey.trim());
   const activeModel = getActiveModelId(settings);
   if (hasKey && activeModel) {
-    apiKeyStatusBadge.textContent = `● ${provider.shortName} · ${activeModel}`;
+    apiKeyStatusBadge.textContent = `已配置 · ${provider.shortName} · ${activeModel}`;
     apiKeyStatusBadge.className = 'brand-sub is-ok';
   } else if (!hasKey) {
     apiKeyStatusBadge.textContent = `⚠️ 尚未配置 ${provider.shortName} Key 与模型 (点击去设置)`;

@@ -15,6 +15,12 @@ const memCache = new Map();
 let dbPromise = null;
 let writesSinceLastPrune = 0;
 
+function setMemoryEntry(key, translation) {
+  memCache.delete(key);
+  memCache.set(key, translation);
+  while (memCache.size > MAX_MEM_ITEMS) memCache.delete(memCache.keys().next().value);
+}
+
 function openCacheDB() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
@@ -39,12 +45,13 @@ export function buildStyleSignature(settings = {}) {
   const tone = String(settings.tonePreset || 'standard').trim();
   const glossary = String(settings.glossaryText || '').trim();
   const customPrompt = String(settings.customSystemPrompt || '').trim();
-  return hashString(`${tone}|${glossary}|${customPrompt}`);
+  return hashString(JSON.stringify(['v2', settings.providerId || '', settings.apiProtocol || '',
+    String(settings.apiBaseUrl || '').trim().replace(/\/+$/, ''), settings.temperature ?? 0.2, tone, glossary, customPrompt]));
 }
 
-export function buildCacheKey(sourceText, targetLang, modelId, glossarySignature = '') {
+export function buildCacheKey(sourceText, targetLang, modelId, glossarySignature = '', context = '') {
   const normalized = String(sourceText || '').trim();
-  return hashString(`${targetLang}|${modelId}|${glossarySignature}|${normalized}`);
+  return hashString(JSON.stringify(['v2', targetLang, modelId, glossarySignature, context, normalized]));
 }
 
 export async function getCachedTranslations(keys) {
@@ -79,7 +86,7 @@ export async function getCachedTranslations(keys) {
         req.onsuccess = () => {
           if (req.result && typeof req.result.translation === 'string') {
             resultMap.set(key, req.result.translation);
-            memCache.set(key, req.result.translation);
+            setMemoryEntry(key, req.result.translation);
           }
           remaining--;
           if (remaining === 0) resolve();
@@ -103,13 +110,7 @@ export async function setCachedTranslations(entries) {
   const now = Date.now();
   for (const { key, translation } of entries) {
     if (!key || typeof translation !== 'string') continue;
-    if (memCache.has(key)) {
-      memCache.delete(key);
-    } else if (memCache.size >= MAX_MEM_ITEMS) {
-      const oldestKey = memCache.keys().next().value;
-      memCache.delete(oldestKey);
-    }
-    memCache.set(key, translation);
+    setMemoryEntry(key, translation);
   }
 
   try {

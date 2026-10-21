@@ -220,7 +220,7 @@ function crc32(bytes) {
 /**
  * Build a downloadable Bilingual EPUB 3 file (.epub) from parsed chapters & blocks.
  */
-export function buildBilingualEpubBlob({ bookTitle, bookAuthor, blocks }, mode = 'bilingual') {
+export function buildBilingualEpubBlob({ bookTitle, bookAuthor, blocks, targetLang = 'zh-CN' }, mode = 'bilingual') {
   const encoder = new TextEncoder();
   const files = [];
 
@@ -241,61 +241,59 @@ export function buildBilingualEpubBlob({ bookTitle, bookAuthor, blocks }, mode =
 </container>`)
   });
 
-  // 3. OEBPS/chapter.xhtml
-  const bodyHtml = blocks
-    .map((b) => {
-      const escOrig = escapeXml(b.original);
-      const escTrans = escapeXml(b.translation || b.original);
+  // Rebuild text chapters, not the original book's images, styles or footnotes.
+  const groups = new Map();
+  for (const block of blocks) {
+    const key = block.chapterIndex ?? 0;
+    if (!groups.has(key)) groups.set(key, { title: block.chapterTitle || bookTitle || '正文', blocks: [] });
+    groups.get(key).blocks.push(block);
+  }
+  if (groups.size === 0) groups.set(0, { title: bookTitle || '正文', blocks: [] });
+  const chapters = [...groups.values()];
+  const language = escapeXml(targetLang || 'zh-CN');
+  const chapterName = index => index === 0 ? 'chapter.xhtml' : `chapter-${index + 1}.xhtml`;
+  chapters.forEach((chapter, index) => {
+    const bodyHtml = chapter.blocks.map(b => {
       const tag = b.type === 'heading' ? 'h2' : 'p';
-      if (mode === 'translation-only') {
-        return `<${tag} class="trans">${escTrans}</${tag}>`;
-      }
-      return `<div class="pair"><${tag} class="orig">${escOrig}</${tag}><${tag} class="trans">${escTrans}</${tag}></div>`;
-    })
-    .join('\n');
-
-  files.push({
-    name: 'OEBPS/chapter.xhtml',
-    data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>
+      const original = escapeXml(b.original);
+      const translation = escapeXml(b.translation || b.original);
+      return mode === 'translation-only'
+        ? `<${tag}>${translation}</${tag}>`
+        : `<div class="pair"><${tag} class="orig">${original}</${tag}><${tag} class="trans">${translation}</${tag}></div>`;
+    }).join('\n');
+    files.push({ name: `OEBPS/${chapterName(index)}`, data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
-<head>
-  <meta charset="UTF-8"/>
-  <title>${escapeXml(bookTitle)}</title>
-  <style>
-    body { font-family: -apple-system, serif; line-height: 1.75; padding: 4%; color: #1e293b; }
-    .pair { margin-bottom: 1.1em; }
-    .orig { margin: 0 0 0.25em 0; color: #334155; }
-    .trans { margin: 0; color: #0f172a; font-weight: 500; border-left: 3px solid #6366f1; padding-left: 0.65em; }
-    h2.orig, h2.trans { font-size: 1.3em; margin-top: 1.2em; }
-  </style>
-</head>
-<body>
-  <h1>${escapeXml(bookTitle)}</h1>
-  ${bodyHtml}
-</body>
-</html>`)
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${language}" lang="${language}">
+<head><title>${escapeXml(chapter.title)}</title><style>
+body { font-family: serif; line-height: 1.75; padding: 4%; }
+.pair { margin-bottom: 1.1em; } .orig { color: #334155; }
+.trans { border-left: 3px solid #6366f1; padding-left: 0.65em; }
+</style></head><body><h1>${escapeXml(chapter.title)}</h1>${bodyHtml}</body></html>`) });
   });
-
-  // 4. OEBPS/content.opf
-  files.push({
-    name: 'OEBPS/content.opf',
-    data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>
+  files.push({ name: 'OEBPS/nav.xhtml', data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${language}" lang="${language}">
+<head><title>${escapeXml(bookTitle)}</title></head>
+<body><nav epub:type="toc" id="toc"><h1>${escapeXml(bookTitle)}</h1><ol>
+${chapters.map((chapter, i) => `<li><a href="${chapterName(i)}">${escapeXml(chapter.title)}</a></li>`).join('\n')}
+</ol></nav></body></html>`) });
+  files.push({ name: 'OEBPS/content.opf', data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="BookId">urn:uuid:immersive-gemini-${Date.now()}</dc:identifier>
-    <dc:title>${escapeXml(bookTitle)} (双语版)</dc:title>
-    <dc:creator>${escapeXml(bookAuthor || 'Immersive Gemini')}</dc:creator>
-    <dc:language>zh-CN</dc:language>
+    <dc:identifier id="BookId">urn:qingjian:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}</dc:identifier>
+    <dc:title>${escapeXml(bookTitle)}</dc:title>
+    <dc:creator>${escapeXml(bookAuthor || 'QingJian')}</dc:creator>
+    <dc:language>${language}</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta>
   </metadata>
   <manifest>
-    <item id="ch1" href="chapter.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${chapters.map((_, i) => `    <item id="ch${i + 1}" href="${chapterName(i)}" media-type="application/xhtml+xml"/>`).join('\n')}
   </manifest>
   <spine>
-    <itemref idref="ch1"/>
+${chapters.map((_, i) => `    <itemref idref="ch${i + 1}"/>`).join('\n')}
   </spine>
-</package>`)
-  });
+</package>`) });
 
   // Assemble uncompressed ZIP archive
   const localParts = [];

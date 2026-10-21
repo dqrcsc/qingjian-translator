@@ -16,6 +16,9 @@ const DIST_DIR = path.join(ROOT, 'dist');
 
 const RUNTIME_ENTRIES = [
   'manifest.json',
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
+  'licenses',
   'background',
   'content',
   'icons',

@@ -134,7 +134,7 @@ export async function fetchAvailableModels(settings) {
   for (let page = 0; page < 5; page++) {
     const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
     const url = `${baseUrl}/models?pageSize=100${tokenParam}&key=${encodeURIComponent(apiKey)}`;
-    const response = await fetch(url, { method: 'GET' });
+    const response = await fetchWithTimeoutAndRetry(url, { method: 'GET' });
 
     if (!response.ok) {
       let errDetail = `HTTP ${response.status}`;
@@ -210,9 +210,9 @@ async function fetchOpenAiAvailableModels(settings, provider, apiKey) {
     Accept: 'application/json'
   };
 
-  let response = await fetch(modelsUrl, { method: 'GET', headers });
+  let response = await fetchWithTimeoutAndRetry(modelsUrl, { method: 'GET', headers });
   if (!response.ok && fallbackModelsUrl && response.status === 404) {
-    response = await fetch(fallbackModelsUrl, { method: 'GET', headers });
+    response = await fetchWithTimeoutAndRetry(fallbackModelsUrl, { method: 'GET', headers });
   }
 
   if (!response.ok) {
@@ -282,39 +282,91 @@ const KNOWN_TEXT_ONLY_MODEL_RE =
 
 export async function fetchWithTimeoutAndRetry(
   url,
-  init,
+  init = {},
   { timeoutMs = 45000, maxRetries = 2, baseDelayMs = 600 } = {}
 ) {
-  let lastError = null;
+  const callerSignal = init.signal;
+  let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    callerSignal?.throwIfAborted();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error('API 请求超时 (45s)')), timeoutMs);
+    const onCallerAbort = () => controller.abort(callerSignal.reason);
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(new Error('API 请求超时，请稍后重试')), timeoutMs);
+    let onAbort;
     try {
-      const response = await fetch(url, {
-        ...init,
-        signal: controller.signal
+      // Every current API call is non-streaming. Keep the timeout active until
+      // the entire body has arrived, then return a fresh, readable Response.
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener('abort', onAbort, { once: true });
       });
-      clearTimeout(timer);
-      if (RETRYABLE_HTTP_STATUS.has(response.status) && attempt < maxRetries) {
-        const delayMs = baseDelayMs * Math.pow(2, attempt);
-        await new Promise((r) => setTimeout(r, delayMs));
-        continue;
-      }
-      return response;
+      const response = await Promise.race([
+        (async () => {
+          const res = await fetch(url, { ...init, signal: controller.signal });
+          const body = await res.arrayBuffer();
+          return new Response([204, 205, 304].includes(res.status) ? null : body, {
+            status: res.status, statusText: res.statusText, headers: res.headers
+          });
+        })(),
+        aborted
+      ]);
+      if (!RETRYABLE_HTTP_STATUS.has(response.status) || attempt === maxRetries) return response;
     } catch (err) {
+      if (callerSignal?.aborted) throw callerSignal.reason;
+      lastError = err;
+      if (attempt === maxRetries) throw err;
+    } finally {
       clearTimeout(timer);
-      lastError =
-        err?.name === 'AbortError'
-          ? new Error('API 请求超时，请检查网络连接或稍后重试')
-          : err;
-      if (attempt < maxRetries) {
-        const delayMs = baseDelayMs * Math.pow(2, attempt);
-        await new Promise((r) => setTimeout(r, delayMs));
-        continue;
-      }
+      controller.signal.removeEventListener('abort', onAbort);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
     }
+    await new Promise((resolve, reject) => {
+      const onAbort = () => { clearTimeout(delay); reject(callerSignal.reason); };
+      const delay = setTimeout(() => {
+        callerSignal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, baseDelayMs * Math.pow(2, attempt));
+      callerSignal?.addEventListener('abort', onAbort, { once: true });
+      if (callerSignal?.aborted) onAbort();
+    });
   }
   throw lastError || new Error('网络请求失败');
+}
+
+async function readApiError(response) {
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text);
+    return data?.error?.message || data?.message || text.slice(0, 240);
+  } catch {
+    return text.slice(0, 240) || `HTTP ${response.status}`;
+  }
+}
+
+function translationMap(parsedList, inputs) {
+  const expected = new Map(inputs.map(item => [Number(item.id), item]));
+  const result = new Map();
+  const seen = new Set();
+  if (expected.size !== inputs.length || inputs.some(item => !Number.isSafeInteger(item.id))) {
+    throw new Error('翻译请求包含无效或重复 ID');
+  }
+  for (const entry of parsedList) {
+    const rawId = entry?.id;
+    const id = typeof rawId === 'string' && /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+    if (!Number.isSafeInteger(id) || !expected.has(id) || seen.has(id)) {
+      throw new Error('模型返回了无效、重复或未知的翻译 ID，请重试');
+    }
+    seen.add(id);
+    if (typeof entry.translation !== 'string' || !entry.translation.trim()) continue;
+    const translation = entry.translation.trim();
+    const placeholders = text => (String(text).match(/\{\{\d+\}\}/g) || []).sort().join('|');
+    if (placeholders(expected.get(id).text) !== placeholders(translation)) {
+      throw new Error('模型未完整保留代码或公式占位符，请重试');
+    }
+    result.set(id, translation);
+  }
+  return result;
 }
 
 async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') {
@@ -346,7 +398,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
   );
   if (nonImageBinary) {
     throw new Error(
-      `当前所选服务商 (${provider.shortName}) 使用 OpenAI 协议，不支持 PDF/音频原生二进制流直传，已自动切换为文本流解析翻译。`
+      `当前所选服务商 (${provider.shortName}) 使用 OpenAI 协议，不支持 PDF/音频原生二进制流直传，请改用支持原生音频/PDF 的 Gemini 协议模型；PDF 可使用本地文本解析模式。`
     );
   }
 
@@ -416,14 +468,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
   }
 
   if (!response.ok) {
-    let errDetail = `HTTP ${response.status}`;
-    try {
-      const errJson = await response.json();
-      errDetail = errJson?.error?.message || errJson?.message || JSON.stringify(errJson);
-    } catch {
-      const text = await response.text();
-      if (text) errDetail = text.slice(0, 240);
-    }
+    const errDetail = await readApiError(response);
     if (
       imageInlineParts.length > 0 &&
       (response.status === 400 || response.status === 422) &&
@@ -472,14 +517,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
   });
 
   if (!response.ok) {
-    let errDetail = `HTTP ${response.status}`;
-    try {
-      const errJson = await response.json();
-      errDetail = errJson?.error?.message || JSON.stringify(errJson);
-    } catch {
-      const text = await response.text();
-      if (text) errDetail = text.slice(0, 240);
-    }
+    const errDetail = await readApiError(response);
 
     // Auto-heal if the selected model is deprecated/404 and the API suggests a replacement or user has fetched models
     if (response.status === 404 && !isRetry) {
@@ -660,45 +698,16 @@ ${JSON.stringify(inputPayload)}`;
                 : []
       : [];
 
-  const byId = new Map();
-  if (Array.isArray(parsedList)) {
-    parsedList.forEach((entry, idx) => {
-      if (entry && typeof entry.translation === 'string') {
-        const key = entry.id !== undefined ? Number(entry.id) : inputPayload[idx]?.id;
-        byId.set(key, entry.translation.trim());
-      }
-    });
-  }
-
-  // For OpenAI-compatible text providers (e.g. DeepSeek), if a multi-item batch omitted some IDs, retry the missing subset once
-  if (
-    getActiveProtocol(settings) === 'openai' &&
-    !options._isMissingSubsetRetry &&
-    inputPayload.length > 1
-  ) {
-    const missingItems = inputPayload.filter((item, idx) => {
-      const matched =
-        byId.get(Number(item.id)) ||
-        (typeof parsedList[idx]?.translation === 'string'
-          ? parsedList[idx].translation.trim()
-          : '');
-      return !matched;
-    });
-    if (missingItems.length > 0 && missingItems.length < inputPayload.length) {
-      try {
-        const retryTranslated = await translateBatchWithGemini(missingItems, settings, {
-          ...options,
-          _isMissingSubsetRetry: true
-        });
-        for (const rt of retryTranslated) {
-          if (rt && rt.translation) {
-            byId.set(Number(rt.id), rt.translation);
-          }
-        }
-      } catch {
-        // Keep partial translations if retry fails
-      }
+  const byId = translationMap(parsedList, inputPayload);
+  const missingItems = inputPayload.filter(item => !byId.has(item.id));
+  if (missingItems.length > 0) {
+    if (options._isMissingSubsetRetry) {
+      throw new Error(`模型遗漏了 ${missingItems.length} 条译文，请重试`);
     }
+    const retried = await translateBatchWithGemini(missingItems, settings, {
+      ...options, _isMissingSubsetRetry: true
+    });
+    for (const item of retried) byId.set(item.id, item.translation);
   }
 
   const totalChars = items.reduce((acc, it) => acc + (it.text?.length || 0), 0);
@@ -708,17 +717,7 @@ ${JSON.stringify(inputPayload)}`;
     chars: totalChars
   });
 
-  return inputPayload.map((item, idx) => {
-    const matched =
-      byId.get(Number(item.id)) ||
-      (Array.isArray(parsedList) && typeof parsedList[idx]?.translation === 'string'
-        ? parsedList[idx].translation.trim()
-        : '');
-    return {
-      id: item.id,
-      translation: matched || item.text
-    };
-  });
+  return inputPayload.map(item => ({ id: item.id, translation: byId.get(item.id) }));
 }
 
 /**
@@ -807,7 +806,7 @@ export async function translateInputTextWithGemini({ text, targetLang }, setting
 /**
  * 4. YouTube Subtitle Context-Window Batch Translation.
  */
-export async function translateYoutubeCuesWithGemini({ cues, contextBefore = '', contextAfter = '', videoTitle = '' }, settings) {
+export async function translateYoutubeCuesWithGemini({ cues, contextBefore = '', contextAfter = '', videoTitle = '', _isMissingSubsetRetry = false }, settings) {
   if (!cues || cues.length === 0) return [];
   const targetLangName = getLanguageEnglishName(settings.targetLang);
   const sysInstruction = buildSystemInstruction(settings, settings.targetLang);
@@ -858,14 +857,14 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
     }
   }
   const parsed = safeParseJson(raw);
-  const mapById = new Map();
-  if (Array.isArray(parsed)) {
-    parsed.forEach((item, idx) => {
-      const id = item.id !== undefined ? Number(item.id) : cues[idx]?.id;
-      if (typeof item.translation === 'string') {
-        mapById.set(id, item.translation.trim());
-      }
-    });
+  const mapById = translationMap(Array.isArray(parsed) ? parsed : [], cues);
+  const missing = cues.filter(c => !mapById.has(c.id));
+  if (missing.length > 0) {
+    if (_isMissingSubsetRetry) throw new Error(`模型遗漏了 ${missing.length} 条字幕译文，请重试`);
+    const retried = await translateYoutubeCuesWithGemini({
+      cues: missing, contextBefore, contextAfter, videoTitle, _isMissingSubsetRetry: true
+    }, settings);
+    for (const item of retried) mapById.set(item.id, item.translation);
   }
 
   await incrementUsageStats({
@@ -874,10 +873,7 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
     chars: cues.reduce((s, c) => s + (c.text?.length || 0), 0)
   });
 
-  return cues.map((c, idx) => ({
-    id: c.id,
-    translation: mapById.get(Number(c.id)) || parsed?.[idx]?.translation || c.text
-  }));
+  return cues.map(c => ({ id: c.id, translation: mapById.get(c.id) }));
 }
 
 /**
@@ -1026,7 +1022,8 @@ export async function analyzePdfWithGemini(
   let raw;
   try {
     raw = await callGeminiApi(settings, payloadWithFastConfig);
-  } catch {
+  } catch (err) {
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) throw err;
     const fallbackPayload = {
       ...payloadWithFastConfig,
       generationConfig: buildFastGenerationConfig(settings, schema, false)
@@ -1154,7 +1151,8 @@ Rules:
   let raw;
   try {
     raw = await callGeminiApi(settings, payload);
-  } catch {
+  } catch (err) {
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) throw err;
     raw = await callGeminiApi(settings, {
       ...payload,
       generationConfig: buildFastGenerationConfig(settings, schema, false)

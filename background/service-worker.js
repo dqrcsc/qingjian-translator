@@ -221,7 +221,7 @@ async function handleTranslateBatch(payload) {
   const keyedItems = items.map((item, idx) => {
     const id = item.id ?? idx;
     const text = String(item.text || '');
-    const cacheKey = buildCacheKey(text, targetLang, modelId, glossarySig);
+    const cacheKey = buildCacheKey(text, targetLang, modelId, glossarySig, payload.pageTitle || '');
     return { id, text, cacheKey };
   });
 
@@ -294,7 +294,8 @@ async function handleTranslateYoutubeCues(payload) {
 
   const keyedCues = cues.map((c) => ({
     ...c,
-    cacheKey: buildCacheKey(`YT:${c.text}`, targetLang, modelId, glossarySig)
+    cacheKey: buildCacheKey(`YT:${c.text}`, targetLang, modelId, glossarySig,
+      JSON.stringify([payload.videoTitle || '', payload.contextBefore || '', payload.contextAfter || '']))
   }));
 
   const finalMap = new Map();
@@ -365,13 +366,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case MESSAGE_TYPES.TRANSLATE_SELECTION: {
           const settings = await getSettings();
-          const data = await explainSelectionWithGemini(message.payload || {}, settings);
+          const data = await withConcurrencyLimit(settings.maxConcurrency, () => explainSelectionWithGemini(message.payload || {}, settings));
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_INPUT_TEXT: {
           const settings = await getSettings();
-          const translatedText = await translateInputTextWithGemini(message.payload || {}, settings);
+          const translatedText = await withConcurrencyLimit(settings.maxConcurrency, () => translateInputTextWithGemini(message.payload || {}, settings));
           sendResponse({ ok: true, data: { translatedText } });
           break;
         }
@@ -390,13 +391,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case MESSAGE_TYPES.TRANSLATE_YOUTUBE_AUDIO: {
           const settings = await getSettings();
-          const data = await translateYoutubeAudioWithGemini(message.payload || {}, settings);
+          const data = await withConcurrencyLimit(settings.maxConcurrency, () => translateYoutubeAudioWithGemini(message.payload || {}, settings));
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL: {
           const settings = await getSettings();
-          const blocks = await analyzePdfWithGemini(message.payload || {}, settings);
+          const blocks = await withConcurrencyLimit(settings.maxConcurrency, () => analyzePdfWithGemini(message.payload || {}, settings));
           sendResponse({ ok: true, data: { blocks } });
           break;
         }

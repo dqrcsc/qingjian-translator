@@ -129,6 +129,24 @@ let programmaticScrollTimer = null;
 const lazyPageQueue = [];
 let isProcessingLazyQueue = false;
 
+// Invalidates callbacks from a replaced document, including online downloads.
+let documentSession = 0;
+function beginDocumentSession() {
+  documentSession++;
+  lazyPageQueue.length = 0;
+  lazyPageObserver?.disconnect();
+  leftPdfPageObserver?.disconnect();
+  currentDoc.translatingPages?.clear();
+  isTranslating = false;
+  isProcessingLazyQueue = false;
+  isExportBatchRunning = false;
+  stopRequested = false;
+  abortExportBatchMode = null;
+  if (pdfExportConfirmModal) pdfExportConfirmModal.hidden = true;
+  if (confirmPdfExportBtn) confirmPdfExportBtn.disabled = false;
+  return documentSession;
+}
+
 // ============================================================================
 // 1. File Upload, Online PDF Direct Fetch & Format Parsers
 // ============================================================================
@@ -178,6 +196,7 @@ dropzoneCard.addEventListener('drop', (e) => {
 async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
   const pdfUrl = normalizeOnlinePdfUrl(rawUrl);
   if (!pdfUrl) return;
+  const session = beginDocumentSession();
 
   if (onlinePdfUrlInput) {
     onlinePdfUrlInput.value = pdfUrl;
@@ -225,6 +244,7 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
     });
 
     const ab = await response.arrayBuffer();
+    if (session !== documentSession) return;
     const headerBytes = new Uint8Array(ab.slice(0, 8));
     const headerAscii = new TextDecoder('ascii').decode(headerBytes);
     const isPdfBinary = headerAscii.startsWith('%PDF-');
@@ -263,10 +283,12 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
 
     const file = new File([ab], inferredName, { type: 'application/pdf' });
     await handleFileLoaded(file, {
+      session,
       sourceUrl: pdfUrl,
       autoStartTranslate
     });
   } catch (err) {
+    if (session !== documentSession) return;
     progressBarWrap.hidden = true;
     docStatusSubtitle.textContent = `⚠️ 在线加载 PDF 失败: ${err?.message || err}`;
     bilingualStreamContainer.innerHTML = `
@@ -279,6 +301,8 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
 }
 
 async function handleFileLoaded(file, options = {}) {
+  const session = options.session ?? beginDocumentSession();
+  if (session !== documentSession) return;
   const name = file.name;
   const ext = name.split('.').pop().toLowerCase();
 
@@ -323,8 +347,10 @@ async function handleFileLoaded(file, options = {}) {
   if (ext === 'pdf') {
     currentDoc.fileType = 'pdf';
     const ab = await file.arrayBuffer();
+    if (session !== documentSession) return;
     currentDoc.pdfArrayBuffer = ab;
     const opened = await openPdfDocument(ab);
+    if (session !== documentSession) return;
     currentDoc.pdfDoc = opened.pdfDoc;
     currentDoc.totalPages = Math.max(1, opened.numPages || estimatePdfPageCount(ab));
     currentDoc.pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: 'application/pdf' }));
@@ -337,6 +363,7 @@ async function handleFileLoaded(file, options = {}) {
       pdfNativeEmbed.hidden = true;
       pdfCanvasScrollViewer.hidden = false;
       const ok = await initLeftPdfScrollViewer();
+      if (session !== documentSession) return;
       if (!ok) {
         showNativePdfEmbed(currentDoc.pdfBlobUrl);
       }
@@ -358,6 +385,7 @@ async function handleFileLoaded(file, options = {}) {
 
     if (pdfModeSelect && pdfModeSelect.value === 'local-stream') {
       const localBlocks = await extractPdfBlocksLocally(ab);
+      if (session !== documentSession) return;
       if (localBlocks.length > 0) {
         currentDoc.blocks = localBlocks;
         renderWorkspaceBlocks();
@@ -379,7 +407,9 @@ async function handleFileLoaded(file, options = {}) {
   } else if (ext === 'epub') {
     currentDoc.fileType = 'epub';
     const ab = await file.arrayBuffer();
+    if (session !== documentSession) return;
     const parsed = await parseEpubFile(ab);
+    if (session !== documentSession) return;
     currentDoc.bookTitle = parsed.bookTitle;
     currentDoc.bookAuthor = parsed.bookAuthor;
     currentDoc.chapters = parsed.chapters;
@@ -398,6 +428,7 @@ async function handleFileLoaded(file, options = {}) {
   } else if (ext === 'srt' || ext === 'vtt') {
     currentDoc.fileType = 'srt';
     const text = await file.text();
+    if (session !== documentSession) return;
     const cues = parseSubtitles(text);
     currentDoc.blocks = cues.map((c, idx) => ({
       id: idx,
@@ -413,12 +444,14 @@ async function handleFileLoaded(file, options = {}) {
   } else if (ext === 'html' || ext === 'htm') {
     currentDoc.fileType = 'html';
     const text = await file.text();
+    if (session !== documentSession) return;
     currentDoc.blocks = parseHtmlDocumentToBlocks(text);
     leftPaneTitle.textContent = `📙 HTML 文档 (${name})`;
     renderWorkspaceBlocks();
   } else {
     currentDoc.fileType = 'md';
     const text = await file.text();
+    if (session !== documentSession) return;
     currentDoc.blocks = parseMarkdownToBlocks(text);
     leftPaneTitle.textContent = `📘 Markdown / 文本 (${name})`;
     renderWorkspaceBlocks();
@@ -537,33 +570,34 @@ function showNativePdfEmbed(url) {
 const MAX_CACHED_PAGE_RENDERS = 8;
 
 async function getOrRenderPdfPage(pageNum) {
-  if (!currentDoc.pdfDoc) return null;
-  const p = Math.max(1, Math.min(currentDoc.totalPages || 1, Number(pageNum) || 1));
-  if (!currentDoc.pageRenderCache) {
-    currentDoc.pageRenderCache = new Map();
+  const doc = currentDoc;
+  if (!doc.pdfDoc) return null;
+  const p = Math.max(1, Math.min(doc.totalPages || 1, Number(pageNum) || 1));
+  if (!doc.pageRenderCache) {
+    doc.pageRenderCache = new Map();
   }
-  if (currentDoc.pageRenderCache.has(p)) {
-    const cached = currentDoc.pageRenderCache.get(p);
+  if (doc.pageRenderCache.has(p)) {
+    const cached = doc.pageRenderCache.get(p);
     // Refresh LRU order
-    currentDoc.pageRenderCache.delete(p);
-    currentDoc.pageRenderCache.set(p, cached);
+    doc.pageRenderCache.delete(p);
+    doc.pageRenderCache.set(p, cached);
     return cached;
   }
 
   // Evict oldest high-DPI canvas render when exceeding MAX_CACHED_PAGE_RENDERS
-  if (currentDoc.pageRenderCache.size >= MAX_CACHED_PAGE_RENDERS) {
-    for (const candidatePage of currentDoc.pageRenderCache.keys()) {
-      if (currentDoc.translatingPages && currentDoc.translatingPages.has(candidatePage)) {
+  if (doc.pageRenderCache.size >= MAX_CACHED_PAGE_RENDERS) {
+    for (const candidatePage of doc.pageRenderCache.keys()) {
+      if (doc.translatingPages && doc.translatingPages.has(candidatePage)) {
         continue;
       }
-      const evictedPromise = currentDoc.pageRenderCache.get(candidatePage);
-      currentDoc.pageRenderCache.delete(candidatePage);
+      const evictedPromise = doc.pageRenderCache.get(candidatePage);
+      doc.pageRenderCache.delete(candidatePage);
       Promise.resolve(evictedPromise)
         .then((rendered) => {
           if (
             rendered &&
             rendered.canvas &&
-            !(currentDoc.translatingPages && currentDoc.translatingPages.has(candidatePage))
+            !(doc.translatingPages && doc.translatingPages.has(candidatePage))
           ) {
             rendered.canvas.width = 0;
             rendered.canvas.height = 0;
@@ -571,28 +605,29 @@ async function getOrRenderPdfPage(pageNum) {
           }
         })
         .catch(() => {});
-      if (currentDoc.pageRenderCache.size < MAX_CACHED_PAGE_RENDERS) {
+      if (doc.pageRenderCache.size < MAX_CACHED_PAGE_RENDERS) {
         break;
       }
     }
   }
 
-  const renderPromise = renderPdfPageToCanvas(currentDoc.pdfDoc, p, 2.0)
+  const renderPromise = renderPdfPageToCanvas(doc.pdfDoc, p, 2.0)
     .then((res) => {
       if (!res) {
-        currentDoc.pageRenderCache?.delete(p);
+        doc.pageRenderCache?.delete(p);
       }
       return res;
     })
     .catch(() => {
-      currentDoc.pageRenderCache?.delete(p);
+      doc.pageRenderCache?.delete(p);
       return null;
     });
-  currentDoc.pageRenderCache.set(p, renderPromise);
+  doc.pageRenderCache.set(p, renderPromise);
   return renderPromise;
 }
 
 async function ensureLeftPdfPageRendered(pageNum) {
+  const session = documentSession;
   if (!pdfCanvasScrollViewer || !currentDoc.pdfDoc) return false;
   const p = Math.max(1, Math.min(currentDoc.totalPages || 1, Number(pageNum) || 1));
   const slot = pdfCanvasScrollViewer.querySelector(`.left-pdf-page-slot[data-left-pdf-page="${p}"]`);
@@ -606,6 +641,7 @@ async function ensureLeftPdfPageRendered(pageNum) {
   slot.dataset.rendering = '1';
   try {
     const rendered = await getOrRenderPdfPage(p);
+    if (session !== documentSession) return false;
     const imgSrc =
       rendered &&
       (rendered.jpegDataUrl ||
@@ -624,6 +660,7 @@ async function ensureLeftPdfPageRendered(pageNum) {
       showNativePdfEmbed(currentDoc.pdfBlobUrl);
     }
   } catch {
+    if (session !== documentSession) return false;
     if (p === 1 && currentDoc.pdfBlobUrl) {
       showNativePdfEmbed(currentDoc.pdfBlobUrl);
     }
@@ -634,6 +671,7 @@ async function ensureLeftPdfPageRendered(pageNum) {
 }
 
 async function initLeftPdfScrollViewer() {
+  const session = documentSession;
   if (!pdfCanvasScrollViewer || !currentDoc.pdfDoc) return false;
   if (leftPdfPageObserver) {
     leftPdfPageObserver.disconnect();
@@ -676,6 +714,7 @@ async function initLeftPdfScrollViewer() {
 
   // Eagerly render first 2 original pages on the left before starting translation
   const page1Ok = await ensureLeftPdfPageRendered(1);
+  if (session !== documentSession) return false;
   if (!page1Ok) {
     return false;
   }
@@ -1257,6 +1296,7 @@ async function loadImageToCanvas(dataUrl) {
 }
 
 async function handleFigureImageFile(file, attachToBlockId = null) {
+  const session = documentSession;
   if (!file || !file.type.startsWith('image/')) return;
   emptyDropzoneSection.hidden = true;
   workspaceSplitMain.hidden = false;
@@ -1268,6 +1308,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
     reader.readAsDataURL(file);
   });
 
+  if (session !== documentSession) return;
   const base64 = dataUrl.split(',')[1] || '';
   if (!base64) return;
 
@@ -1277,6 +1318,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
 
   try {
     const settings = await getSettings();
+    if (session !== documentSession) return;
     const res = await chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.TRANSLATE_IMAGE,
       payload: {
@@ -1287,6 +1329,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
       }
     });
 
+    if (session !== documentSession) return;
     if (!res || !res.ok) {
       throw new Error(res?.error || '图表文字识别失败');
     }
@@ -1302,6 +1345,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
     let isCanvasInpainted = false;
 
     const imgCanvas = await loadImageToCanvas(dataUrl);
+    if (session !== documentSession) return;
     if (imgCanvas && figureLabels.length > 0) {
       const inpainted = renderSeamlessFigureTranslation(imgCanvas, figureLabels);
       if (inpainted.translatedDataUrl) {
@@ -1352,11 +1396,13 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
     progressBarFill.style.width = '100%';
     docStatusSubtitle.textContent = `✓ 图表无痕原位翻译完成（共替换 ${figureLabels.length} 处图中文字）`;
   } catch (err) {
+    if (session !== documentSession) return;
     docStatusSubtitle.textContent = `⚠️ 图表翻译失败: ${err?.message || err}`;
   } finally {
+    if (session !== documentSession) return;
     pendingFigureAttachBlockId = null;
     setTimeout(() => {
-      progressBarWrap.hidden = true;
+      if (session === documentSession) progressBarWrap.hidden = true;
     }, 1000);
   }
 }
@@ -1460,9 +1506,10 @@ function queueLazyPageTranslation(pageNum, prioritize = false) {
 async function processLazyPageQueue() {
   if (isProcessingLazyQueue) return;
   isProcessingLazyQueue = true;
+  const session = documentSession;
 
   try {
-    while (lazyPageQueue.length > 0 && !stopRequested) {
+    while (session === documentSession && lazyPageQueue.length > 0 && !stopRequested) {
       const nextPage = lazyPageQueue.shift();
       if (
         !nextPage ||
@@ -1474,7 +1521,7 @@ async function processLazyPageQueue() {
       await translateSinglePdfPage(nextPage);
     }
   } finally {
-    isProcessingLazyQueue = false;
+    if (session === documentSession) isProcessingLazyQueue = false;
   }
 }
 
@@ -1493,6 +1540,8 @@ async function translateSinglePdfPage(pageNum) {
     return;
   }
 
+  const session = documentSession;
+  const isCurrent = () => session === documentSession && !stopRequested;
   currentDoc.translatingPages.add(pageNum);
   const totalPages = Math.max(1, currentDoc.totalPages || 1);
 
@@ -1514,9 +1563,11 @@ async function translateSinglePdfPage(pageNum) {
 
   try {
     const settings = await getSettings();
+    if (!isCurrent()) return;
     let pageRender = null;
     if (currentDoc.pdfDoc) {
       pageRender = await getOrRenderPdfPage(pageNum);
+      if (!isCurrent()) return;
       ensureLeftPdfPageRendered(pageNum);
     }
 
@@ -1543,6 +1594,7 @@ async function translateSinglePdfPage(pageNum) {
         payload
       });
 
+      if (!isCurrent()) return;
       if (!res || !res.ok) {
         throw new Error(res?.error || `第 ${pageNum} 页解析失败`);
       }
@@ -1556,6 +1608,7 @@ async function translateSinglePdfPage(pageNum) {
       }
       if (rawBlocks.length === 0 && currentDoc.pdfArrayBuffer) {
         const fallbackAll = await extractPdfBlocksLocally(currentDoc.pdfArrayBuffer);
+        if (!isCurrent()) return;
         const pageSpecific = fallbackAll.filter((b) => Number(b.page) === pageNum);
         rawBlocks = pageSpecific.length > 0 ? pageSpecific : pageNum === 1 ? fallbackAll : [];
       }
@@ -1578,7 +1631,7 @@ async function translateSinglePdfPage(pageNum) {
       );
 
       for (const batch of pageBatches) {
-        if (stopRequested) break;
+        if (!isCurrent()) return;
         const batchRes = await chrome.runtime.sendMessage({
           type: MESSAGE_TYPES.TRANSLATE_BATCH,
           payload: {
@@ -1588,6 +1641,7 @@ async function translateSinglePdfPage(pageNum) {
           }
         });
 
+        if (!isCurrent()) return;
         if (!batchRes || !batchRes.ok) {
           throw new Error(batchRes?.error || `第 ${pageNum} 页文本翻译失败`);
         }
@@ -1604,6 +1658,8 @@ async function translateSinglePdfPage(pageNum) {
       }
     }
 
+    if (!isCurrent()) return;
+    if (rawBlocks.length === 0) throw new Error('此页未提取到可翻译内容；扫描件请使用支持视觉的模型。');
     const newBlocks = [];
 
     for (let idx = 0; idx < rawBlocks.length; idx++) {
@@ -1639,7 +1695,9 @@ async function translateSinglePdfPage(pageNum) {
                 pageTitle: currentDoc.bookTitle || currentDoc.fileName
               }
             });
-            if (batchRes && batchRes.ok && Array.isArray(batchRes.data?.translations)) {
+            if (!isCurrent()) return;
+            if (!batchRes?.ok) throw new Error(batchRes?.error || '图中文字翻译失败');
+            if (Array.isArray(batchRes.data?.translations)) {
               for (const tr of batchRes.data.translations) {
                 if (vectorGroups[tr.id] && tr.translation) {
                   vectorGroups[tr.id].translation = tr.translation;
@@ -1690,6 +1748,7 @@ async function translateSinglePdfPage(pageNum) {
       .sort((a, b) => (a.page || 1) - (b.page || 1))
       .map((b, i) => ({ ...b, id: i }));
 
+    if (!isCurrent()) return;
     currentDoc.translatedPages.add(pageNum);
     currentDoc.translatingPages.delete(pageNum);
 
@@ -1702,13 +1761,16 @@ async function translateSinglePdfPage(pageNum) {
         ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 向下滚动将自动续译后续页面（省 Token）`
         : `✓ 全部 ${totalPages} 页翻译完成`;
   } catch (err) {
+    if (session !== documentSession) return;
     currentDoc.translatingPages.delete(pageNum);
     docStatusSubtitle.textContent = `⚠️ 第 ${pageNum} 页翻译失败: ${err?.message || err}`;
     renderWorkspaceBlocks(streamSearchInput.value.trim());
   } finally {
+    if (session !== documentSession) return;
+    currentDoc.translatingPages.delete(pageNum);
     if (currentDoc.translatingPages.size === 0 && lazyPageQueue.length === 0) {
       setTimeout(() => {
-        progressBarWrap.hidden = true;
+        if (session === documentSession) progressBarWrap.hidden = true;
       }, 900);
     }
   }
@@ -1716,6 +1778,10 @@ async function translateSinglePdfPage(pageNum) {
 
 startTranslateDocBtn.addEventListener('click', () => {
   if (isTranslating || isProcessingLazyQueue) {
+    documentSession++;
+    currentDoc.translatingPages.clear();
+    isTranslating = false;
+    isProcessingLazyQueue = false;
     stopRequested = true;
     lazyPageQueue.length = 0;
     currentDoc.lazyScrollEnabled = false;
@@ -1777,6 +1843,8 @@ if (translateSinglePageBtn && jumpPageInput) {
 async function startDocumentTranslation(targetPageRange = null) {
   if (isTranslating) return;
   isTranslating = true;
+  const session = documentSession;
+  const isCurrent = () => session === documentSession && !stopRequested;
   stopRequested = false;
   startTranslateDocBtn.disabled = false;
   startTranslateDocBtn.textContent = '⏹ 暂停翻译';
@@ -1785,6 +1853,8 @@ async function startDocumentTranslation(targetPageRange = null) {
 
   try {
     const settings = await getSettings();
+    if (!isCurrent()) return;
+    currentDoc.targetLang = settings.targetLang;
     const usesLazyPdfPipeline =
       currentDoc.fileType === 'pdf' &&
       (!pdfModeSelect || pdfModeSelect.value === 'gemini-multimodal') &&
@@ -1797,7 +1867,9 @@ async function startDocumentTranslation(targetPageRange = null) {
       currentDoc.pdfArrayBuffer
     ) {
       docStatusSubtitle.textContent = '正在提取 PDF 文本流并按需翻译首屏段落…';
-      currentDoc.blocks = await extractPdfBlocksLocally(currentDoc.pdfArrayBuffer);
+      const localBlocks = await extractPdfBlocksLocally(currentDoc.pdfArrayBuffer);
+      if (!isCurrent()) return;
+      currentDoc.blocks = localBlocks;
       renderWorkspaceBlocks();
     }
 
@@ -1809,7 +1881,9 @@ async function startDocumentTranslation(targetPageRange = null) {
       if (targetPageRange) {
         for (let p = targetPageRange.start; p <= targetPageRange.end; p++) {
           currentDoc.translatedPages.delete(p);
+          if (!isCurrent()) return;
           await translateSinglePdfPage(p);
+          if (!isCurrent()) return;
         }
         navigateToPdfPage(targetPageRange.start);
       } else {
@@ -1825,8 +1899,9 @@ async function startDocumentTranslation(targetPageRange = null) {
         }
 
         for (const p of initialPages) {
-          if (stopRequested) break;
+          if (!isCurrent()) return;
           await translateSinglePdfPage(p);
+          if (!isCurrent()) return;
         }
       }
       return;
@@ -1854,7 +1929,7 @@ async function startDocumentTranslation(targetPageRange = null) {
 
     let completed = 0;
     for (const batch of batches) {
-      if (stopRequested) break;
+      if (!isCurrent()) return;
       const res = await chrome.runtime.sendMessage({
         type: MESSAGE_TYPES.TRANSLATE_BATCH,
         payload: {
@@ -1864,6 +1939,7 @@ async function startDocumentTranslation(targetPageRange = null) {
         }
       });
 
+      if (!isCurrent()) return;
       if (!res || !res.ok) {
         throw new Error(res?.error || '批量翻译中断');
       }
@@ -1890,8 +1966,10 @@ async function startDocumentTranslation(targetPageRange = null) {
 
     docStatusSubtitle.textContent = `✓ 文档双语翻译已完成 (${currentDoc.fileName})`;
   } catch (err) {
+    if (session !== documentSession) return;
     docStatusSubtitle.textContent = `⚠️ 翻译出错: ${err?.message || err}`;
   } finally {
+    if (session !== documentSession) return;
     isTranslating = false;
     stopRequested = false;
     startTranslateDocBtn.disabled = false;
@@ -1901,7 +1979,7 @@ async function startDocumentTranslation(targetPageRange = null) {
         ? '✦ 继续翻译下两页'
         : '✦ 重新翻译';
     setTimeout(() => {
-      progressBarWrap.hidden = true;
+      if (session === documentSession) progressBarWrap.hidden = true;
     }, 1200);
   }
 }
@@ -2164,6 +2242,7 @@ abortAndExportDoneBtn?.addEventListener('click', () => {
 
 confirmPdfExportBtn?.addEventListener('click', async () => {
   if (isExportBatchRunning) return;
+  const session = documentSession;
   const selectedViewMode = getSelectedPdfExportViewMode();
   const { targetPages, pendingPages } = computeTargetAndPendingPages();
 
@@ -2199,9 +2278,11 @@ confirmPdfExportBtn?.addEventListener('click', async () => {
         }
 
         await translateSinglePdfPage(pageNum);
+        if (session !== documentSession) return;
         refreshPdfExportModalEstimate();
       }
     } finally {
+      if (session !== documentSession) return;
       isExportBatchRunning = false;
       if (confirmPdfExportBtn) confirmPdfExportBtn.disabled = false;
       if (abortAndExportDoneBtn) abortAndExportDoneBtn.hidden = true;
@@ -2213,16 +2294,24 @@ confirmPdfExportBtn?.addEventListener('click', async () => {
     }
 
     const doneAfter = getTranslatedPagesSet();
+    if (!abortExportBatchMode && targetPages.some(p => !doneAfter.has(p))) {
+      if (pdfExportLiveStatusText) pdfExportLiveStatusText.textContent = '部分页面翻译失败，未导出。请重试或选择仅导出已完成页。';
+      return;
+    }
     const finalPages =
       abortExportBatchMode === 'export-done'
         ? targetPages.filter((p) => doneAfter.has(p))
         : targetPages;
     abortExportBatchMode = null;
+    if (finalPages.length === 0) {
+      if (pdfExportLiveStatusText) pdfExportLiveStatusText.textContent = '当前范围没有已完成的页面，未导出。';
+      return;
+    }
 
     if (pdfExportConfirmModal) pdfExportConfirmModal.hidden = true;
     await executeLayoutPreservingPdfExport(
       selectedViewMode,
-      finalPages.length > 0 ? finalPages : [1]
+      finalPages
     );
     return;
   }
@@ -2255,6 +2344,7 @@ async function waitForAllPaperImagesLoaded(container) {
 }
 
 async function executeLayoutPreservingPdfExport(targetViewMode = 'translation-only', pageNumbersToInclude = null) {
+  const session = documentSession;
   const baseName = (currentDoc.fileName || 'qingjian-doc')
     .replace(/^\(\d+\)\s*/g, '')
     .replace(/[\\/:*?"<>|]/g, '_');
@@ -2289,15 +2379,18 @@ async function executeLayoutPreservingPdfExport(targetViewMode = 'translation-on
   });
 
   await waitForAllPaperImagesLoaded(bilingualStreamContainer);
+  if (session !== documentSession) return;
 
   const modeSuffix = targetViewMode === 'translation-only' ? '纯译文排版' : '双语对照排版';
   document.title = `${baseName}.${modeSuffix}`;
 
   await new Promise((resolve) => setTimeout(resolve, 120));
+  if (session !== documentSession) return;
   window.print();
 
   // Restore workspace UI state after print dialog finishes
   setTimeout(() => {
+    if (session !== documentSession) return;
     document.title = prevTitle;
     if (layoutStyleSelect) layoutStyleSelect.value = prevLayout;
     if (viewModeSelect) viewModeSelect.value = prevViewMode;
@@ -2414,6 +2507,7 @@ function exportTranslatedDocument(format) {
 // ============================================================================
 
 function loadBuiltInDemo() {
+  beginDocumentSession();
   emptyDropzoneSection.hidden = true;
   workspaceSplitMain.hidden = false;
   epubChapterSelectWrap.hidden = true;
