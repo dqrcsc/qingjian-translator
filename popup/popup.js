@@ -16,6 +16,14 @@ import {
   getMergedModelList
 } from '../shared/storage.js';
 import { isOnlinePdfUrl, normalizeOnlinePdfUrl } from '../shared/utils.js';
+import '../shared/request-client.js';
+
+const popupRequests = globalThis.QingJianRequests.createScope();
+const quickRequests = globalThis.QingJianRequests.createScope();
+window.addEventListener('pagehide', () => {
+  popupRequests.cancel();
+  quickRequests.cancel();
+});
 
 const apiKeyStatusBadge = document.getElementById('apiKeyStatusBadge');
 const openOptionsBtn = document.getElementById('openOptionsBtn');
@@ -115,7 +123,7 @@ async function initPopup() {
   ) {
     (async () => {
       try {
-        const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.FETCH_MODELS });
+        const res = await popupRequests.request({ type: MESSAGE_TYPES.FETCH_MODELS });
         if (res && res.ok) {
           currentSettings = await getSettings();
           populatePopupProviderSelect(currentSettings);
@@ -331,7 +339,7 @@ toggleTranslateBtn.addEventListener('click', async () => {
       });
       await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
-        files: ['content/content-main.js']
+        files: ['shared/request-client.js', 'content/content-main.js']
       });
       const res = await chrome.tabs.sendMessage(activeTab.id, {
         type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
@@ -369,7 +377,7 @@ popupProviderSelect?.addEventListener('change', async () => {
     (!currentSettings.availableModels || currentSettings.availableModels.length === 0)
   ) {
     try {
-      const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.FETCH_MODELS });
+      const res = await popupRequests.request({ type: MESSAGE_TYPES.FETCH_MODELS });
       if (res && res.ok) {
         currentSettings = await getSettings();
         populatePopupProviderSelect(currentSettings);
@@ -429,16 +437,18 @@ autoTranslateOnlinePdfCheckbox?.addEventListener('change', async () => {
 async function runQuickTranslate() {
   const text = quickInput.value.trim();
   if (!text) return;
+  quickRequests.cancel();
   quickOutput.hidden = false;
   quickOutput.textContent = 'AI 正在思考与翻译…';
   try {
-    const res = await chrome.runtime.sendMessage({
+    const res = await quickRequests.request({
       type: MESSAGE_TYPES.TRANSLATE_BATCH,
       payload: {
         items: [{ id: 0, text }],
         targetLang: targetLangSelect.value
       }
     });
+    if (res?.cancelled) return;
     if (!res || !res.ok) {
       throw new Error(res?.error || '请求失败');
     }

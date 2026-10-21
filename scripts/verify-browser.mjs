@@ -154,6 +154,18 @@ try {
   await page.close();
   await until(() => calls[last].closed, 'page close aborts network');
   checks.push('Closing the extension document automatically cancels its active request');
+  const popup = await context.newPage();
+  popup.on('pageerror', error => errors.push(error.message));
+  await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
+  const popupStart = calls.length;
+  await popup.locator('#quickInput').fill('Popup request to cancel');
+  await popup.locator('#quickTranslateBtn').click();
+  const findQuickCall = () => calls.slice(popupStart).find(call => call.body.includes('Popup request to cancel'));
+  await until(() => findQuickCall(), 'popup quick translation');
+  const quickCall = findQuickCall();
+  await popup.close();
+  await until(() => quickCall.closed, 'popup close aborts quick translation');
+  checks.push('Closing popup cancels its actual quick-translation request');
   assert.deepEqual(errors, [], 'No uncaught page errors or CSP errors');
   const report = { passed: true, browser: context.browser().version(), pdfjs: '6.4.299', checks, pdf: result, workers, errors };
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(report, null, 2) + '\n');
