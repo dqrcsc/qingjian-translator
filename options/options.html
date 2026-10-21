@@ -184,6 +184,22 @@
                   <span>无需开启整页翻译，指向任意段落按下 Alt 即可单独翻译该段</span>
                 </div>
               </label>
+
+              <label class="switch-card">
+                <input type="checkbox" id="enableImageTranslateCheck" />
+                <div>
+                  <strong>启用网页图片「🖼️ AI 译图」按钮与右键译图</strong>
+                  <span>在文章插图、X/Twitter 推文配图与信息图上显示一键原位译图控件</span>
+                </div>
+              </label>
+
+              <label class="switch-card">
+                <input type="checkbox" id="autoTranslatePageImagesCheck" />
+                <div>
+                  <strong>整页翻译时自动识别并翻译图片文字</strong>
+                  <span>开启网页双语对照时，自动检测并原位翻译进入视口的外文配图</span>
+                </div>
+              </label>
             </div>
           </div>
         </div>
@@ -213,7 +229,7 @@
 
           <div class="form-group">
             <label for="youtubeSubFontSizeInput">双语字幕字号 (px)</label>
-            <input type="number" id="youtubeSubFontSizeInput" min="12" max="36" value="18" />
+            <input type="number" id="youtubeSubFontSizeInput" min="12" max="36" value="22" />
           </div>
 
           <div class="form-group">
@@ -300,6 +316,16 @@
           <div class="form-group">
             <label for="maxConcurrencyInput">最大并发 API 请求数</label>
             <input type="number" id="maxConcurrencyInput" min="1" max="8" value="3" />
+          </div>
+
+          <div class="form-group full-width">
+            <label class="switch-card">
+              <input type="checkbox" id="enableCacheCheck" />
+              <div>
+                <strong>启用本地双层智能缓存 (内存 + IndexedDB · 推荐开启)</strong>
+                <span>相同段落与视频字幕二次访问时 0 延迟直接命中本地缓存，不重复消耗 Token；超出容量上限时按 LRU 自动淘汰旧条目。</span>
+              </div>
+            </label>
           </div>
 
           <div class="form-group full-width">

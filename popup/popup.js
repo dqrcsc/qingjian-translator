@@ -3,6 +3,7 @@
  */
 
 import {
+  LLM_PROVIDERS,
   LANGUAGES,
   TRANSLATION_STYLES,
   MESSAGE_TYPES
@@ -27,6 +28,7 @@ const autoTranslateDomainCheckbox = document.getElementById('autoTranslateDomain
 const autoTranslateAllCheckbox = document.getElementById('autoTranslateAllCheckbox');
 const autoTranslateOnlinePdfCheckbox = document.getElementById('autoTranslateOnlinePdfCheckbox');
 const currentDomainText = document.getElementById('currentDomainText');
+const popupProviderSelect = document.getElementById('popupProviderSelect');
 const modelSelect = document.getElementById('modelSelect');
 const targetLangSelect = document.getElementById('targetLangSelect');
 const styleGrid = document.getElementById('styleGrid');
@@ -41,6 +43,36 @@ let activeTab = null;
 let currentHost = '';
 let isActiveTabOnlinePdf = false;
 let isPageCurrentlyTranslated = false;
+
+function populatePopupProviderSelect(settings) {
+  if (!popupProviderSelect) return;
+  const configs = settings?.providerConfigs || {};
+  popupProviderSelect.textContent = '';
+  for (const p of LLM_PROVIDERS) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    const hasConfiguredKey = Boolean(configs[p.id]?.apiKey && String(configs[p.id].apiKey).trim());
+    opt.textContent = hasConfiguredKey ? `● ${p.shortName}` : p.shortName;
+    popupProviderSelect.appendChild(opt);
+  }
+  popupProviderSelect.value = settings?.providerId || 'google';
+}
+
+function updatePopupStatusBadge(settings) {
+  const provider = getProviderDefinition(settings.providerId);
+  const hasKey = Boolean(settings.apiKey && settings.apiKey.trim());
+  const activeModel = getActiveModelId(settings);
+  if (hasKey && activeModel) {
+    apiKeyStatusBadge.textContent = `● ${provider.shortName} · ${activeModel}`;
+    apiKeyStatusBadge.className = 'brand-sub is-ok';
+  } else if (!hasKey) {
+    apiKeyStatusBadge.textContent = `⚠️ 尚未配置 ${provider.shortName} Key 与模型 (点击去设置)`;
+    apiKeyStatusBadge.className = 'brand-sub is-missing';
+  } else {
+    apiKeyStatusBadge.textContent = `⚠️ 尚未选择或填写模型 ID (点击去设置)`;
+    apiKeyStatusBadge.className = 'brand-sub is-missing';
+  }
+}
 
 function populatePopupModelSelect(settings) {
   const models = getMergedModelList(settings);
@@ -72,8 +104,8 @@ function populatePopupModelSelect(settings) {
 
 async function initPopup() {
   currentSettings = await getSettings();
-  const provider = getProviderDefinition(currentSettings.providerId);
 
+  populatePopupProviderSelect(currentSettings);
   populatePopupModelSelect(currentSettings);
 
   // If API Key exists and dynamic models haven't been fetched yet, fetch silently in background
@@ -86,9 +118,9 @@ async function initPopup() {
         const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.FETCH_MODELS });
         if (res && res.ok) {
           currentSettings = await getSettings();
+          populatePopupProviderSelect(currentSettings);
           populatePopupModelSelect(currentSettings);
-          const pDef = getProviderDefinition(currentSettings.providerId);
-          apiKeyStatusBadge.textContent = `● ${pDef.shortName} · ${getActiveModelId(currentSettings)}`;
+          updatePopupStatusBadge(currentSettings);
         }
       } catch {
         // ignore
@@ -105,18 +137,7 @@ async function initPopup() {
   renderStyleChips(currentSettings.translationStyle);
 
   // API Key & Model Status
-  const hasKey = Boolean(currentSettings.apiKey && currentSettings.apiKey.trim());
-  const activeModel = getActiveModelId(currentSettings);
-  if (hasKey && activeModel) {
-    apiKeyStatusBadge.textContent = `● ${provider.shortName} · ${activeModel}`;
-    apiKeyStatusBadge.className = 'brand-sub is-ok';
-  } else if (!hasKey) {
-    apiKeyStatusBadge.textContent = `⚠️ 尚未配置 ${provider.shortName} Key 与模型 (点击去设置)`;
-    apiKeyStatusBadge.className = 'brand-sub is-missing';
-  } else {
-    apiKeyStatusBadge.textContent = `⚠️ 尚未选择或填写模型 ID (点击去设置)`;
-    apiKeyStatusBadge.className = 'brand-sub is-missing';
-  }
+  updatePopupStatusBadge(currentSettings);
 
   // Query active tab status
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -324,12 +345,47 @@ toggleTranslateBtn.addEventListener('click', async () => {
   }
 });
 
+popupProviderSelect?.addEventListener('change', async () => {
+  const nextProviderId = popupProviderSelect.value;
+  const nextDef = getProviderDefinition(nextProviderId);
+  const savedCfg = currentSettings?.providerConfigs?.[nextProviderId] || {};
+
+  currentSettings = await saveSettings({
+    providerId: nextProviderId,
+    apiProtocol: savedCfg.apiProtocol || nextDef.protocol,
+    apiBaseUrl: savedCfg.apiBaseUrl || nextDef.defaultBaseUrl,
+    apiKey: savedCfg.apiKey || '',
+    modelId: savedCfg.modelId || nextDef.defaultModel || '',
+    customModelId: savedCfg.customModelId || '',
+    availableModels: Array.isArray(savedCfg.availableModels) ? savedCfg.availableModels : []
+  });
+
+  populatePopupProviderSelect(currentSettings);
+  populatePopupModelSelect(currentSettings);
+  updatePopupStatusBadge(currentSettings);
+
+  if (
+    currentSettings.apiKey &&
+    (!currentSettings.availableModels || currentSettings.availableModels.length === 0)
+  ) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.FETCH_MODELS });
+      if (res && res.ok) {
+        currentSettings = await getSettings();
+        populatePopupProviderSelect(currentSettings);
+        populatePopupModelSelect(currentSettings);
+        updatePopupStatusBadge(currentSettings);
+      }
+    } catch {
+      // ignore
+    }
+  }
+});
+
 modelSelect.addEventListener('change', async () => {
   const val = modelSelect.value;
   currentSettings = await saveSettings({ modelId: val, customModelId: '' });
-  if (currentSettings.apiKey) {
-    apiKeyStatusBadge.textContent = `● API 已就绪 (${getActiveModelId(currentSettings)})`;
-  }
+  updatePopupStatusBadge(currentSettings);
 });
 
 targetLangSelect.addEventListener('change', async () => {

@@ -25,6 +25,9 @@
     enableSelectionTooltip: true,
     enableTripleSpaceInput: true,
     enableHoverTranslate: true,
+    enableImageTranslate: true,
+    autoTranslatePageImages: true,
+    enableCache: true,
     batchMaxItems: 10,
     batchMaxChars: 2200,
     enableYoutubeDualSub: true,
@@ -2705,8 +2708,10 @@
     return String(str || '')
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
+  const escapeHtml = escapeText;
 
   // ============================================================================
   // 8. YouTube Dual Subtitle Engine + Timeline Sidebar + Multimodal Audio Fallback
@@ -2744,8 +2749,7 @@
   }
 
   function applyYoutubeCssVariables() {
-    const rawSize = Number(settings.youtubeSubFontSize) || 22;
-    const effectiveSize = rawSize === 18 ? 22 : rawSize;
+    const effectiveSize = Math.max(12, Math.min(36, Number(settings.youtubeSubFontSize) || 22));
     document.documentElement.style.setProperty('--ig-yt-font-size', `${effectiveSize}px`);
     document.documentElement.style.setProperty(
       '--ig-yt-trans-color',
@@ -3158,111 +3162,121 @@
   }
 
   function syncYoutubeSubtitlesLoop() {
-    if (window.location.hostname.includes('youtube.com') && ytDualActive) {
-      const player = document.querySelector('.html5-video-player');
-      const video = document.querySelector('video');
+    const isVideoRoute =
+      window.location.hostname.includes('youtube.com') &&
+      (window.location.pathname.startsWith('/watch') ||
+        window.location.pathname.startsWith('/shorts'));
 
-      if (ytCues.length > 0 && video) {
-        const t = video.currentTime;
-        const activeCue = ytCues.find((c) => t >= c.start && t <= c.end);
+    if (!isVideoRoute || !ytDualActive || document.hidden) {
+      setTimeout(syncYoutubeSubtitlesLoop, 600);
+      return;
+    }
 
-        if (activeCue) {
-          const sig = `cue:${activeCue.id}|${activeCue.translation || ''}`;
+    const player = document.querySelector('.html5-video-player');
+    const video = player ? player.querySelector('video') : document.querySelector('video');
+
+    if (ytCues.length > 0 && video) {
+      const t = video.currentTime;
+      const activeCue = ytCues.find((c) => t >= c.start && t <= c.end);
+
+      if (activeCue) {
+        const sig = `cue:${activeCue.id}|${activeCue.translation || ''}`;
+        if (sig !== ytLastRenderedSig) {
+          ytLastRenderedSig = sig;
+          if (ytOverlayEl) {
+            ytOverlayEl.innerHTML = `
+              <div class="ig-yt-sub-box">
+                <div class="ig-yt-line-orig">${escapeText(activeCue.text)}</div>
+                <div class="ig-yt-line-trans">${escapeText(
+                  activeCue.translation || '⚡ 正在极速翻译当前句…'
+                )}</div>
+              </div>
+            `;
+          }
+          if (player) player.classList.add('ig-yt-dual-active');
+          highlightCurrentTimelineCue(activeCue.id);
+        }
+        prefetchYoutubeCuesAround(t);
+      } else if (ytOverlayEl && ytLastRenderedSig !== '') {
+        ytLastRenderedSig = '';
+        ytOverlayEl.innerHTML = '';
+      }
+    } else if (player) {
+      // Fallback: Read live native captions from .ytp-caption-window-container .ytp-caption-segment
+      // when YouTube's timedtext endpoint requires a POT token or on live streams
+      const segments = player.querySelectorAll(
+        '.ytp-caption-window-container .ytp-caption-segment'
+      );
+      const liveText = Array.from(segments)
+        .map((s) => (s.textContent || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (liveText) {
+        const isAlreadyTargetChinese =
+          isMostlyChineseText(liveText) && /^zh/i.test(settings.targetLang || 'zh-CN');
+        const isStaleArabic = isUnexpectedArabicCaption(liveText);
+
+        if (isStaleArabic) {
+          const now = Date.now();
+          if (now - lastBridgeTrackRequestAt > 1000) {
+            lastBridgeTrackRequestAt = now;
+            requestYoutubeTracksFromBridge();
+          }
+          player.classList.add('ig-yt-dual-active');
+        } else if (isAlreadyTargetChinese) {
+          // Native YouTube CC is currently set to Chinese; prompt bridge to switch to original track
+          const now = Date.now();
+          if (now - lastBridgeTrackRequestAt > 1500) {
+            lastBridgeTrackRequestAt = now;
+            requestYoutubeTracksFromBridge();
+          }
+          const sig = `live-zh:${liveText}`;
           if (sig !== ytLastRenderedSig) {
             ytLastRenderedSig = sig;
             if (ytOverlayEl) {
               ytOverlayEl.innerHTML = `
                 <div class="ig-yt-sub-box">
-                  <div class="ig-yt-line-orig">${escapeText(activeCue.text)}</div>
+                  <div class="ig-yt-line-trans">${escapeText(liveText)}</div>
+                </div>
+              `;
+            }
+            player.classList.add('ig-yt-dual-active');
+          }
+        } else {
+          const cachedTrans = ytLiveCaptionCache.get(liveText) || '';
+          if (!cachedTrans) {
+            translateLiveYoutubeCaptionText(liveText);
+          }
+          const sig = `live:${liveText}|${cachedTrans}`;
+          if (sig !== ytLastRenderedSig) {
+            ytLastRenderedSig = sig;
+            if (ytOverlayEl) {
+              ytOverlayEl.innerHTML = `
+                <div class="ig-yt-sub-box">
+                  <div class="ig-yt-line-orig">${escapeText(liveText)}</div>
                   <div class="ig-yt-line-trans">${escapeText(
-                    activeCue.translation || '⚡ 正在极速翻译当前句…'
+                    cachedTrans || '⚡ 正在极速翻译当前句…'
                   )}</div>
                 </div>
               `;
             }
-            if (player) player.classList.add('ig-yt-dual-active');
-            highlightCurrentTimelineCue(activeCue.id);
+            player.classList.add('ig-yt-dual-active');
           }
-          prefetchYoutubeCuesAround(t);
-        } else if (ytOverlayEl && ytLastRenderedSig !== '') {
+        }
+      } else {
+        if (ytOverlayEl && ytLastRenderedSig !== '') {
           ytLastRenderedSig = '';
           ytOverlayEl.innerHTML = '';
         }
-      } else if (player) {
-        // Fallback: Read live native captions from .ytp-caption-window-container .ytp-caption-segment
-        // when YouTube's timedtext endpoint requires a POT token or on live streams
-        const segments = player.querySelectorAll(
-          '.ytp-caption-window-container .ytp-caption-segment'
-        );
-        const liveText = Array.from(segments)
-          .map((s) => (s.textContent || '').trim())
-          .filter(Boolean)
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        if (liveText) {
-          const isAlreadyTargetChinese =
-            isMostlyChineseText(liveText) && /^zh/i.test(settings.targetLang || 'zh-CN');
-          const isStaleArabic = isUnexpectedArabicCaption(liveText);
-
-          if (isStaleArabic) {
-            const now = Date.now();
-            if (now - lastBridgeTrackRequestAt > 1000) {
-              lastBridgeTrackRequestAt = now;
-              requestYoutubeTracksFromBridge();
-            }
-            player.classList.add('ig-yt-dual-active');
-          } else if (isAlreadyTargetChinese) {
-            // Native YouTube CC is currently set to Chinese; prompt bridge to switch to original track
-            const now = Date.now();
-            if (now - lastBridgeTrackRequestAt > 1500) {
-              lastBridgeTrackRequestAt = now;
-              requestYoutubeTracksFromBridge();
-            }
-            const sig = `live-zh:${liveText}`;
-            if (sig !== ytLastRenderedSig) {
-              ytLastRenderedSig = sig;
-              if (ytOverlayEl) {
-                ytOverlayEl.innerHTML = `
-                  <div class="ig-yt-sub-box">
-                    <div class="ig-yt-line-trans">${escapeText(liveText)}</div>
-                  </div>
-                `;
-              }
-              player.classList.add('ig-yt-dual-active');
-            }
-          } else {
-            const cachedTrans = ytLiveCaptionCache.get(liveText) || '';
-            if (!cachedTrans) {
-              translateLiveYoutubeCaptionText(liveText);
-            }
-            const sig = `live:${liveText}|${cachedTrans}`;
-            if (sig !== ytLastRenderedSig) {
-              ytLastRenderedSig = sig;
-              if (ytOverlayEl) {
-                ytOverlayEl.innerHTML = `
-                  <div class="ig-yt-sub-box">
-                    <div class="ig-yt-line-orig">${escapeText(liveText)}</div>
-                    <div class="ig-yt-line-trans">${escapeText(
-                      cachedTrans || '⚡ 正在极速翻译当前句…'
-                    )}</div>
-                  </div>
-                `;
-              }
-              player.classList.add('ig-yt-dual-active');
-            }
-          }
-        } else {
-          if (ytOverlayEl && ytLastRenderedSig !== '') {
-            ytLastRenderedSig = '';
-            ytOverlayEl.innerHTML = '';
-          }
-          player.classList.remove('ig-yt-dual-active');
-        }
+        player.classList.remove('ig-yt-dual-active');
       }
     }
-    requestAnimationFrame(syncYoutubeSubtitlesLoop);
+
+    const nextDelayMs = video && video.paused ? 260 : 85;
+    setTimeout(syncYoutubeSubtitlesLoop, nextDelayMs);
   }
 
   function highlightCurrentTimelineCue(cueId) {
@@ -3916,7 +3930,7 @@
     const itemsHtml = regions
       .map(
         (r) => `
-        <div class="ig-img-drawer-item">
+        <div class="ig-img-drawer-row">
           ${r.original ? `<span class="ig-img-drawer-orig">${escapeHtml(r.original)}</span>` : ''}
           <div class="ig-img-drawer-trans">${escapeHtml(r.translation)}</div>
         </div>
@@ -3926,7 +3940,7 @@
 
     drawer.innerHTML =
       itemsHtml ||
-      `<div class="ig-img-drawer-item"><div class="ig-img-drawer-trans">${escapeHtml(
+      `<div class="ig-img-drawer-row"><div class="ig-img-drawer-trans">${escapeHtml(
         data.summaryTranslation || ''
       )}</div></div>`;
     host.appendChild(drawer);

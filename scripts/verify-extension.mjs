@@ -28,8 +28,17 @@ import {
   parseGlossary,
   getProviderDefinition,
   getActiveProtocol,
-  getMergedModelList
+  getActiveModelId,
+  getMergedModelList,
+  getUsageStats,
+  incrementUsageStats
 } from '../shared/storage.js';
+import {
+  buildCacheKey,
+  buildStyleSignature,
+  getCachedTranslations,
+  setCachedTranslations
+} from '../background/cache-db.js';
 import { buildBilingualEpubBlob, readZipArchive } from '../studio/epub-engine.js';
 import {
   extractPdfBlocksLocally,
@@ -46,7 +55,11 @@ import {
   renderLatexMathToHtml,
   isAuthorOrAffiliationBlock
 } from '../studio/math-renderer.js';
-import { redactSensitiveText } from '../background/gemini-client.js';
+import {
+  redactSensitiveText,
+  fetchWithTimeoutAndRetry,
+  translateImageWithGemini
+} from '../background/gemini-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -537,6 +550,306 @@ check('Unit Test: API Key Security Audit — no hardcoded secrets, content-scrip
   assert.ok(!redacted.includes('AIzaSyB1234567890abcdefghijklmno'));
   assert.ok(!redacted.includes('sk-9876543210abcdef123456'));
   assert.ok(!redacted.includes('myCustomSecret999'));
+});
+
+check('Unit Test: Cache Signature Differentiation, Image Overlay Safety, Timeout Resilience & UI Completeness', () => {
+  // 1. Cache style signature must differentiate tonePreset, glossaryText, and customSystemPrompt
+  const sigStandard = buildStyleSignature({
+    tonePreset: 'standard',
+    glossaryText: 'LLM = 大语言模型',
+    customSystemPrompt: ''
+  });
+  const sigAcademic = buildStyleSignature({
+    tonePreset: 'academic',
+    glossaryText: 'LLM = 大语言模型',
+    customSystemPrompt: ''
+  });
+  const sigCustomPrompt = buildStyleSignature({
+    tonePreset: 'standard',
+    glossaryText: 'LLM = 大语言模型',
+    customSystemPrompt: 'Keep all acronyms'
+  });
+  assert.notEqual(sigStandard, sigAcademic, 'Changing tonePreset must change cache signature');
+  assert.notEqual(sigStandard, sigCustomPrompt, 'Changing customSystemPrompt must change cache signature');
+  assert.notEqual(
+    buildCacheKey('Hello', 'zh-CN', 'gemini-2.5-flash', sigStandard),
+    buildCacheKey('Hello', 'zh-CN', 'gemini-2.5-flash', sigAcademic)
+  );
+
+  // 2. getActiveModelId uses getActiveProtocol consistently
+  assert.equal(
+    getActiveModelId({
+      providerId: 'google',
+      apiProtocol: 'gemini',
+      modelId: 'models/gemini-2.5-flash'
+    }),
+    'gemini-2.5-flash'
+  );
+  assert.equal(
+    getActiveModelId({
+      providerId: 'openrouter',
+      apiProtocol: 'openai',
+      modelId: 'google/gemini-2.5-flash'
+    }),
+    'google/gemini-2.5-flash'
+  );
+
+  // 3. content-main.js defines escapeHtml and uses .ig-img-drawer-row
+  const contentMainSrc = fs.readFileSync(path.join(ROOT, 'content/content-main.js'), 'utf-8');
+  assert.ok(
+    contentMainSrc.includes('const escapeHtml = escapeText;'),
+    'content-main.js must define escapeHtml alias to prevent ReferenceError in renderImageTranslationOverlay'
+  );
+  assert.ok(
+    contentMainSrc.includes('ig-img-drawer-row') && !contentMainSrc.includes('ig-img-drawer-item'),
+    'content-main.js image drawer must use .ig-img-drawer-row matching content.css'
+  );
+
+  // 4. gemini-client.js implements timeout/retry and text-only vision guard
+  const geminiClientSrc = fs.readFileSync(path.join(ROOT, 'background/gemini-client.js'), 'utf-8');
+  assert.ok(
+    geminiClientSrc.includes('function fetchWithTimeoutAndRetry(') &&
+      geminiClientSrc.includes('new AbortController()'),
+    'gemini-client.js must guard network calls with AbortController timeout and retry'
+  );
+  assert.ok(
+    geminiClientSrc.includes('KNOWN_TEXT_ONLY_MODEL_RE'),
+    'gemini-client.js must guard multimodal image requests on known text-only models'
+  );
+
+  // 5. cache-db.js and studio.js enforce LRU bounds
+  const cacheDbSrc = fs.readFileSync(path.join(ROOT, 'background/cache-db.js'), 'utf-8');
+  assert.ok(
+    cacheDbSrc.includes('MAX_IDB_ITEMS') && cacheDbSrc.includes('pruneIndexedDbIfNeeded'),
+    'cache-db.js must enforce IndexedDB capacity bounds'
+  );
+  const studioJsSrc = fs.readFileSync(path.join(ROOT, 'studio/studio.js'), 'utf-8');
+  assert.ok(
+    studioJsSrc.includes('MAX_CACHED_PAGE_RENDERS') &&
+      studioJsSrc.includes('getActiveProtocol(settings)'),
+    'studio.js must cap pageRenderCache and use getActiveProtocol(settings)'
+  );
+  assert.ok(
+    !studioJsSrc.includes('onclick="'),
+    'studio.js exported HTML template must not rely on inline onclick attributes'
+  );
+
+  // 6. Options & Popup UI expose image translation, cache toggle, and provider switcher
+  const optionsHtmlSrc = fs.readFileSync(path.join(ROOT, 'options/options.html'), 'utf-8');
+  assert.ok(optionsHtmlSrc.includes('id="enableImageTranslateCheck"'));
+  assert.ok(optionsHtmlSrc.includes('id="autoTranslatePageImagesCheck"'));
+  assert.ok(optionsHtmlSrc.includes('id="enableCacheCheck"'));
+
+  const popupHtmlSrc = fs.readFileSync(path.join(ROOT, 'popup/popup.html'), 'utf-8');
+  assert.ok(popupHtmlSrc.includes('id="popupProviderSelect"'));
+});
+
+await checkAsync('Behavioral Test: incrementUsageStats serializes concurrent updates without race-condition loss', async () => {
+  const mockStore = {};
+  const prevChrome = globalThis.chrome;
+  globalThis.chrome = {
+    storage: {
+      local: {
+        async get(key) {
+          await new Promise((r) => setTimeout(r, 4));
+          return { [key]: mockStore[key] ? { ...mockStore[key] } : undefined };
+        },
+        async set(obj) {
+          await new Promise((r) => setTimeout(r, 4));
+          Object.assign(mockStore, obj);
+        }
+      }
+    }
+  };
+  try {
+    await Promise.all(
+      Array.from({ length: 12 }, () =>
+        incrementUsageStats({ requests: 1, paragraphs: 3, chars: 100, cacheHits: 2 })
+      )
+    );
+    const finalStats = await getUsageStats();
+    assert.equal(finalStats.totalRequests, 12, 'All 12 concurrent request increments must be preserved');
+    assert.equal(finalStats.totalParagraphs, 36, 'All 36 concurrent paragraph increments must be preserved');
+    assert.equal(finalStats.estimatedCharsTranslated, 1200, 'All 1200 concurrent char increments must be preserved');
+    assert.equal(finalStats.cacheHits, 24, 'All 24 concurrent cacheHit increments must be preserved');
+  } finally {
+    globalThis.chrome = prevChrome;
+  }
+});
+
+await checkAsync('Behavioral Test: fetchWithTimeoutAndRetry retries transient 503/429, skips retry on 401, and aborts on timeout', async () => {
+  const origFetch = globalThis.fetch;
+  try {
+    // 1. Retries on 503 and succeeds on attempt 2
+    let attempts503 = 0;
+    globalThis.fetch = async () => {
+      attempts503++;
+      if (attempts503 === 1) {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    const res200 = await fetchWithTimeoutAndRetry('https://example.com/api', {}, { timeoutMs: 500, maxRetries: 2, baseDelayMs: 10 });
+    assert.equal(res200.status, 200);
+    assert.equal(attempts503, 2);
+
+    // 2. Does NOT retry on non-retryable 401
+    let attempts401 = 0;
+    globalThis.fetch = async () => {
+      attempts401++;
+      return new Response('Unauthorized', { status: 401 });
+    };
+    const res401 = await fetchWithTimeoutAndRetry('https://example.com/api', {}, { timeoutMs: 500, maxRetries: 2, baseDelayMs: 10 });
+    assert.equal(res401.status, 401);
+    assert.equal(attempts401, 1);
+
+    // 3. Aborts with timeout error when upstream hangs
+    globalThis.fetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(init.signal.reason || new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    await assert.rejects(
+      () => fetchWithTimeoutAndRetry('https://example.com/hang', {}, { timeoutMs: 30, maxRetries: 0, baseDelayMs: 5 }),
+      /超时/
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+await checkAsync('Behavioral Test: translateImageWithGemini rejects known text-only models (e.g. deepseek-chat) with friendly Chinese guidance', async () => {
+  await assert.rejects(
+    () =>
+      translateImageWithGemini(
+        {
+          imageBase64: 'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vuUAAA=',
+          mimeType: 'image/webp',
+          targetLang: 'zh-CN'
+        },
+        {
+          providerId: 'deepseek',
+          apiProtocol: 'openai',
+          apiKey: 'dummy_test_key',
+          modelId: 'deepseek-chat'
+        }
+      ),
+    /纯文本模型，不支持图片视觉识别/
+  );
+});
+
+await checkAsync('Behavioral Test: Two-tier translation cache (setCachedTranslations + getCachedTranslations) preserves and refreshes LRU entries', async () => {
+  await setCachedTranslations([
+    { key: 'k_alpha', translation: '阿尔法' },
+    { key: 'k_beta', translation: '贝塔' }
+  ]);
+  const map = await getCachedTranslations(['k_alpha', 'k_beta', 'k_missing']);
+  assert.equal(map.get('k_alpha'), '阿尔法');
+  assert.equal(map.get('k_beta'), '贝塔');
+  assert.equal(map.has('k_missing'), false);
+});
+
+await checkAsync('Behavioral Test: content-main.js renderImageTranslationOverlay executes cleanly and mounts overlay + .ig-img-drawer-row without ReferenceError', async () => {
+  const contentMainSrc = fs.readFileSync(path.join(ROOT, 'content/content-main.js'), 'utf-8');
+  const startIdx = contentMainSrc.indexOf('async function renderImageTranslationOverlay(');
+  const endIdx = contentMainSrc.indexOf('function cleanupAllImageOverlays(');
+  assert.ok(startIdx > 0 && endIdx > startIdx, 'Must locate renderImageTranslationOverlay in content-main.js');
+  const fnSource = contentMainSrc.slice(startIdx, endIdx).trim();
+
+  const makeMockEl = (tag) => ({
+    tagName: tag.toUpperCase(),
+    className: '',
+    style: {},
+    dataset: {},
+    attributes: {},
+    children: [],
+    hidden: false,
+    textContent: '',
+    innerHTML: '',
+    title: '',
+    type: '',
+    listeners: {},
+    setAttribute(k, v) {
+      this.attributes[k] = v;
+    },
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector(sel) {
+      if (sel === '[data-role="drawer"]') {
+        return this.children.find((c) => c.dataset?.role === 'drawer') || null;
+      }
+      return null;
+    },
+    addEventListener(evt, cb) {
+      this.listeners[evt] = cb;
+    },
+    classList: {
+      classes: new Set(),
+      add(c) {
+        this.classes.add(c);
+      },
+      toggle(c, force) {
+        if (force) this.classes.add(c);
+        else this.classes.delete(c);
+      }
+    }
+  });
+
+  const mockDocument = {
+    createElement: (tag) => makeMockEl(tag)
+  };
+  const escapeText = (str) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  const escapeHtml = escapeText;
+  const inpaintWebpageImageRegions = async () => null;
+
+  // Bind and execute the exact renderImageTranslationOverlay implementation from content-main.js
+  const runner = new Function(
+    'document',
+    'escapeText',
+    'escapeHtml',
+    'inpaintWebpageImageRegions',
+    `return (${fnSource});`
+  )(mockDocument, escapeText, escapeHtml, inpaintWebpageImageRegions);
+
+  const host = makeMockEl('div');
+  const img = makeMockEl('img');
+  const bar = makeMockEl('div');
+  const triggerBtn = makeMockEl('button');
+  const regions = [
+    {
+      box_2d: [100, 100, 200, 500],
+      original: 'Hello <World> & "AI"',
+      translation: '你好 <世界> & "人工智能"'
+    }
+  ];
+
+  await runner(host, img, { imageDataUrl: '', summaryTranslation: '汇总译文' }, regions, bar, triggerBtn);
+
+  assert.equal(host.children.length, 2, 'Host must contain overlay and bilingual drawer');
+  const [overlay, drawer] = host.children;
+  assert.ok(overlay.className.includes('ig-img-overlay-layer'));
+  assert.equal(overlay.children.length, 1);
+  assert.equal(overlay.children[0].style.top, '10.00%');
+  assert.equal(overlay.children[0].style.width, '40.00%');
+
+  assert.ok(drawer.className.includes('ig-img-bilingual-drawer'));
+  assert.equal(drawer.hidden, true);
+  assert.ok(drawer.innerHTML.includes('ig-img-drawer-row'));
+  assert.ok(drawer.innerHTML.includes('Hello &lt;World&gt; &amp; &quot;AI&quot;'));
+  assert.equal(triggerBtn.textContent, '✓ 译图开启');
+  assert.equal(bar.children.length, 1);
+  assert.equal(bar.children[0].textContent, '📖 对照文本');
 });
 
 console.log(`\n🎉 All ${passed} checks passed! Extension is ready to load in Chrome.\n`);

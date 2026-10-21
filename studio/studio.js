@@ -5,7 +5,7 @@
  */
 
 import { MESSAGE_TYPES } from '../shared/constants.js';
-import { getSettings } from '../shared/storage.js';
+import { getSettings, getActiveProtocol } from '../shared/storage.js';
 import {
   escapeHtml,
   parseSubtitles,
@@ -534,6 +534,8 @@ function showNativePdfEmbed(url) {
   pdfNativeEmbed.src = url;
 }
 
+const MAX_CACHED_PAGE_RENDERS = 8;
+
 async function getOrRenderPdfPage(pageNum) {
   if (!currentDoc.pdfDoc) return null;
   const p = Math.max(1, Math.min(currentDoc.totalPages || 1, Number(pageNum) || 1));
@@ -541,8 +543,40 @@ async function getOrRenderPdfPage(pageNum) {
     currentDoc.pageRenderCache = new Map();
   }
   if (currentDoc.pageRenderCache.has(p)) {
-    return currentDoc.pageRenderCache.get(p);
+    const cached = currentDoc.pageRenderCache.get(p);
+    // Refresh LRU order
+    currentDoc.pageRenderCache.delete(p);
+    currentDoc.pageRenderCache.set(p, cached);
+    return cached;
   }
+
+  // Evict oldest high-DPI canvas render when exceeding MAX_CACHED_PAGE_RENDERS
+  if (currentDoc.pageRenderCache.size >= MAX_CACHED_PAGE_RENDERS) {
+    for (const candidatePage of currentDoc.pageRenderCache.keys()) {
+      if (currentDoc.translatingPages && currentDoc.translatingPages.has(candidatePage)) {
+        continue;
+      }
+      const evictedPromise = currentDoc.pageRenderCache.get(candidatePage);
+      currentDoc.pageRenderCache.delete(candidatePage);
+      Promise.resolve(evictedPromise)
+        .then((rendered) => {
+          if (
+            rendered &&
+            rendered.canvas &&
+            !(currentDoc.translatingPages && currentDoc.translatingPages.has(candidatePage))
+          ) {
+            rendered.canvas.width = 0;
+            rendered.canvas.height = 0;
+            rendered.canvas = null;
+          }
+        })
+        .catch(() => {});
+      if (currentDoc.pageRenderCache.size < MAX_CACHED_PAGE_RENDERS) {
+        break;
+      }
+    }
+  }
+
   const renderPromise = renderPdfPageToCanvas(currentDoc.pdfDoc, p, 2.0)
     .then((res) => {
       if (!res) {
@@ -1486,7 +1520,7 @@ async function translateSinglePdfPage(pageNum) {
       ensureLeftPdfPageRendered(pageNum);
     }
 
-    const usesGeminiVision = (settings.apiProtocol || 'gemini') === 'gemini';
+    const usesGeminiVision = getActiveProtocol(settings) === 'gemini';
     let rawBlocks = [];
 
     if (usesGeminiVision) {
@@ -1498,6 +1532,7 @@ async function translateSinglePdfPage(pageNum) {
 
       if (pageRender && pageRender.jpegBase64) {
         payload.pageImageBase64 = pageRender.jpegBase64;
+        payload.mimeType = 'image/jpeg';
         payload.pageMimeType = 'image/jpeg';
       } else if (currentDoc.pdfArrayBuffer) {
         payload.pdfBase64 = arrayBufferToBase64(currentDoc.pdfArrayBuffer);
@@ -2315,30 +2350,43 @@ function exportTranslatedDocument(format) {
 <style>
   body { margin: 0; padding: 24px 16px 60px; background: #cbd5e1; color: #111827; font-family: "Times New Roman", "Noto Serif SC", "Songti SC", Georgia, serif; }
   .export-topbar { position: sticky; top: 0; z-index: 99; max-width: 840px; margin: 0 auto 20px; padding: 10px 18px; border-radius: 10px; background: rgba(15, 23, 42, 0.94); color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 10px 25px rgba(0,0,0,0.25); }
-  .export-topbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(129,140,248,0.45); background: #4f46e5; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; margin-left: 8px; }
+  .export-topbar .toggle-label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(129,140,248,0.45); background: #4f46e5; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+  #exportModeToggle { display: none; }
   .paper-sheet-page { max-width: 840px; margin: 0 auto 24px; background: #fff; padding: 42px 48px; border-radius: 4px; box-shadow: 0 10px 30px rgba(15,23,42,0.18); page-break-after: always; }
   .paper-sheet-header { display: flex; justify-content: space-between; padding-bottom: 10px; margin-bottom: 22px; border-bottom: 1px solid #e5e7eb; font-family: sans-serif; font-size: 11.5px; color: #6b7280; }
+  .paper-sheet-body.is-two-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; align-items: start; }
+  .paper-sheet-body.is-two-column .paper-col-full { grid-column: 1 / -1; }
+  .paper-sheet-body.is-two-column .paper-col-left { grid-column: 1; }
+  .paper-sheet-body.is-two-column .paper-col-right { grid-column: 2; }
   .paper-block { margin-bottom: 15px; break-inside: avoid; }
   .paper-block-toolbar, .paper-figure-hover-bar, .paper-page-lazy-placeholder { display: none !important; }
   .stream-orig { font-size: 13.5px; line-height: 1.65; color: #4b5563; margin-bottom: 6px; text-align: justify; }
   .stream-trans { font-size: 15px; line-height: 1.78; color: #111827; border-left: 2.5px solid #6366f1; padding-left: 10px; text-align: justify; }
-  body.mode-translation-only .stream-orig { display: none !important; }
-  body.mode-translation-only .stream-trans { border-left: none !important; padding-left: 0 !important; text-indent: 2em; }
+  body.mode-translation-only .stream-orig, #exportModeToggle:checked ~ .export-doc-root .stream-orig { display: none !important; }
+  body.mode-translation-only .stream-trans, #exportModeToggle:checked ~ .export-doc-root .stream-trans { border-left: none !important; padding-left: 0 !important; text-indent: 2em; }
   .paper-figure-box { margin: 18px 0 24px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; break-inside: avoid; page-break-inside: avoid; }
   .paper-figure-canvas { position: relative; width: 100%; overflow: hidden; margin-bottom: 10px; }
   .paper-fig-bg-img { display: block; max-width: 100%; max-height: 180mm; width: auto; height: auto; margin: 0 auto; }
+  .math-expr { font-family: "Times New Roman", "STIX Two Math", Cambria, Georgia, serif; }
+  .math-display-block { display: block; text-align: center; margin: 10px 0; padding: 8px 12px; background: #f8fafc; border-radius: 6px; overflow-x: auto; }
+  .math-frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; padding: 0 3px; font-size: 0.9em; }
+  .math-frac-num { border-bottom: 1px solid currentColor; padding: 0 2px 1px; line-height: 1.1; }
+  .math-frac-den { padding: 1px 2px 0; line-height: 1.1; }
+  .academic-sup { font-size: 0.75em; line-height: 0; vertical-align: super; color: #4f46e5; }
   @media print { body { background: #fff; padding: 0; } .export-topbar { display: none !important; } .paper-sheet-page { box-shadow: none; padding: 0; max-width: 100%; } }
 </style>
 </head>
-<body class="${mode === 'translation-only' ? 'mode-translation-only' : ''}">
+<body>
+  <input type="checkbox" id="exportModeToggle" ${mode === 'translation-only' ? 'checked' : ''} />
   <div class="export-topbar">
     <span><b>青简 · 译读</b> · ${escapeHtml(currentDoc.bookTitle || baseName)}</span>
     <div>
-      <button onclick="document.body.classList.toggle('mode-translation-only')">切换 纯译文 / 中英双语</button>
-      <button onclick="window.print()">🖨️ 打印 / 另存为 PDF</button>
+      <label for="exportModeToggle" class="toggle-label">⇄ 切换 纯译文 / 中英双语</label>
     </div>
   </div>
-  ${clonedSheetsHtml}
+  <div class="export-doc-root">
+    ${clonedSheetsHtml}
+  </div>
 </body>
 </html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });

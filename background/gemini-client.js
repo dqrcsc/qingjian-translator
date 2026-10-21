@@ -276,6 +276,47 @@ async function fetchOpenAiAvailableModels(settings, provider, apiKey) {
   return formatted;
 }
 
+const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
+const KNOWN_TEXT_ONLY_MODEL_RE =
+  /(^|\/)(deepseek-(chat|reasoner)|qwen-(plus|turbo|max)|glm-4-(air|flash))$/i;
+
+export async function fetchWithTimeoutAndRetry(
+  url,
+  init,
+  { timeoutMs = 45000, maxRetries = 2, baseDelayMs = 600 } = {}
+) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('API 请求超时 (45s)')), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (RETRYABLE_HTTP_STATUS.has(response.status) && attempt < maxRetries) {
+        const delayMs = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      clearTimeout(timer);
+      lastError =
+        err?.name === 'AbortError'
+          ? new Error('API 请求超时，请检查网络连接或稍后重试')
+          : err;
+      if (attempt < maxRetries) {
+        const delayMs = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+    }
+  }
+  throw lastError || new Error('网络请求失败');
+}
+
 async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') {
   const apiKey = (settings.apiKey || '').trim();
   const provider = getProviderDefinition(settings?.providerId);
@@ -318,6 +359,12 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     (p) => p?.inlineData && String(p.inlineData.mimeType || '').startsWith('image/')
   );
 
+  if (imageInlineParts.length > 0 && KNOWN_TEXT_ONLY_MODEL_RE.test(activeModel)) {
+    throw new Error(
+      `当前所选模型 (${activeModel}) 为纯文本模型，不支持图片视觉识别。请切换至支持多模态视觉的模型（如 Gemini、GPT-4o、Claude 或 Qwen-VL）。`
+    );
+  }
+
   const wantsJson = payload?.generationConfig?.responseMimeType === 'application/json';
   if (wantsJson) {
     systemText = `${systemText}\n\nIMPORTANT OUTPUT FORMAT RULE: Respond ONLY with valid raw JSON matching the requested structure. Do NOT wrap the output in markdown code fences (\`\`\`json) or add any conversational text.`.trim();
@@ -354,14 +401,14 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     Authorization: `Bearer ${apiKey}`
   };
 
-  let response = await fetch(chatUrl, {
+  let response = await fetchWithTimeoutAndRetry(chatUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(openAiBody)
   });
 
   if (!response.ok && fallbackChatUrl && response.status === 404) {
-    response = await fetch(fallbackChatUrl, {
+    response = await fetchWithTimeoutAndRetry(fallbackChatUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(openAiBody)
@@ -376,6 +423,15 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     } catch {
       const text = await response.text();
       if (text) errDetail = text.slice(0, 240);
+    }
+    if (
+      imageInlineParts.length > 0 &&
+      (response.status === 400 || response.status === 422) &&
+      /image_url|vision|multimodal|content.*string/i.test(errDetail)
+    ) {
+      throw new Error(
+        `当前模型 (${activeModel}) 不支持视觉识图，请切换至支持多模态视觉的模型 (${redactSensitiveText(errDetail, apiKey)})`
+      );
     }
     throw new Error(
       `${provider.shortName} API 请求失败 (${response.status}): ${redactSensitiveText(errDetail, apiKey)}`
@@ -407,7 +463,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
 
   const activeModel = (overrideModelId || getActiveModelId(settings)).replace(/^models\//i, '');
   const url = getEndpointUrl(settings, activeModel);
-  const response = await fetch(url, {
+  const response = await fetchWithTimeoutAndRetry(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -877,7 +933,8 @@ Previous spoken context: "${previousContext}"
 export async function analyzePdfWithGemini(
   {
     pageImageBase64 = '',
-    mimeType = 'image/jpeg',
+    mimeType = '',
+    pageMimeType = '',
     pageNumber = 1,
     pdfBase64 = '',
     pageHint = 'Page 1',
@@ -885,6 +942,7 @@ export async function analyzePdfWithGemini(
   },
   settings
 ) {
+  const resolvedMimeType = mimeType || pageMimeType || 'image/jpeg';
   const langCode = targetLang || settings.targetLang;
   const targetLangName = getLanguageEnglishName(langCode);
   const sysInstruction = buildSystemInstruction(settings, langCode);
@@ -943,7 +1001,7 @@ export async function analyzePdfWithGemini(
   const inlineMediaPart = isSinglePageImage
     ? {
         inlineData: {
-          mimeType: mimeType || 'image/jpeg',
+          mimeType: resolvedMimeType,
           data: pageImageBase64
         }
       }

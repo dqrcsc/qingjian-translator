@@ -81,6 +81,8 @@ export function onSettingsChanged(callback) {
   return () => chrome.storage.onChanged.removeListener(listener);
 }
 
+let statsUpdateChain = Promise.resolve();
+
 export async function getUsageStats() {
   const result = await chrome.storage.local.get(STATS_KEY);
   return result[STATS_KEY] || {
@@ -91,20 +93,23 @@ export async function getUsageStats() {
   };
 }
 
-export async function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0 }) {
-  const current = await getUsageStats();
-  const next = {
-    totalRequests: (current.totalRequests || 0) + requests,
-    totalParagraphs: (current.totalParagraphs || 0) + paragraphs,
-    cacheHits: (current.cacheHits || 0) + cacheHits,
-    estimatedCharsTranslated: (current.estimatedCharsTranslated || 0) + chars
+export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0 }) {
+  const runUpdate = async () => {
+    const current = await getUsageStats();
+    const next = {
+      totalRequests: (current.totalRequests || 0) + requests,
+      totalParagraphs: (current.totalParagraphs || 0) + paragraphs,
+      cacheHits: (current.cacheHits || 0) + cacheHits,
+      estimatedCharsTranslated: (current.estimatedCharsTranslated || 0) + chars
+    };
+    await chrome.storage.local.set({ [STATS_KEY]: next });
+    return next;
   };
-  await chrome.storage.local.set({ [STATS_KEY]: next });
-  return next;
+  statsUpdateChain = statsUpdateChain.then(runUpdate, runUpdate);
+  return statsUpdateChain;
 }
 
 export function getActiveModelId(settings) {
-  const provider = getProviderDefinition(settings?.providerId);
   const custom = settings?.customModelId ? settings.customModelId.trim() : '';
   const selected = settings?.modelId ? settings.modelId.trim() : '';
   const firstFetched =
@@ -113,7 +118,7 @@ export function getActiveModelId(settings) {
       : '';
   const raw = custom || selected || firstFetched || '';
   if (!raw) return '';
-  return provider.protocol === 'gemini' && settings?.apiProtocol !== 'openai'
+  return getActiveProtocol(settings) === 'gemini'
     ? raw.replace(/^models\//i, '')
     : raw;
 }

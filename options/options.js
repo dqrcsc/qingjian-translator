@@ -42,6 +42,8 @@ const enableFloatingBallCheck = document.getElementById('enableFloatingBallCheck
 const enableSelectionTooltipCheck = document.getElementById('enableSelectionTooltipCheck');
 const enableTripleSpaceInputCheck = document.getElementById('enableTripleSpaceInputCheck');
 const enableHoverTranslateCheck = document.getElementById('enableHoverTranslateCheck');
+const enableImageTranslateCheck = document.getElementById('enableImageTranslateCheck');
+const autoTranslatePageImagesCheck = document.getElementById('autoTranslatePageImagesCheck');
 
 const youtubeAutoEnableCheck = document.getElementById('youtubeAutoEnableCheck');
 const youtubeShowSidebarCheck = document.getElementById('youtubeShowSidebarCheck');
@@ -53,6 +55,7 @@ const glossaryTextarea = document.getElementById('glossaryTextarea');
 const customSystemPromptTextarea = document.getElementById('customSystemPromptTextarea');
 
 const autoTranslateOnlinePdfCheck = document.getElementById('autoTranslateOnlinePdfCheck');
+const enableCacheCheck = document.getElementById('enableCacheCheck');
 const alwaysTranslateDomainsTextarea = document.getElementById('alwaysTranslateDomainsTextarea');
 const neverTranslateDomainsTextarea = document.getElementById('neverTranslateDomainsTextarea');
 const batchMaxItemsInput = document.getElementById('batchMaxItemsInput');
@@ -191,6 +194,12 @@ async function fillFormFromSettings() {
   enableSelectionTooltipCheck.checked = s.enableSelectionTooltip !== false;
   enableTripleSpaceInputCheck.checked = s.enableTripleSpaceInput !== false;
   enableHoverTranslateCheck.checked = s.enableHoverTranslate !== false;
+  if (enableImageTranslateCheck) {
+    enableImageTranslateCheck.checked = s.enableImageTranslate !== false;
+  }
+  if (autoTranslatePageImagesCheck) {
+    autoTranslatePageImagesCheck.checked = s.autoTranslatePageImages !== false;
+  }
 
   youtubeAutoEnableCheck.checked = s.youtubeAutoEnable !== false;
   youtubeShowSidebarCheck.checked = Boolean(s.youtubeShowSidebar);
@@ -203,6 +212,9 @@ async function fillFormFromSettings() {
 
   if (autoTranslateOnlinePdfCheck) {
     autoTranslateOnlinePdfCheck.checked = Boolean(s.autoTranslateOnlinePdf);
+  }
+  if (enableCacheCheck) {
+    enableCacheCheck.checked = s.enableCache !== false;
   }
   alwaysTranslateDomainsTextarea.value = s.alwaysTranslateDomains || '';
   neverTranslateDomainsTextarea.value = s.neverTranslateDomains || '';
@@ -233,6 +245,10 @@ function collectFormValues() {
     enableSelectionTooltip: enableSelectionTooltipCheck.checked,
     enableTripleSpaceInput: enableTripleSpaceInputCheck.checked,
     enableHoverTranslate: enableHoverTranslateCheck.checked,
+    enableImageTranslate: enableImageTranslateCheck ? enableImageTranslateCheck.checked : true,
+    autoTranslatePageImages: autoTranslatePageImagesCheck
+      ? autoTranslatePageImagesCheck.checked
+      : true,
     youtubeAutoEnable: youtubeAutoEnableCheck.checked,
     youtubeShowSidebar: youtubeShowSidebarCheck.checked,
     youtubeSubFontSize: Number(youtubeSubFontSizeInput.value) || 22,
@@ -241,6 +257,7 @@ function collectFormValues() {
     glossaryText: glossaryTextarea.value,
     customSystemPrompt: customSystemPromptTextarea.value,
     autoTranslateOnlinePdf: Boolean(autoTranslateOnlinePdfCheck?.checked),
+    enableCache: enableCacheCheck ? enableCacheCheck.checked : true,
     alwaysTranslateDomains: alwaysTranslateDomainsTextarea.value,
     neverTranslateDomains: neverTranslateDomainsTextarea.value,
     batchMaxItems: Math.max(1, Math.min(25, Number(batchMaxItemsInput.value) || 10)),

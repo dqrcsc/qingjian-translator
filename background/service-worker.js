@@ -14,6 +14,7 @@ import {
 import { hashString, isOnlinePdfUrl, normalizeOnlinePdfUrl } from '../shared/utils.js';
 import {
   buildCacheKey,
+  buildStyleSignature,
   getCachedTranslations,
   setCachedTranslations,
   getCacheStats,
@@ -215,7 +216,7 @@ async function handleTranslateBatch(payload) {
 
   const targetLang = payload.targetLang || settings.targetLang;
   const modelId = getActiveModelId(settings);
-  const glossarySig = hashString(settings.glossaryText || '');
+  const glossarySig = buildStyleSignature(settings);
 
   const keyedItems = items.map((item, idx) => {
     const id = item.id ?? idx;
@@ -289,53 +290,65 @@ async function handleTranslateYoutubeCues(payload) {
 
   const targetLang = settings.targetLang;
   const modelId = getActiveModelId(settings);
-  const glossarySig = hashString(settings.glossaryText || '');
+  const glossarySig = buildStyleSignature(settings);
 
   const keyedCues = cues.map((c) => ({
     ...c,
     cacheKey: buildCacheKey(`YT:${c.text}`, targetLang, modelId, glossarySig)
   }));
 
-  const cachedMap =
-    settings.enableCache !== false
-      ? await getCachedTranslations(keyedCues.map((c) => c.cacheKey))
-      : new Map();
+  const finalMap = new Map();
+  let uncached = keyedCues;
 
-  const allCached = keyedCues.every((c) => cachedMap.has(c.cacheKey));
-  if (allCached) {
-    await incrementUsageStats({ cacheHits: keyedCues.length });
-    return {
-      cues: keyedCues.map((c) => ({
-        id: c.id,
-        translation: cachedMap.get(c.cacheKey)
-      }))
-    };
-  }
-
-  const translated = await withConcurrencyLimit(settings.maxConcurrency, () =>
-    translateYoutubeCuesWithGemini(
-      {
-        cues: keyedCues.map((c) => ({ id: c.id, text: c.text })),
-        contextBefore: payload.contextBefore || '',
-        contextAfter: payload.contextAfter || '',
-        videoTitle: payload.videoTitle || ''
-      },
-      settings
-    )
-  );
-
-  const toCache = [];
-  for (const item of translated) {
-    const orig = keyedCues.find((k) => Number(k.id) === Number(item.id));
-    if (orig && item.translation) {
-      toCache.push({ key: orig.cacheKey, translation: item.translation });
+  if (settings.enableCache !== false) {
+    const cachedMap = await getCachedTranslations(keyedCues.map((c) => c.cacheKey));
+    uncached = [];
+    let hits = 0;
+    for (const c of keyedCues) {
+      if (cachedMap.has(c.cacheKey)) {
+        finalMap.set(String(c.id), cachedMap.get(c.cacheKey));
+        hits++;
+      } else {
+        uncached.push(c);
+      }
+    }
+    if (hits > 0) {
+      await incrementUsageStats({ cacheHits: hits });
     }
   }
-  if (settings.enableCache !== false && toCache.length > 0) {
-    await setCachedTranslations(toCache);
+
+  if (uncached.length > 0) {
+    const translated = await withConcurrencyLimit(settings.maxConcurrency, () =>
+      translateYoutubeCuesWithGemini(
+        {
+          cues: uncached.map((c) => ({ id: c.id, text: c.text })),
+          contextBefore: payload.contextBefore || '',
+          contextAfter: payload.contextAfter || '',
+          videoTitle: payload.videoTitle || ''
+        },
+        settings
+      )
+    );
+
+    const toCache = [];
+    for (const item of translated) {
+      finalMap.set(String(item.id), item.translation);
+      const orig = uncached.find((k) => String(k.id) === String(item.id));
+      if (orig && item.translation) {
+        toCache.push({ key: orig.cacheKey, translation: item.translation });
+      }
+    }
+    if (settings.enableCache !== false && toCache.length > 0) {
+      await setCachedTranslations(toCache);
+    }
   }
 
-  return { cues: translated };
+  return {
+    cues: keyedCues.map((c) => ({
+      id: c.id,
+      translation: finalMap.get(String(c.id)) ?? c.text
+    }))
+  };
 }
 
 // Central runtime message dispatcher

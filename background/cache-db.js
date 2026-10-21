@@ -8,9 +8,12 @@ const DB_NAME = 'ImmersiveGeminiCacheDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'translations';
 const MAX_MEM_ITEMS = 2500;
+const MAX_IDB_ITEMS = 15000;
+const IDB_PRUNE_BATCH = 1000;
 
 const memCache = new Map();
 let dbPromise = null;
+let writesSinceLastPrune = 0;
 
 function openCacheDB() {
   if (dbPromise) return dbPromise;
@@ -32,6 +35,13 @@ function openCacheDB() {
   return dbPromise;
 }
 
+export function buildStyleSignature(settings = {}) {
+  const tone = String(settings.tonePreset || 'standard').trim();
+  const glossary = String(settings.glossaryText || '').trim();
+  const customPrompt = String(settings.customSystemPrompt || '').trim();
+  return hashString(`${tone}|${glossary}|${customPrompt}`);
+}
+
 export function buildCacheKey(sourceText, targetLang, modelId, glossarySignature = '') {
   const normalized = String(sourceText || '').trim();
   return hashString(`${targetLang}|${modelId}|${glossarySignature}|${normalized}`);
@@ -43,7 +53,11 @@ export async function getCachedTranslations(keys) {
 
   for (const key of keys) {
     if (memCache.has(key)) {
-      resultMap.set(key, memCache.get(key));
+      const val = memCache.get(key);
+      // Refresh LRU order in memory
+      memCache.delete(key);
+      memCache.set(key, val);
+      resultMap.set(key, val);
     } else {
       missingKeys.push(key);
     }
@@ -89,7 +103,9 @@ export async function setCachedTranslations(entries) {
   const now = Date.now();
   for (const { key, translation } of entries) {
     if (!key || typeof translation !== 'string') continue;
-    if (memCache.size >= MAX_MEM_ITEMS) {
+    if (memCache.has(key)) {
+      memCache.delete(key);
+    } else if (memCache.size >= MAX_MEM_ITEMS) {
       const oldestKey = memCache.keys().next().value;
       memCache.delete(oldestKey);
     }
@@ -108,9 +124,48 @@ export async function setCachedTranslations(entries) {
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });
+
+    writesSinceLastPrune += entries.length;
+    if (writesSinceLastPrune >= 80) {
+      writesSinceLastPrune = 0;
+      pruneIndexedDbIfNeeded(db).catch(() => {});
+    }
   } catch {
     // fallback to in-memory cache silently
   }
+}
+
+async function pruneIndexedDbIfNeeded(db) {
+  await new Promise((resolve) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const countReq = store.count();
+    countReq.onsuccess = () => {
+      const total = countReq.result || 0;
+      if (total <= MAX_IDB_ITEMS) {
+        resolve();
+        return;
+      }
+      const toDelete = Math.min(total - MAX_IDB_ITEMS + IDB_PRUNE_BATCH, total);
+      const idx = store.index('updatedAt');
+      let deleted = 0;
+      const cursorReq = idx.openCursor();
+      cursorReq.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor && deleted < toDelete) {
+          cursor.delete();
+          deleted++;
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      cursorReq.onerror = () => resolve();
+    };
+    countReq.onerror = () => resolve();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
 }
 
 export async function getCacheStats() {
