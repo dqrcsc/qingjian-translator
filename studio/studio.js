@@ -1,3 +1,4 @@
+import '../shared/request-client.js';
 /**
  * Document Studio Controller for Immersive Gemini.
  * Handles PDF (Left Native Viewer + Right Bilingual Stream via Gemini Multimodal or Local Stream),
@@ -129,9 +130,19 @@ let programmaticScrollTimer = null;
 const lazyPageQueue = [];
 let isProcessingLazyQueue = false;
 
+const documentRequests = globalThis.QingJianRequests.createScope();
+const sendModelRequest = message => documentRequests.request(message);
+window.addEventListener('pagehide', () => {
+  documentRequests.cancel();
+  void currentDoc.pdfDoc?.destroy().catch(() => {});
+});
+
 // Invalidates callbacks from a replaced document, including online downloads.
 let documentSession = 0;
 function beginDocumentSession() {
+  documentRequests.cancel();
+  void currentDoc.pdfDoc?.destroy().catch(() => {});
+  if (currentDoc.pdfBlobUrl) URL.revokeObjectURL(currentDoc.pdfBlobUrl);
   documentSession++;
   lazyPageQueue.length = 0;
   lazyPageObserver?.disconnect();
@@ -197,6 +208,7 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
   const pdfUrl = normalizeOnlinePdfUrl(rawUrl);
   if (!pdfUrl) return;
   const session = beginDocumentSession();
+  const signal = documentRequests.signal;
 
   if (onlinePdfUrlInput) {
     onlinePdfUrlInput.value = pdfUrl;
@@ -236,6 +248,7 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
 
   try {
     const response = await fetch(pdfUrl, {
+      signal,
       method: 'GET',
       credentials: 'omit',
       headers: {
@@ -303,159 +316,167 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
 async function handleFileLoaded(file, options = {}) {
   const session = options.session ?? beginDocumentSession();
   if (session !== documentSession) return;
-  const name = file.name;
-  const ext = name.split('.').pop().toLowerCase();
+  try {
+    const name = file.name;
+    const ext = name.split('.').pop().toLowerCase();
 
-  if (currentDoc.pdfBlobUrl) {
-    URL.revokeObjectURL(currentDoc.pdfBlobUrl);
-  }
-  lazyPageQueue.length = 0;
+    if (currentDoc.pdfBlobUrl) {
+      URL.revokeObjectURL(currentDoc.pdfBlobUrl);
+    }
+    lazyPageQueue.length = 0;
 
-  currentDoc = {
-    fileName: name.replace(/\.[^.]+$/, ''),
-    fileType: ext,
-    pdfBlobUrl: '',
-    pdfSourceUrl: options.sourceUrl || '',
-    pdfArrayBuffer: null,
-    pdfDoc: null,
-    pageRenderCache: new Map(),
-    totalPages: 1,
-    translatedPages: new Set(),
-    translatingPages: new Set(),
-    lazyScrollEnabled: false,
-    bookTitle: name.replace(/\.[^.]+$/, ''),
-    bookAuthor: '',
-    chapters: [],
-    blocks: []
-  };
+    currentDoc = {
+      fileName: name.replace(/\.[^.]+$/, ''),
+      fileType: ext,
+      pdfBlobUrl: '',
+      pdfSourceUrl: options.sourceUrl || '',
+      pdfArrayBuffer: null,
+      pdfDoc: null,
+      pageRenderCache: new Map(),
+      totalPages: 1,
+      translatedPages: new Set(),
+      translatingPages: new Set(),
+      lazyScrollEnabled: false,
+      bookTitle: name.replace(/\.[^.]+$/, ''),
+      bookAuthor: '',
+      chapters: [],
+      blocks: []
+    };
 
-  emptyDropzoneSection.hidden = true;
-  workspaceSplitMain.hidden = false;
-  epubChapterSelectWrap.hidden = true;
-  if (pdfCanvasScrollViewer) pdfCanvasScrollViewer.hidden = true;
-  pdfNativeEmbed.hidden = true;
-  sourceOutlineViewer.hidden = false;
-  if (pdfPageJumpWrap) pdfPageJumpWrap.hidden = true;
-  startTranslateDocBtn.disabled = false;
-  startTranslateDocBtn.textContent = '✦ 开始翻译';
-  exportMenuBtn.disabled = false;
+    emptyDropzoneSection.hidden = true;
+    workspaceSplitMain.hidden = false;
+    epubChapterSelectWrap.hidden = true;
+    if (pdfCanvasScrollViewer) pdfCanvasScrollViewer.hidden = true;
+    pdfNativeEmbed.hidden = true;
+    sourceOutlineViewer.hidden = false;
+    if (pdfPageJumpWrap) pdfPageJumpWrap.hidden = true;
+    startTranslateDocBtn.disabled = false;
+    startTranslateDocBtn.textContent = '✦ 开始翻译';
+    exportMenuBtn.disabled = false;
 
-  docStatusSubtitle.textContent = options.sourceUrl
-    ? `已加载在线 PDF：${name}`
-    : `已加载文档：${name}`;
+    docStatusSubtitle.textContent = options.sourceUrl
+      ? `已加载在线 PDF：${name}`
+      : `已加载文档：${name}`;
 
-  if (ext === 'pdf') {
-    currentDoc.fileType = 'pdf';
-    const ab = await file.arrayBuffer();
-    if (session !== documentSession) return;
-    currentDoc.pdfArrayBuffer = ab;
-    const opened = await openPdfDocument(ab);
-    if (session !== documentSession) return;
-    currentDoc.pdfDoc = opened.pdfDoc;
-    currentDoc.totalPages = Math.max(1, opened.numPages || estimatePdfPageCount(ab));
-    currentDoc.pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: 'application/pdf' }));
-
-    document.title = `${name} - 双语 PDF 对照翻译 | 青简 · 译读`;
-    leftPaneTitle.textContent = `📕 ${name} (共 ${currentDoc.totalPages} 页)`;
-    sourceOutlineViewer.hidden = true;
-
-    if (currentDoc.pdfDoc && pdfCanvasScrollViewer) {
-      pdfNativeEmbed.hidden = true;
-      pdfCanvasScrollViewer.hidden = false;
-      const ok = await initLeftPdfScrollViewer();
+    if (ext === 'pdf') {
+      currentDoc.fileType = 'pdf';
+      const ab = await file.arrayBuffer();
       if (session !== documentSession) return;
-      if (!ok) {
+      currentDoc.pdfArrayBuffer = ab;
+      const opened = await openPdfDocument(ab, { signal: documentRequests.signal });
+      if (session !== documentSession) return;
+      currentDoc.pdfDoc = opened.pdfDoc;
+      currentDoc.totalPages = Math.max(1, opened.numPages || estimatePdfPageCount(ab));
+      currentDoc.pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: 'application/pdf' }));
+
+      document.title = `${name} - 双语 PDF 对照翻译 | 青简 · 译读`;
+      leftPaneTitle.textContent = `📕 ${name} (共 ${currentDoc.totalPages} 页)`;
+      sourceOutlineViewer.hidden = true;
+
+      if (currentDoc.pdfDoc && pdfCanvasScrollViewer) {
+        pdfNativeEmbed.hidden = true;
+        pdfCanvasScrollViewer.hidden = false;
+        const ok = await initLeftPdfScrollViewer();
+        if (session !== documentSession) return;
+        if (!ok) {
+          showNativePdfEmbed(currentDoc.pdfBlobUrl);
+        }
+      } else {
         showNativePdfEmbed(currentDoc.pdfBlobUrl);
       }
-    } else {
-      showNativePdfEmbed(currentDoc.pdfBlobUrl);
-    }
 
-    if (pdfPageJumpWrap) {
-      pdfPageJumpWrap.hidden = false;
-      if (jumpPageInput) {
-        jumpPageInput.max = String(currentDoc.totalPages);
-        jumpPageInput.value = '1';
+      if (pdfPageJumpWrap) {
+        pdfPageJumpWrap.hidden = false;
+        if (jumpPageInput) {
+          jumpPageInput.max = String(currentDoc.totalPages);
+          jumpPageInput.value = '1';
+        }
+        if (totalPagesBadge) {
+          totalPagesBadge.textContent = `/ ${currentDoc.totalPages}`;
+        }
       }
-      if (totalPagesBadge) {
-        totalPagesBadge.textContent = `/ ${currentDoc.totalPages}`;
-      }
-    }
-    progressCounterBadge.textContent = `0 / ${currentDoc.totalPages} 页`;
+      progressCounterBadge.textContent = `0 / ${currentDoc.totalPages} 页`;
 
-    if (pdfModeSelect && pdfModeSelect.value === 'local-stream') {
-      const localBlocks = await extractPdfBlocksLocally(ab);
+      if (pdfModeSelect && pdfModeSelect.value === 'local-stream') {
+        const localBlocks = await extractPdfBlocksLocally(ab);
+        if (session !== documentSession) return;
+        if (localBlocks.length > 0) {
+          currentDoc.blocks = localBlocks;
+          renderWorkspaceBlocks();
+        }
+      } else {
+        bilingualStreamContainer.innerHTML = `
+          <div class="stream-block-card">
+            <div class="stream-orig">已就绪（共 <b>${currentDoc.totalPages}</b> 页）：点击顶部 <b>✦ 开始翻译</b>，将默认首译前 ${Math.min(
+              INITIAL_EAGER_PDF_PAGES,
+              currentDoc.totalPages
+            )} 页，并在您向下滚动阅读时自动按需翻译后续页面（大幅节省 Token）。</div>
+          </div>
+        `;
+      }
+
+      if (options.autoStartTranslate) {
+        startDocumentTranslation();
+      }
+    } else if (ext === 'epub') {
+      currentDoc.fileType = 'epub';
+      const ab = await file.arrayBuffer();
       if (session !== documentSession) return;
-      if (localBlocks.length > 0) {
-        currentDoc.blocks = localBlocks;
-        renderWorkspaceBlocks();
+      const parsed = await parseEpubFile(ab);
+      if (session !== documentSession) return;
+      currentDoc.bookTitle = parsed.bookTitle;
+      currentDoc.bookAuthor = parsed.bookAuthor;
+      currentDoc.chapters = parsed.chapters;
+      currentDoc.blocks = parsed.blocks;
+
+      leftPaneTitle.textContent = `📗 EPUB: ${parsed.bookTitle}`;
+      if (parsed.chapters.length > 0) {
+        epubChapterSelectWrap.hidden = false;
+        epubChapterSelect.innerHTML =
+          `<option value="all">全部章节 (${parsed.blocks.length} 段)</option>` +
+          parsed.chapters
+            .map((c) => `<option value="${c.index}">${escapeHtml(c.title)} (${c.blocks.length}段)</option>`)
+            .join('');
       }
+      renderWorkspaceBlocks();
+    } else if (ext === 'srt' || ext === 'vtt') {
+      currentDoc.fileType = 'srt';
+      const text = await file.text();
+      if (session !== documentSession) return;
+      const cues = parseSubtitles(text);
+      currentDoc.blocks = cues.map((c, idx) => ({
+        id: idx,
+        page: 1,
+        type: 'subtitle',
+        start: c.start,
+        end: c.end,
+        original: c.text,
+        translation: ''
+      }));
+      leftPaneTitle.textContent = `🎬 字幕文件 (${name})`;
+      renderWorkspaceBlocks();
+    } else if (ext === 'html' || ext === 'htm') {
+      currentDoc.fileType = 'html';
+      const text = await file.text();
+      if (session !== documentSession) return;
+      currentDoc.blocks = parseHtmlDocumentToBlocks(text);
+      leftPaneTitle.textContent = `📙 HTML 文档 (${name})`;
+      renderWorkspaceBlocks();
     } else {
-      bilingualStreamContainer.innerHTML = `
-        <div class="stream-block-card">
-          <div class="stream-orig">已就绪（共 <b>${currentDoc.totalPages}</b> 页）：点击顶部 <b>✦ 开始翻译</b>，将默认首译前 ${Math.min(
-            INITIAL_EAGER_PDF_PAGES,
-            currentDoc.totalPages
-          )} 页，并在您向下滚动阅读时自动按需翻译后续页面（大幅节省 Token）。</div>
-        </div>
-      `;
+      currentDoc.fileType = 'md';
+      const text = await file.text();
+      if (session !== documentSession) return;
+      currentDoc.blocks = parseMarkdownToBlocks(text);
+      leftPaneTitle.textContent = `📘 Markdown / 文本 (${name})`;
+      renderWorkspaceBlocks();
     }
-
-    if (options.autoStartTranslate) {
-      startDocumentTranslation();
-    }
-  } else if (ext === 'epub') {
-    currentDoc.fileType = 'epub';
-    const ab = await file.arrayBuffer();
+  } catch (err) {
     if (session !== documentSession) return;
-    const parsed = await parseEpubFile(ab);
-    if (session !== documentSession) return;
-    currentDoc.bookTitle = parsed.bookTitle;
-    currentDoc.bookAuthor = parsed.bookAuthor;
-    currentDoc.chapters = parsed.chapters;
-    currentDoc.blocks = parsed.blocks;
-
-    leftPaneTitle.textContent = `📗 EPUB: ${parsed.bookTitle}`;
-    if (parsed.chapters.length > 0) {
-      epubChapterSelectWrap.hidden = false;
-      epubChapterSelect.innerHTML =
-        `<option value="all">全部章节 (${parsed.blocks.length} 段)</option>` +
-        parsed.chapters
-          .map((c) => `<option value="${c.index}">${escapeHtml(c.title)} (${c.blocks.length}段)</option>`)
-          .join('');
-    }
-    renderWorkspaceBlocks();
-  } else if (ext === 'srt' || ext === 'vtt') {
-    currentDoc.fileType = 'srt';
-    const text = await file.text();
-    if (session !== documentSession) return;
-    const cues = parseSubtitles(text);
-    currentDoc.blocks = cues.map((c, idx) => ({
-      id: idx,
-      page: 1,
-      type: 'subtitle',
-      start: c.start,
-      end: c.end,
-      original: c.text,
-      translation: ''
-    }));
-    leftPaneTitle.textContent = `🎬 字幕文件 (${name})`;
-    renderWorkspaceBlocks();
-  } else if (ext === 'html' || ext === 'htm') {
-    currentDoc.fileType = 'html';
-    const text = await file.text();
-    if (session !== documentSession) return;
-    currentDoc.blocks = parseHtmlDocumentToBlocks(text);
-    leftPaneTitle.textContent = `📙 HTML 文档 (${name})`;
-    renderWorkspaceBlocks();
-  } else {
-    currentDoc.fileType = 'md';
-    const text = await file.text();
-    if (session !== documentSession) return;
-    currentDoc.blocks = parseMarkdownToBlocks(text);
-    leftPaneTitle.textContent = `📘 Markdown / 文本 (${name})`;
-    renderWorkspaceBlocks();
+    progressBarWrap.hidden = true;
+    docStatusSubtitle.textContent = `⚠️ 文档加载失败: ${err?.message || err}`;
+    startTranslateDocBtn.disabled = true;
   }
+
 }
 
 function parseMarkdownToBlocks(mdText) {
@@ -611,15 +632,15 @@ async function getOrRenderPdfPage(pageNum) {
     }
   }
 
-  const renderPromise = renderPdfPageToCanvas(doc.pdfDoc, p, 2.0)
+  const renderPromise = renderPdfPageToCanvas(doc.pdfDoc, p, 2.0, { signal: documentRequests.signal })
     .then((res) => {
-      if (!res) {
+      if (!res && doc.pageRenderCache?.get(p) === renderPromise) {
         doc.pageRenderCache?.delete(p);
       }
       return res;
     })
     .catch(() => {
-      doc.pageRenderCache?.delete(p);
+      if (doc.pageRenderCache?.get(p) === renderPromise) doc.pageRenderCache.delete(p);
       return null;
     });
   doc.pageRenderCache.set(p, renderPromise);
@@ -1245,13 +1266,15 @@ function renderWorkspaceBlocks(filterKeyword = '') {
   // Bind single block re-translate
   bilingualStreamContainer.querySelectorAll('.retranslate-mini-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      const session = documentSession;
       const id = Number(btn.dataset.retrans);
       const block = currentDoc.blocks.find((x) => x.id === id);
       if (!block) return;
       const transEl = document.getElementById(`stream-trans-${id}`);
       if (transEl) transEl.textContent = 'AI 正在重译…';
       const settings = await getSettings();
-      const res = await chrome.runtime.sendMessage({
+      if (session !== documentSession) return;
+      const res = await sendModelRequest({
         type: MESSAGE_TYPES.TRANSLATE_BATCH,
         payload: {
           items: [{ id: block.id, text: block.original }],
@@ -1259,6 +1282,7 @@ function renderWorkspaceBlocks(filterKeyword = '') {
           pageTitle: currentDoc.bookTitle
         }
       });
+      if (session !== documentSession) return;
       if (res && res.ok && res.data?.translations?.[0]) {
         block.translation = res.data.translations[0].translation;
         if (transEl) {
@@ -1319,7 +1343,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
   try {
     const settings = await getSettings();
     if (session !== documentSession) return;
-    const res = await chrome.runtime.sendMessage({
+    const res = await sendModelRequest({
       type: MESSAGE_TYPES.TRANSLATE_IMAGE,
       payload: {
         imageBase64: base64,
@@ -1437,6 +1461,7 @@ window.addEventListener('paste', (e) => {
 // ============================================================================
 
 function setupLazyPageObserver() {
+  const session = documentSession;
   if (lazyPageObserver) {
     lazyPageObserver.disconnect();
     lazyPageObserver = null;
@@ -1453,7 +1478,7 @@ function setupLazyPageObserver() {
 
   lazyPageObserver = new IntersectionObserver(
     (entries) => {
-      if (isProgrammaticRightScroll) return;
+      if (session !== documentSession || stopRequested || !currentDoc.lazyScrollEnabled || isProgrammaticRightScroll) return;
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         const pageNum = Number(entry.target.getAttribute('data-lazy-page'));
@@ -1479,6 +1504,8 @@ function setupLazyPageObserver() {
 }
 
 function queueLazyPageTranslation(pageNum, prioritize = false) {
+  if (stopRequested && !prioritize) return;
+  if (prioritize) stopRequested = false;
   if (
     pageNum < 1 ||
     pageNum > (currentDoc.totalPages || 1) ||
@@ -1589,7 +1616,7 @@ async function translateSinglePdfPage(pageNum) {
         payload.pdfBase64 = arrayBufferToBase64(currentDoc.pdfArrayBuffer);
       }
 
-      const res = await chrome.runtime.sendMessage({
+      const res = await sendModelRequest({
         type: MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL,
         payload
       });
@@ -1632,7 +1659,7 @@ async function translateSinglePdfPage(pageNum) {
 
       for (const batch of pageBatches) {
         if (!isCurrent()) return;
-        const batchRes = await chrome.runtime.sendMessage({
+        const batchRes = await sendModelRequest({
           type: MESSAGE_TYPES.TRANSLATE_BATCH,
           payload: {
             items: batch.map((entry) => ({ id: entry.idx, text: entry.b.original })),
@@ -1687,7 +1714,7 @@ async function translateSinglePdfPage(pageNum) {
 
           const minVectorGroups = usesGeminiVision ? 2 : 1;
           if (vectorGroups.length >= minVectorGroups) {
-            const batchRes = await chrome.runtime.sendMessage({
+            const batchRes = await sendModelRequest({
               type: MESSAGE_TYPES.TRANSLATE_BATCH,
               payload: {
                 items: vectorGroups.map((g, gIdx) => ({ id: gIdx, text: g.original })),
@@ -1778,6 +1805,7 @@ async function translateSinglePdfPage(pageNum) {
 
 startTranslateDocBtn.addEventListener('click', () => {
   if (isTranslating || isProcessingLazyQueue) {
+    documentRequests.cancel();
     documentSession++;
     currentDoc.translatingPages.clear();
     isTranslating = false;
@@ -1785,6 +1813,7 @@ startTranslateDocBtn.addEventListener('click', () => {
     stopRequested = true;
     lazyPageQueue.length = 0;
     currentDoc.lazyScrollEnabled = false;
+    lazyPageObserver?.disconnect();
     startTranslateDocBtn.textContent = '✦ 继续翻译';
     docStatusSubtitle.textContent = '⏸ 已暂停自动流式翻译（保留已出译文）';
     return;
@@ -1930,7 +1959,7 @@ async function startDocumentTranslation(targetPageRange = null) {
     let completed = 0;
     for (const batch of batches) {
       if (!isCurrent()) return;
-      const res = await chrome.runtime.sendMessage({
+      const res = await sendModelRequest({
         type: MESSAGE_TYPES.TRANSLATE_BATCH,
         payload: {
           items: batch.map((b) => ({ id: b.id, text: b.original })),
@@ -2210,6 +2239,7 @@ function closePdfExportModal() {
   if (isExportBatchRunning) {
     abortExportBatchMode = 'cancel';
     stopRequested = true;
+    documentRequests.cancel();
   }
   if (pdfExportConfirmModal) {
     pdfExportConfirmModal.hidden = true;
@@ -2237,6 +2267,7 @@ abortAndExportDoneBtn?.addEventListener('click', () => {
   if (isExportBatchRunning) {
     abortExportBatchMode = 'export-done';
     stopRequested = true;
+    documentRequests.cancel();
   }
 });
 

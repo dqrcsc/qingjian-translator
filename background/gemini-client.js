@@ -134,7 +134,7 @@ export async function fetchAvailableModels(settings) {
   for (let page = 0; page < 5; page++) {
     const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
     const url = `${baseUrl}/models?pageSize=100${tokenParam}&key=${encodeURIComponent(apiKey)}`;
-    const response = await fetchWithTimeoutAndRetry(url, { method: 'GET' });
+    const response = await fetchWithTimeoutAndRetry(url, { method: 'GET', signal: settings.requestSignal });
 
     if (!response.ok) {
       let errDetail = `HTTP ${response.status}`;
@@ -150,6 +150,7 @@ export async function fetchAvailableModels(settings) {
     }
 
     const data = await response.json();
+    settings.requestSignal?.throwIfAborted();
     if (Array.isArray(data?.models)) {
       allRawModels.push(...data.models);
     }
@@ -210,9 +211,9 @@ async function fetchOpenAiAvailableModels(settings, provider, apiKey) {
     Accept: 'application/json'
   };
 
-  let response = await fetchWithTimeoutAndRetry(modelsUrl, { method: 'GET', headers });
+  let response = await fetchWithTimeoutAndRetry(modelsUrl, { method: 'GET', headers, signal: settings.requestSignal });
   if (!response.ok && fallbackModelsUrl && response.status === 404) {
-    response = await fetchWithTimeoutAndRetry(fallbackModelsUrl, { method: 'GET', headers });
+    response = await fetchWithTimeoutAndRetry(fallbackModelsUrl, { method: 'GET', headers, signal: settings.requestSignal });
   }
 
   if (!response.ok) {
@@ -229,6 +230,7 @@ async function fetchOpenAiAvailableModels(settings, provider, apiKey) {
   }
 
   const data = await response.json();
+  settings.requestSignal?.throwIfAborted();
   const rawList = Array.isArray(data?.data)
     ? data.data
     : Array.isArray(data?.models)
@@ -370,6 +372,7 @@ function translationMap(parsedList, inputs) {
 }
 
 async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') {
+  settings.requestSignal?.throwIfAborted();
   const apiKey = (settings.apiKey || '').trim();
   const provider = getProviderDefinition(settings?.providerId);
   if (!apiKey) {
@@ -455,6 +458,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
 
   let response = await fetchWithTimeoutAndRetry(chatUrl, {
     method: 'POST',
+    signal: settings.requestSignal,
     headers,
     body: JSON.stringify(openAiBody)
   });
@@ -462,6 +466,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
   if (!response.ok && fallbackChatUrl && response.status === 404) {
     response = await fetchWithTimeoutAndRetry(fallbackChatUrl, {
       method: 'POST',
+      signal: settings.requestSignal,
       headers,
       body: JSON.stringify(openAiBody)
     });
@@ -484,6 +489,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
   }
 
   const data = await response.json();
+  settings.requestSignal?.throwIfAborted();
   const choice = data?.choices?.[0];
   let rawContent = choice?.message?.content;
   if (Array.isArray(rawContent)) {
@@ -502,6 +508,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
 }
 
 async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = false) {
+  settings.requestSignal?.throwIfAborted();
   if (getActiveProtocol(settings) === 'openai') {
     return callOpenAiCompatibleApi(settings, payload, overrideModelId);
   }
@@ -510,6 +517,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
   const url = getEndpointUrl(settings, activeModel);
   const response = await fetchWithTimeoutAndRetry(url, {
     method: 'POST',
+    signal: settings.requestSignal,
     headers: {
       'Content-Type': 'application/json'
     },
@@ -529,6 +537,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
       const fallbackModel = suggestedMatch ? suggestedMatch[1] : firstAvailable;
       if (fallbackModel && fallbackModel !== activeModel) {
         console.info(`[QingJian] Auto-switching deprecated model ${activeModel} -> ${fallbackModel}`);
+        settings.requestSignal?.throwIfAborted();
         await saveSettings({ modelId: fallbackModel, customModelId: '' });
         return callGeminiApi(
           { ...settings, modelId: fallbackModel, customModelId: '' },
@@ -545,6 +554,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
   }
 
   const data = await response.json();
+  settings.requestSignal?.throwIfAborted();
   const candidate = data?.candidates?.[0];
   const parts = candidate?.content?.parts || [];
 
@@ -711,6 +721,7 @@ ${JSON.stringify(inputPayload)}`;
   }
 
   const totalChars = items.reduce((acc, it) => acc + (it.text?.length || 0), 0);
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
     paragraphs: items.length,
@@ -773,6 +784,7 @@ Return a JSON object with:
   };
 
   const raw = await callGeminiApi(settings, payload);
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length });
   return safeParseJson(raw);
 }
@@ -799,6 +811,7 @@ export async function translateInputTextWithGemini({ text, targetLang }, setting
   };
 
   const raw = await callGeminiApi(settings, payload);
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length });
   return raw.trim().replace(/^["']|["']$/g, '');
 }
@@ -867,6 +880,7 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
     for (const item of retried) mapById.set(item.id, item.translation);
   }
 
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
     paragraphs: cues.length,
@@ -917,6 +931,7 @@ Previous spoken context: "${previousContext}"
   };
 
   const raw = await callGeminiApi(settings, payload);
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: 120 });
   return safeParseJson(raw);
 }
@@ -1032,6 +1047,7 @@ export async function analyzePdfWithGemini(
   }
 
   const blocks = safeParseJson(raw);
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
     paragraphs: Array.isArray(blocks) ? blocks.length : 1,
@@ -1069,7 +1085,7 @@ export async function translateImageWithGemini(
         finalBase64 = m[2];
       }
     } else {
-      const resp = await fetch(imageUrl, { credentials: 'omit' });
+      const resp = await fetchWithTimeoutAndRetry(imageUrl, { credentials: 'omit', signal: settings.requestSignal });
       if (!resp.ok) {
         throw new Error(`无法拉取图片数据 (HTTP ${resp.status})`);
       }
@@ -1161,6 +1177,7 @@ Rules:
 
   const parsed = safeParseJson(raw);
   const regions = Array.isArray(parsed?.regions) ? parsed.regions : [];
+  settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
     paragraphs: Math.max(1, regions.length),

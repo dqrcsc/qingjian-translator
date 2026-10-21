@@ -128,6 +128,8 @@ const jsFiles = [
   'shared/constants.js',
   'shared/storage.js',
   'shared/utils.js',
+  'shared/request-client.js',
+  'background/request-queue.js',
   'background/cache-db.js',
   'background/gemini-client.js',
   'background/service-worker.js',
@@ -135,8 +137,8 @@ const jsFiles = [
   'content/content-main.js',
   'popup/popup.js',
   'options/options.js',
-  'studio/vendor/pdf_worker.js',
-  'studio/vendor/pdf.js',
+  'studio/vendor/pdfjs/pdf.worker.mjs',
+  'studio/vendor/pdfjs/pdf.mjs',
   'studio/epub-engine.js',
   'studio/pdf-engine.js',
   'studio/math-renderer.js',
@@ -164,16 +166,16 @@ for (const rel of htmlFiles) {
   });
 }
 
-check('Bundled PDF.js vendor files are strictly MV3 CSP safe (no eval or new Function)', () => {
-  for (const rel of ['studio/vendor/pdf_worker.js', 'studio/vendor/pdf.js']) {
-    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.equal((src.match(/\beval\s*\(/g) || []).length, 0, `${rel} must not contain eval(`);
-    assert.equal(
-      (src.match(/new\s+Function\s*\(/g) || []).length,
-      0,
-      `${rel} must not contain new Function(`
-    );
-  }
+check('PDF.js uses module workers, local assets and evaluation-disabled loading', () => {
+  const engine = fs.readFileSync(path.join(ROOT, 'studio/pdf-engine.js'), 'utf8');
+  assert.ok(engine.includes('isEvalSupported: false'));
+  assert.ok(engine.includes('loadingTask.promise'));
+  assert.ok(engine.includes('renderTask.promise'));
+  assert.ok(engine.includes('pdf.worker.mjs'));
+  assert.ok(!engine.includes('disableWorker = true'));
+  assert.ok(!manifest.content_security_policy.extension_pages.includes("'unsafe-eval'"));
+  assert.ok(manifest.content_security_policy.extension_pages.includes("worker-src 'self'"));
+  // Upstream has guarded evaluation code; actual CSP compatibility is tested in Chromium.
 });
 
 // 4. Functional Unit Tests
@@ -419,7 +421,8 @@ check('Unit Test: Webpage Image OCR, X.com Multi-Paragraph Post Splitting & Seam
   assert.ok(contentMainSrc.includes('insertNodeAfterSegmentAnchor'));
 
   const studioHtmlSrc = fs.readFileSync(path.join(ROOT, 'studio/studio.html'), 'utf-8');
-  assert.ok(studioHtmlSrc.includes('vendor/pdf.js'));
+  assert.ok(!studioHtmlSrc.includes('vendor/pdf.js'));
+  assert.ok(studioHtmlSrc.includes('type="module" src="studio.js"'));
   assert.ok(studioHtmlSrc.includes('id="layoutStyleSelect"'));
   assert.ok(studioHtmlSrc.includes('id="pdfCanvasScrollViewer"'));
 
@@ -446,11 +449,11 @@ check('Unit Test: Webpage Image OCR, X.com Multi-Paragraph Post Splitting & Seam
     'renderPdfPageToCanvas must return jpegDataUrl so ensureLeftPdfPageRendered displays the left PDF page immediately'
   );
   assert.ok(
-    pdfEngineSrc.includes('disableFontFace: true') &&
-      pdfEngineSrc.includes('get_binary_bcmap') &&
+    pdfEngineSrc.includes("standardFontDataUrl: asset('standard_fonts')") &&
+      pdfEngineSrc.includes("cMapUrl: asset('cmaps')") &&
       pdfEngineSrc.includes("intent: 'print'") &&
       pdfEngineSrc.includes('willReadFrequently: true'),
-    'pdf-engine.js must configure disableFontFace, get_binary_bcmap, intent: print, and willReadFrequently: true'
+    'pdf-engine.js must configure local fonts/CMaps, print rendering and readable Canvas contexts'
   );
 });
 
@@ -474,14 +477,10 @@ check('Unit Test: Extension runtime files do not leak console.warn/console.error
       `${rel} must not call console.warn or console.error (prevents chrome://extensions Errors badge)`
     );
   }
-  const vendorPdfSrc = fs.readFileSync(path.join(ROOT, 'studio/vendor/pdf.js'), 'utf-8');
+  const vendorPdfSrc = fs.readFileSync(path.join(ROOT, 'studio/vendor/pdfjs/pdf.mjs'), 'utf-8');
   assert.ok(
     !vendorPdfSrc.includes('moz-chunked-arraybuffer'),
     'studio/vendor/pdf.js must not assign deprecated moz-chunked-arraybuffer to XMLHttpRequest.responseType'
-  );
-  assert.ok(
-    !/getContext\("2d"\)/.test(vendorPdfSrc),
-    'studio/vendor/pdf.js 2D canvas contexts must specify willReadFrequently: true'
   );
   const contentMainSrc = fs.readFileSync(path.join(ROOT, 'content/content-main.js'), 'utf-8');
   assert.ok(
@@ -852,4 +851,6 @@ await checkAsync('Behavioral Test: content-main.js renderImageTranslationOverlay
   assert.equal(bar.children[0].textContent, '📖 对照文本');
 });
 
-console.log(`\n🎉 All ${passed} checks passed! Extension is ready to load in Chrome.\n`);
+console.log(process.exitCode
+  ? `\nVerification failed (${passed} checks passed). See failures above.\n`
+  : `\nAll ${passed} checks passed. Browser acceptance is a separate check.\n`);

@@ -13,6 +13,24 @@
   window.__IMMERSIVE_GEMINI_CONTENT_LOADED__ = true;
 
   const STORAGE_KEY = 'immersive_gemini_settings_v1';
+  const pageRequests = globalThis.QingJianRequests.createScope();
+  const subtitleRequests = globalThis.QingJianRequests.createScope();
+  const audioRequests = globalThis.QingJianRequests.createScope();
+  const selectionRequests = globalThis.QingJianRequests.createScope();
+  const inputRequests = globalThis.QingJianRequests.createScope();
+  const requestScopes = [pageRequests, subtitleRequests, audioRequests, selectionRequests, inputRequests];
+  window.addEventListener('pagehide', () => {
+    requestScopes.forEach(scope => scope.cancel());
+    if (ytAudioListenActive) stopYoutubeAudioListen();
+  });
+  function sendModelRequest(message) {
+    const scope = message.type === 'TRANSLATE_YOUTUBE_CUES' ? subtitleRequests
+      : message.type === 'TRANSLATE_YOUTUBE_AUDIO' ? audioRequests
+      : message.type === 'TRANSLATE_SELECTION' ? selectionRequests
+      : message.type === 'TRANSLATE_INPUT_TEXT' ? inputRequests : pageRequests;
+    return scope.request(message);
+  }
+
 
   const DEFAULT_SETTINGS = {
     modelId: '',
@@ -94,7 +112,8 @@
       return Promise.resolve(null);
     }
     try {
-      const p = chrome.runtime.sendMessage(message);
+      const p = message.type === 'TRANSLATE_YOUTUBE_CUES'
+        ? sendModelRequest(message) : chrome.runtime.sendMessage(message);
       if (p && typeof p.catch === 'function') {
         return p.catch(() => null);
       }
@@ -1397,8 +1416,9 @@
       flushQueueTimer = setTimeout(flushTranslationQueue, 50);
     }
 
+    const signal = pageRequests.signal;
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendModelRequest({
         type: 'TRANSLATE_BATCH',
         payload: {
           items: batch,
@@ -1407,14 +1427,15 @@
         }
       });
 
+      if (signal.aborted || response?.cancelled) return;
       if (!response || !response.ok) {
         throw new Error(response?.error || '翻译请求失败');
       }
 
       const results = response.data?.translations || [];
-      await renderBatchResultsWithRAF(results);
+      await renderBatchResultsWithRAF(results, signal);
     } catch (err) {
-      await renderBatchErrorWithRAF(batch, err?.message || '翻译出错');
+      if (!signal.aborted) await renderBatchErrorWithRAF(batch, err?.message || '翻译出错', signal);
     }
   }
 
@@ -1431,12 +1452,13 @@
    * and wraps original text nodes in <font class="notranslate ig-orig-text"> so translation-only
    * mode can hide original text cleanly via CSS.
    */
-  async function renderBatchResultsWithRAF(results) {
+  async function renderBatchResultsWithRAF(results, signal) {
     const CHUNK = 18;
     for (let i = 0; i < results.length; i += CHUNK) {
       const slice = results.slice(i, i + CHUNK);
       await new Promise((resolve) =>
         requestAnimationFrame(() => {
+          if (signal?.aborted) { resolve(); return; }
           for (const item of slice) {
             const segId = Number(item.id);
             const record = blockMap.get(segId);
@@ -1484,9 +1506,10 @@
     }
   }
 
-  async function renderBatchErrorWithRAF(batch, errorMessage) {
+  async function renderBatchErrorWithRAF(batch, errorMessage, signal) {
     await new Promise((resolve) =>
       requestAnimationFrame(() => {
+        if (signal?.aborted) { resolve(); return; }
         for (const item of batch) {
           const segId = Number(item.id);
           const record = blockMap.get(segId);
@@ -1571,6 +1594,7 @@
   }
 
   function disablePageTranslation() {
+    pageRequests.cancel();
     isPageTranslated = false;
     pendingParagraphQueue = [];
     window.removeEventListener('scroll', handleScrollRescan);
@@ -1716,11 +1740,12 @@
         if (trimmed.length < 2) return;
 
         e.preventDefault();
+        inputRequests.cancel();
         active.classList.add('ig-input-translating');
         showPageToast('⚡ 正在将输入内容实时翻译为目标外语…', 'info');
 
         try {
-          const res = await chrome.runtime.sendMessage({
+          const res = await sendModelRequest({
             type: 'TRANSLATE_INPUT_TEXT',
             payload: {
               text: trimmed,
@@ -1728,6 +1753,7 @@
             }
           });
 
+          if (res?.cancelled) return;
           if (!res || !res.ok) {
             throw new Error(res?.error || '输入框翻译失败');
           }
@@ -2606,11 +2632,13 @@
     if (!shadowRoot) return;
     const path = e.composedPath();
     if (selectionCardEl && !path.includes(selectionCardEl) && !path.includes(selectionTriggerEl)) {
+      selectionRequests.cancel();
       selectionCardEl.style.display = 'none';
     }
   });
 
   async function openSelectionExplanationCard({ text, contextParagraph, x, y }) {
+    selectionRequests.cancel();
     initShadowUI();
     selectionTriggerEl.style.display = 'none';
 
@@ -2627,11 +2655,12 @@
       <div style="font-size:12.5px;color:#94a3b8;padding:10px 0;">正在结合所在段落上下文深度解析…</div>
     `;
     selectionCardEl.querySelector('[data-close]')?.addEventListener('click', () => {
+      selectionRequests.cancel();
       selectionCardEl.style.display = 'none';
     });
 
     try {
-      const res = await chrome.runtime.sendMessage({
+      const res = await sendModelRequest({
         type: 'TRANSLATE_SELECTION',
         payload: {
           text,
@@ -2641,6 +2670,7 @@
         }
       });
 
+      if (res?.cancelled) return;
       if (!res || !res.ok) {
         throw new Error(res?.error || '划词解析请求失败');
       }
@@ -2677,6 +2707,7 @@
       `;
 
       selectionCardEl.querySelector('[data-close]')?.addEventListener('click', () => {
+        selectionRequests.cancel();
         selectionCardEl.style.display = 'none';
       });
       selectionCardEl.querySelector('[data-speak]')?.addEventListener('click', () => {
@@ -2699,6 +2730,7 @@
         <div style="color:#f87171;font-size:12.5px;">⚠️ ${escapeText(err?.message || '请求失败')}</div>
       `;
       selectionCardEl.querySelector('[data-close]')?.addEventListener('click', () => {
+        selectionRequests.cancel();
         selectionCardEl.style.display = 'none';
       });
     }
@@ -2787,6 +2819,8 @@
           return;
         }
         if (Array.isArray(cues) && cues.length > 0) {
+          subtitleRequests.cancel();
+          ytLiveCaptionInFlight.clear();
           ytCues = cues.map((c) => ({ ...c, translation: '' }));
           ytVideoTitle = videoTitle || document.title;
           ytInFlightBatchIds.clear();
@@ -2821,6 +2855,7 @@
         window.location.pathname.startsWith('/watch') ||
         window.location.pathname.startsWith('/shorts');
       if (!isVideoPage) {
+        subtitleRequests.cancel();
         if (ytAudioListenActive) stopYoutubeAudioListen();
         return;
       }
@@ -2828,6 +2863,7 @@
       const currentVid = getCurrentYoutubeVideoId();
       if (currentVid && currentVid !== ytCurrentVideoId) {
         stopYoutubeAudioListen();
+        subtitleRequests.cancel();
         ytCurrentVideoId = currentVid;
         ytCues = [];
         ytInFlightBatchIds.clear();
@@ -2890,6 +2926,7 @@
       ytCtrlBtnEl.addEventListener('click', (e) => {
         e.stopPropagation();
         ytDualActive = !ytDualActive;
+        if (!ytDualActive) { subtitleRequests.cancel(); stopYoutubeAudioListen(); }
         if (!ytDualActive && ytOverlayEl) ytOverlayEl.innerHTML = '';
         player.classList.toggle('ig-yt-dual-active', ytDualActive && ytCues.length > 0);
         ytLastRenderedSig = '';
@@ -3311,6 +3348,7 @@
    * Experimental Gemini Multimodal Live Audio Listen-and-Translate for videos without native captions.
    */
   function stopYoutubeAudioListen() {
+    audioRequests.cancel();
     ytAudioListenActive = false;
     ytAudioSession++;
     if (ytAudioRecorder && ytAudioRecorder.state !== 'inactive') ytAudioRecorder.stop();
@@ -3400,7 +3438,7 @@
           try {
             const base64 = await blobToBase64(blob);
             if (!isCurrent()) return;
-            const res = await chrome.runtime.sendMessage({
+            const res = await sendModelRequest({
               type: 'TRANSLATE_YOUTUBE_AUDIO',
               payload: {
                 audioBase64: base64,
@@ -3426,6 +3464,7 @@
               // Reindexing changes cue identity: invalidate old batch callbacks too.
               ytCues = [...ytCues, newCue].sort((a, b) => a.start - b.start)
                 .map((cue, index) => ({ ...cue, id: index }));
+              subtitleRequests.cancel();
               ytInFlightBatchIds.clear();
               ytLiveCaptionInFlight.clear();
               if (ytOverlayEl && sliceStart === latestSliceStart) {
@@ -3718,9 +3757,11 @@
       showPageToast('正在识别图片中的文字并翻译…', 'info');
     }
 
+    const signal = pageRequests.signal;
     try {
       const payload = await extractImagePayload(img, fallbackSrcUrl);
-      const response = await chrome.runtime.sendMessage({
+      if (signal.aborted) return;
+      const response = await sendModelRequest({
         type: 'TRANSLATE_IMAGE',
         payload: {
           ...payload,
@@ -3729,6 +3770,7 @@
         }
       });
 
+      if (signal.aborted || response?.cancelled) return;
       if (!response || !response.ok) {
         throw new Error(response?.error || '图片文字翻译请求失败');
       }

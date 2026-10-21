@@ -56,13 +56,13 @@
 
 ---
 
-**v1.0.2 修复与使用边界**：见 [版本说明](./CHANGELOG.md)。本版修复译文错配、失败缓存、请求超时、跨文档/视频旧结果回写和 EPUB 结构问题。
+**v1.0.3 升级与使用边界**：见 [版本说明](./CHANGELOG.md)。在 v1.0.2 可靠性修复基础上，PDF.js 升级至官方 6.4.299，并接通前端、后台队列到 HTTP 请求的取消链路。
 
 - 配置密钥、拉取模型列表均不代表该模型的翻译、视觉或音频能力已经验证；请用自己的接口做一次实际翻译。
 - OpenAI 兼容协议的 PDF 路径优先使用本地 PDF.js 提取文本与坐标，扫描件无法提取文字时会明确报错；当前不自动切换到 OpenAI 视觉 OCR。Gemini 路径按页使用多模态分析。
 - 音频听译目前仅接入 Gemini 原生协议且要求模型支持音频，采用 7 秒切片请求，并非实时流式语音。
 - PDF 重排与图片文字覆盖的效果取决于提取/识别质量，不保证像素级还原。EPUB 导出重建文本、章节和目录，不保留原书图片、字体、CSS 与复杂版式。
-- 暂停或切换页面会丢弃旧响应；已经发送到服务商的请求可能继续执行并计费。使用量统计是本地估算，不能替代服务商账单。
+- 暂停、切换文档/视频或关闭页面会取消对应排队任务，并中止正在执行的浏览器 HTTP 请求与重试；无法保证服务商同时停止内部计算或退回费用。使用量统计是本地估算，不能替代服务商账单。
 
 ## 1. 致敬「沉浸式翻译」与项目初衷（纯粹开放 BYOK 理念）
 
@@ -336,7 +336,7 @@ translator_plugin/
 │   ├── pdf-engine.js             # PDF.js 页面 Canvas 渲染、矢量文本坐标聚类、像素级背景采样擦除与原位中文重绘、本地 FlateDecode 解压
 │   ├── math-renderer.js          # 零 eval 纯原生学术 LaTeX 数学公式解析渲染器（支持分式/矩阵/积分/希腊字母/作者机构上标）
 │   ├── epub-engine.js            # 基于原生 DecompressionStream 的零依赖 ZIP/EPUB 解析器与 CRC32 双语 EPUB 3 打包器
-│   └── vendor/                   # 本地内置 PDF.js 渲染与矢量文本解析核心 (pdf.js / pdf_worker.js)
+│   └── vendor/                   # 官方 PDF.js 6.4.299 ES 模块、worker、字体/CMaps/WASM 与来源校验清单
 ├── popup/                        # 浏览器工具栏弹出控制面板 (popup.html / popup.css / popup.js)
 ├── options/                      # 全功能设置中心与多模型测试台 (options.html / options.css / options.js)
 ├── icons/                        # 插件标准尺寸图标 (icon-16.png, icon-48.png, icon-128.png)
@@ -384,19 +384,24 @@ translator_plugin/
 
 ## 5. 开发者命令与自动化验证
 
-本项目提供零外部依赖的图标生成、自动化回归测试与发布打包工具链（要求 Node.js 18+）：
+本项目的图标生成、Node 回归与发布打包使用 Node 内置模块；另提供真实 Chromium 验收工具链（要求 Node.js 22.13+；浏览器验收使用锁定的 Playwright 开发依赖）：
 
 ```bash
 # 1. 使用纯 Node.js SDF 渲染引擎重新生成 16x16 / 48x48 / 128x128 「三联青简」图标
 npm run icons
 
-# 2. 运行 43 项原有检查与 22 项故障回归（模拟接口，不等于实机或安全审计）
+# 2. 运行 45 项结构/功能检查与 29 项故障回归（模拟接口）
 npm run verify
 
-# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.2.zip)
+# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.3.zip)
 npm run pack
 
-# 4. 一键执行全流程构建（生成图标 + 自动化校验 + 打包 ZIP）
+# 4. 真实 Chromium 扩展验收（本地模拟 API，不使用真实密钥）
+npm ci --ignore-scripts
+npx playwright install chromium
+npm run test:browser
+
+# 5. 一键执行构建（生成图标 + 自动化校验 + 打包 ZIP）
 npm run build
 ```
 

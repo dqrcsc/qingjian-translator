@@ -11,7 +11,7 @@ globalThis.chrome = {
     async get(key) { return { [key]: structuredClone(store[key]) }; },
     async set(data) { Object.assign(store, structuredClone(data)); }
   }, onChanged: event },
-  runtime: { onInstalled: event, onMessage: { addListener(fn) { listener = fn; } }, getURL: x => x },
+  runtime: { onInstalled: event, onConnect: event, onMessage: { addListener(fn) { listener = fn; } }, getURL: x => x },
   tabs: { onUpdated: event }, contextMenus: { onClicked: event }, commands: { onCommand: event }
 };
 const client = await import('../background/gemini-client.js');
@@ -204,12 +204,12 @@ function studioContext() {
   let sent;
   const requested = new Promise(resolve => { sent = resolve; });
   const ctx = vm.createContext({
-    currentDoc: documentState(), documentSession: 1, stopRequested: false,
+    currentDoc: documentState(), documentSession: 1, stopRequested: false, documentRequests: { signal: new AbortController().signal },
     bilingualStreamContainer: { querySelector: () => null },
     docStatusSubtitle: { textContent: '' }, progressBarWrap: {}, progressBarFill: { style: {} },
     getSettings: async () => settings, getActiveProtocol: () => 'gemini',
     arrayBufferToBase64: () => 'AA==', MESSAGE_TYPES: { ANALYZE_PDF_MULTIMODAL: 'PDF' },
-    chrome: { runtime: { sendMessage: () => { sent(); return new Promise(r => { reply = r; }); } } },
+    sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     renderWorkspaceBlocks() {}, streamSearchInput: { value: '' }, lazyPageQueue: [], setTimeout() {}
   });
   vm.runInContext(sourceFunction(studioSource, 'translateSinglePdfPage', '\nstartTranslateDocBtn.addEventListener'), ctx);
@@ -258,7 +258,7 @@ test('pausing a PDF before its response prevents marking the page complete', asy
 test('old page-render failures cannot delete the new document render cache', async () => {
   let finish;
   const old = documentState(); old.pdfDoc = {};
-  const ctx = vm.createContext({ currentDoc: old, MAX_CACHED_PAGE_RENDERS: 8, renderPdfPageToCanvas: () => new Promise(r => { finish = r; }) });
+  const ctx = vm.createContext({ documentRequests: { signal: new AbortController().signal }, currentDoc: old, MAX_CACHED_PAGE_RENDERS: 8, renderPdfPageToCanvas: () => new Promise(r => { finish = r; }) });
   vm.runInContext(sourceFunction(studioSource, 'getOrRenderPdfPage', '\nasync function ensureLeftPdfPageRendered'), ctx);
   const pending = ctx.getOrRenderPdfPage(1);
   const fresh = documentState(); fresh.pageRenderCache.set(1, 'new page');
@@ -274,7 +274,7 @@ test('ordinary document translation discards old results and leaves new run flag
   const ctx = vm.createContext({ currentDoc: { ...documentState(), fileType: 'md', blocks: [{ id: 1, original: 'old' }] }, documentSession: 1,
     isTranslating: false, stopRequested: false, startTranslateDocBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
     getSettings: async () => settings, createBatches: blocks => [blocks], MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch' },
-    chrome: { runtime: { sendMessage: () => { sent(); return new Promise(r => { reply = r; }); } } },
+    sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     docStatusSubtitle: { textContent: '' }, setTimeout() {}
   });
   vm.runInContext(sourceFunction(studioSource, 'startDocumentTranslation', '\n// ============================================================================'), ctx);
@@ -324,11 +324,11 @@ function audioContext(protocol = 'gemini') {
     stop() { this.state = 'inactive'; }
   }
   const ctx = vm.createContext({ ytAudioListenActive: false, ytAudioRecorder: null, ytAudioStream: null, ytAudioSession: 0, ytAudioButton: null,
-    settings: { apiProtocol: protocol }, showPageToast: text => toasts.push(text),
+    audioRequests: { cancel() {} }, subtitleRequests: { cancel() {} }, settings: { apiProtocol: protocol }, showPageToast: text => toasts.push(text),
     document: { querySelector: () => ({ paused: false, currentTime: 0, captureStream: () => stream }), title: 'video' },
     MediaStream: class {}, MediaRecorder: Recorder, getCurrentYoutubeVideoId: () => 'video', ytVideoTitle: 'video', ytCues: [], ytOverlayEl: null,
     ytInFlightBatchIds: new Set(), ytLiveCaptionInFlight: new Set(),
-    Blob, blobToBase64: async () => 'AA==', chrome: { runtime: { sendMessage: () => { sent(); return new Promise(r => { reply = r; }); } } },
+    Blob, blobToBase64: async () => 'AA==', sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     setTimeout: fn => { timers.push(fn); }, renderYoutubeTimelineList() {}
   });
   const a = contentSource.indexOf('  function stopYoutubeAudioListen(');

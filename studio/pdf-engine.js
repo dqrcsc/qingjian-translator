@@ -218,41 +218,52 @@ export function estimatePdfPageCount(arrayBuffer) {
   return 6;
 }
 
-/**
- * Opens a PDF ArrayBuffer via bundled PDFJS (if loaded in browser/VM) or falls back to
- * scanning compressed /ObjStm FlateDecode streams for the exact /Pages /Count.
- */
-export async function openPdfDocument(arrayBuffer) {
-  if (typeof globalThis !== 'undefined' && globalThis.PDFJS && globalThis.PDFJS.getDocument) {
+let pdfjsPromise;
+async function loadPdfjs() {
+  pdfjsPromise ||= import('./vendor/pdfjs/pdf.mjs');
+  const pdfjs = await pdfjsPromise;
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/pdf.worker.mjs', import.meta.url).href;
+  return pdfjs;
+}
+
+/** Opens a PDF with a real module worker; caller keeps ownership of the original bytes. */
+export async function openPdfDocument(arrayBuffer, { signal } = {}) {
+  signal?.throwIfAborted();
+  if (typeof document !== 'undefined') {
+    const pdfjs = await loadPdfjs();
+    signal?.throwIfAborted();
+    const asset = name => new URL(`./vendor/pdfjs/${name}/`, import.meta.url).href;
+    // An explicit local worker avoids PDF.js's blob wrapper for extension URLs
+    // (their URL.origin can be "null"). Blob workers are not allowed by our CSP.
+    const workerPort = new Worker(new URL('./vendor/pdfjs/pdf.worker.mjs', import.meta.url), { type: 'module' });
+    const worker = new pdfjs.PDFWorker({ port: workerPort });
+    const loadingTask = pdfjs.getDocument({
+      worker,
+      data: new Uint8Array(arrayBuffer.slice(0)),
+      isEvalSupported: false,
+      useWorkerFetch: true,
+      cMapUrl: asset('cmaps'), cMapPacked: true,
+      standardFontDataUrl: asset('standard_fonts'),
+      wasmUrl: asset('wasm'), iccUrl: asset('iccs'),
+      verbosity: 0
+    });
+    let destruction;
+    const destroy = () => destruction ||= (async () => {
+      try { await loadingTask.destroy(); }
+      finally { worker.destroy(); workerPort.terminate(); }
+    })();
+    const onAbort = () => { void destroy().catch(() => {}); };
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      if (typeof globalThis.get_binary_bcmap !== 'function') {
-        globalThis.get_binary_bcmap = () => null;
-      }
-      globalThis.PDFJS.isEvalSupported = false;
-      globalThis.PDFJS.disableFontFace = true;
-      globalThis.PDFJS.disableWorker = true;
-      if (!globalThis.PDFJS.workerSrc) {
-        globalThis.PDFJS.workerSrc =
-          typeof chrome !== 'undefined' && chrome.runtime?.getURL
-            ? chrome.runtime.getURL('studio/vendor/pdf_worker.js')
-            : 'vendor/pdf_worker.js';
-      }
-      if (typeof globalThis.PDFJS.VERBOSITY_LEVELS === 'object') {
-        globalThis.PDFJS.verbosity = globalThis.PDFJS.VERBOSITY_LEVELS.errors;
-      } else {
-        globalThis.PDFJS.verbosity = 0;
-      }
-      const copyBytes = new Uint8Array(arrayBuffer.slice(0));
-      const pdfDoc = await globalThis.PDFJS.getDocument({
-        data: copyBytes,
-        disableFontFace: true,
-        isEvalSupported: false
-      });
-      if (pdfDoc && pdfDoc.numPages > 0) {
-        return { pdfDoc, numPages: pdfDoc.numPages };
-      }
-    } catch {
-      // Fallback to stream count scanner below
+      const pdfDoc = await loadingTask.promise;
+      signal?.throwIfAborted();
+      pdfDoc.destroy = destroy;
+      return { pdfDoc, numPages: pdfDoc.numPages };
+    } catch (err) {
+      await destroy().catch(() => {});
+      throw err;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -298,10 +309,12 @@ export async function openPdfDocument(arrayBuffer) {
  * Renders a single PDF page (1-indexed) onto an HTML <canvas> using bundled PDFJS,
  * and simultaneously extracts exact vector text coordinates from `page.getTextContent()`.
  */
-export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0) {
+export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { signal } = {}) {
+  signal?.throwIfAborted();
   if (!pdfDoc || typeof document === 'undefined') return null;
   const page = await pdfDoc.getPage(pageNumber);
-  const viewport = page.getViewport(scale);
+  signal?.throwIfAborted();
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(viewport.width);
   canvas.height = Math.round(viewport.height);
@@ -309,16 +322,20 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  await page.render({
-    canvasContext: ctx,
-    viewport,
-    intent: 'print'
-  });
+  const renderTask = page.render({ canvasContext: ctx, viewport, intent: 'print' });
+  const onAbort = () => renderTask.cancel();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    await renderTask.promise;
+    signal?.throwIfAborted();
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 
   const textItems = [];
   try {
     const tc = await page.getTextContent();
-    const utilTransform = globalThis.PDFJS?.Util?.transform;
+    const utilTransform = (await loadPdfjs()).Util.transform;
     for (const item of tc?.items || []) {
       const rawStr = String(item.str || '');
       if (!rawStr.trim()) continue;
@@ -347,6 +364,7 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0) {
     // Ignore optional textContent extraction issues
   }
 
+  signal?.throwIfAborted();
   const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
   const jpegBase64 = dataUrl.split(',')[1] || '';
   return {

@@ -1,3 +1,6 @@
+import '../shared/request-client.js';
+const settingsRequests = globalThis.QingJianRequests.createScope();
+window.addEventListener('pagehide', () => settingsRequests.cancel());
 /**
  * Options Page Controller for Immersive Gemini.
  */
@@ -329,7 +332,7 @@ async function refreshSupportedModels(showFeedback = true) {
   fetchModelsBtn.textContent = '⏳ 拉取中…';
   try {
     await saveSettings(draft);
-    const res = await chrome.runtime.sendMessage({
+    const res = await settingsRequests.request({
       type: MESSAGE_TYPES.FETCH_MODELS,
       payload: draft
     });
@@ -511,7 +514,7 @@ testApiBtn.addEventListener('click', async () => {
   apiTestResult.textContent = `正在向 ${provider.shortName} (${draft.apiBaseUrl}) 发起连接与延迟测试…`;
 
   try {
-    const res = await chrome.runtime.sendMessage({
+    const res = await settingsRequests.request({
       type: MESSAGE_TYPES.TEST_API_KEY,
       payload: draft
     });

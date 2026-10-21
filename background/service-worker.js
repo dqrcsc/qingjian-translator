@@ -32,25 +32,13 @@ import {
   testGeminiConnection
 } from './gemini-client.js';
 
-// Lightweight concurrency semaphore for LLM network requests
-let activeRequests = 0;
-const waitQueue = [];
+import { withConcurrencyLimit, abortRequestScope } from './request-queue.js';
 
-async function withConcurrencyLimit(maxConcurrency, fn) {
-  const limit = Math.max(1, Math.min(8, Number(maxConcurrency) || 3));
-  if (activeRequests >= limit) {
-    await new Promise((resolve) => waitQueue.push(resolve));
-  }
-  activeRequests++;
-  try {
-    return await fn();
-  } finally {
-    activeRequests--;
-    if (waitQueue.length > 0) {
-      const next = waitQueue.shift();
-      next();
-    }
-  }
+async function getRequestSettings(signal) {
+  signal?.throwIfAborted();
+  const settings = await getSettings();
+  signal?.throwIfAborted();
+  return { ...settings, requestSignal: signal };
 }
 
 async function sendMessageToTabSafely(tabId, message) {
@@ -166,7 +154,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         });
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['content/content-main.js']
+          files: ['shared/request-client.js', 'content/content-main.js']
         });
         await sendMessageToTabSafely(tab.id, {
           type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
@@ -209,8 +197,8 @@ chrome.commands.onCommand.addListener(async (command) => {
 /**
  * Handle batch paragraph translation with two-tier cache lookup.
  */
-async function handleTranslateBatch(payload) {
-  const settings = await getSettings();
+async function handleTranslateBatch(payload, signal) {
+  const settings = await getRequestSettings(signal);
   const items = Array.isArray(payload?.items) ? payload.items : [];
   if (items.length === 0) return { translations: [] };
 
@@ -254,8 +242,9 @@ async function handleTranslateBatch(payload) {
           targetLang,
           pageTitle: payload.pageTitle || ''
         }
-      )
+      ), signal
     );
+    signal?.throwIfAborted();
 
     const toCache = [];
     for (const res of freshResults) {
@@ -267,6 +256,7 @@ async function handleTranslateBatch(payload) {
     }
 
     if (settings.enableCache !== false && toCache.length > 0) {
+      signal?.throwIfAborted();
       await setCachedTranslations(toCache);
     }
   }
@@ -277,14 +267,15 @@ async function handleTranslateBatch(payload) {
     cached: !uncached.some((u) => u.id === k.id)
   }));
 
+  signal?.throwIfAborted();
   return { translations, modelId };
 }
 
 /**
  * Handle YouTube subtitle cue batch translation with cache support.
  */
-async function handleTranslateYoutubeCues(payload) {
-  const settings = await getSettings();
+async function handleTranslateYoutubeCues(payload, signal) {
+  const settings = await getRequestSettings(signal);
   const cues = Array.isArray(payload?.cues) ? payload.cues : [];
   if (cues.length === 0) return { cues: [] };
 
@@ -328,8 +319,9 @@ async function handleTranslateYoutubeCues(payload) {
           videoTitle: payload.videoTitle || ''
         },
         settings
-      )
+      ), signal
     );
+    signal?.throwIfAborted();
 
     const toCache = [];
     for (const item of translated) {
@@ -340,10 +332,12 @@ async function handleTranslateYoutubeCues(payload) {
       }
     }
     if (settings.enableCache !== false && toCache.length > 0) {
+      signal?.throwIfAborted();
       await setCachedTranslations(toCache);
     }
   }
 
+  signal?.throwIfAborted();
   return {
     cues: keyedCues.map((c) => ({
       id: c.id,
@@ -353,69 +347,68 @@ async function handleTranslateYoutubeCues(payload) {
 }
 
 // Central runtime message dispatcher
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) return false;
-
-  (async () => {
+async function dispatchMessage(message, sender, sendResponse, signal) {
     try {
+      signal?.throwIfAborted();
       switch (message.type) {
         case MESSAGE_TYPES.TRANSLATE_BATCH: {
-          const data = await handleTranslateBatch(message.payload);
+          const data = await handleTranslateBatch(message.payload, signal);
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_SELECTION: {
-          const settings = await getSettings();
-          const data = await withConcurrencyLimit(settings.maxConcurrency, () => explainSelectionWithGemini(message.payload || {}, settings));
+          const settings = await getRequestSettings(signal);
+          const data = await withConcurrencyLimit(settings.maxConcurrency, () => explainSelectionWithGemini(message.payload || {}, settings), signal);
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_INPUT_TEXT: {
-          const settings = await getSettings();
-          const translatedText = await withConcurrencyLimit(settings.maxConcurrency, () => translateInputTextWithGemini(message.payload || {}, settings));
+          const settings = await getRequestSettings(signal);
+          const translatedText = await withConcurrencyLimit(settings.maxConcurrency, () => translateInputTextWithGemini(message.payload || {}, settings), signal);
           sendResponse({ ok: true, data: { translatedText } });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_IMAGE: {
-          const settings = await getSettings();
+          const settings = await getRequestSettings(signal);
           const data = await withConcurrencyLimit(settings.maxConcurrency, () =>
-            translateImageWithGemini(message.payload || {}, settings)
+            translateImageWithGemini(message.payload || {}, settings), signal
           );
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_YOUTUBE_CUES: {
-          const data = await handleTranslateYoutubeCues(message.payload || {});
+          const data = await handleTranslateYoutubeCues(message.payload || {}, signal);
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_YOUTUBE_AUDIO: {
-          const settings = await getSettings();
-          const data = await withConcurrencyLimit(settings.maxConcurrency, () => translateYoutubeAudioWithGemini(message.payload || {}, settings));
+          const settings = await getRequestSettings(signal);
+          const data = await withConcurrencyLimit(settings.maxConcurrency, () => translateYoutubeAudioWithGemini(message.payload || {}, settings), signal);
           sendResponse({ ok: true, data });
           break;
         }
         case MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL: {
-          const settings = await getSettings();
-          const blocks = await withConcurrencyLimit(settings.maxConcurrency, () => analyzePdfWithGemini(message.payload || {}, settings));
+          const settings = await getRequestSettings(signal);
+          const blocks = await withConcurrencyLimit(settings.maxConcurrency, () => analyzePdfWithGemini(message.payload || {}, settings), signal);
           sendResponse({ ok: true, data: { blocks } });
           break;
         }
         case MESSAGE_TYPES.TEST_API_KEY: {
           const current = await getSettings();
-          const merged = { ...current, ...(message.payload || {}) };
+          const merged = { ...current, ...(message.payload || {}), requestSignal: signal };
           const res = await testGeminiConnection(merged);
           sendResponse({ ok: true, data: res });
           break;
         }
         case MESSAGE_TYPES.FETCH_MODELS: {
           const current = await getSettings();
-          const merged = { ...current, ...(message.payload || {}) };
+          const merged = { ...current, ...(message.payload || {}), requestSignal: signal };
           const models = await fetchAvailableModels(merged);
           let nextModelId = merged.modelId;
           if (models.length > 0 && !models.some((m) => m.id === nextModelId)) {
             nextModelId = models[0].id;
           }
+          signal?.throwIfAborted();
           await saveSettings({ availableModels: models, modelId: nextModelId });
           sendResponse({ ok: true, data: { models, selectedModelId: nextModelId } });
           break;
@@ -469,10 +462,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (err) {
       sendResponse({
         ok: false,
-        error: err?.message || String(err)
+        cancelled: Boolean(signal?.aborted),
+        error: signal?.aborted ? '请求已取消' : err?.message || String(err)
       });
     }
-  })();
+}
 
-  return true; // Keep message channel open for async response
+// Keep non-model commands and older installed clients compatible.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message?.type) return false;
+  void dispatchMessage(message, sender, sendResponse);
+  return true;
+});
+
+const cancellableTypes = new Set([
+  MESSAGE_TYPES.TRANSLATE_BATCH, MESSAGE_TYPES.TRANSLATE_SELECTION,
+  MESSAGE_TYPES.TRANSLATE_INPUT_TEXT, MESSAGE_TYPES.TRANSLATE_IMAGE,
+  MESSAGE_TYPES.TRANSLATE_YOUTUBE_CUES, MESSAGE_TYPES.TRANSLATE_YOUTUBE_AUDIO,
+  MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL, MESSAGE_TYPES.TEST_API_KEY, MESSAGE_TYPES.FETCH_MODELS
+]);
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'qingjian-request-v1') return;
+  const controllers = new Map();
+  let disconnected = false;
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+    // Abort the entire scope in one event before any freed slot admits a waiter.
+    abortRequestScope(controllers.values());
+    controllers.clear();
+  });
+  port.onMessage.addListener(({ requestId, message } = {}) => {
+    if (disconnected || !Number.isSafeInteger(requestId) || controllers.has(requestId)) return;
+    if (!cancellableTypes.has(message?.type)) {
+      port.postMessage({ requestId, response: { ok: false, error: '不支持的可取消请求' } });
+      return;
+    }
+    const controller = new AbortController();
+    controllers.set(requestId, controller);
+    void dispatchMessage(message, port.sender, response => {
+      controllers.delete(requestId);
+      if (disconnected || controller.signal.aborted) return;
+      try { port.postMessage({ requestId, response }); } catch { controller.abort(); }
+    }, controller.signal);
+  });
 });
