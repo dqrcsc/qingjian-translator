@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>青简 · 译读 — 双语精读与智译</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup-shell">
+    <!-- Top Header -->
+    <header class="popup-header">
+      <div class="brand-row">
+        <img src="../icons/icon-48.png" alt="Logo" class="brand-logo" />
+        <div>
+          <h1 class="brand-title">青简 · 译读</h1>
+          <div class="brand-sub" id="apiKeyStatusBadge">检测 API Key 状态…</div>
+        </div>
+      </div>
+      <button id="openOptionsBtn" class="icon-btn" title="打开设置与 API Key 配置">⚙️</button>
+    </header>
+
+    <!-- Primary Toggle Hero Button -->
+    <section class="hero-card">
+      <button id="toggleTranslateBtn" class="primary-toggle-btn">
+        <div class="toggle-left-group">
+          <span class="toggle-icon" id="toggleBtnIcon"></span>
+          <div class="toggle-text-col">
+            <span class="toggle-main-label" id="toggleBtnLabel">双语对照翻译：未开启</span>
+            <span class="toggle-sub-label" id="toggleBtnSub">点击此处或按 Alt + A 立即开启</span>
+          </div>
+        </div>
+        <span class="popup-switch-track" id="popupSwitchTrack">
+          <span class="popup-switch-thumb"></span>
+        </span>
+      </button>
+
+      <div class="domain-rule-row" id="domainRuleRow">
+        <label class="checkbox-label">
+          <input type="checkbox" id="autoTranslateDomainCheckbox" />
+          <span>始终自动翻译 <strong id="currentDomainText">当前站点</strong> 网页</span>
+        </label>
+        <label class="checkbox-label" style="margin-top: 4px;">
+          <input type="checkbox" id="autoTranslateAllCheckbox" />
+          <span>🌐 自动识别并翻译所有外文网页</span>
+        </label>
+        <label class="checkbox-label" style="margin-top: 4px;" title="默认关闭：打开在线 PDF 链接时保持浏览器原生阅读器，点击插件按钮才新建标签页跳转到翻译工作台">
+          <input type="checkbox" id="autoTranslateOnlinePdfCheckbox" />
+          <span>📄 访问在线 PDF 时自动打开翻译工作台</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Model & Language Selectors -->
+    <section class="control-section">
+      <div class="field-row">
+        <div class="field-col">
+          <label for="modelSelect">AI 模型</label>
+          <select id="modelSelect"></select>
+        </div>
+        <div class="field-col">
+          <label for="targetLangSelect">目标语言</label>
+          <select id="targetLangSelect"></select>
+        </div>
+      </div>
+
+      <!-- 6 Visual Styles Grid -->
+      <div class="style-header-row">
+        <label>双语译文样式 (Alt + S)</label>
+      </div>
+      <div class="style-grid" id="styleGrid"></div>
+    </section>
+
+    <!-- Quick Mini Translator Box -->
+    <section class="quick-box-section">
+      <div class="quick-box-header">
+        <span>⚡ 快捷文本速译</span>
+        <button id="quickTranslateBtn" class="mini-action-btn">AI 翻译</button>
+      </div>
+      <textarea
+        id="quickInput"
+        rows="2"
+        placeholder="输入或粘贴任意外文/母语段落，回车即译…"
+      ></textarea>
+      <div id="quickOutput" class="quick-output" hidden></div>
+    </section>
+
+    <!-- Document Studio Entry & Stats Footer -->
+    <footer class="popup-footer">
+      <button id="openStudioBtn" class="studio-entry-btn">
+        <span>📄 打开文档翻译工作台 (PDF / EPUB / MD / HTML)</span>
+        <span>→</span>
+      </button>
+      <div class="stats-bar">
+        <span id="statsSummaryText">已译 0 段 · 缓存命中 0 次</span>
+        <span class="hint-pill">连按3次空格译输入框</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

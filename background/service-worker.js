@@ -1,0 +1,464 @@
+/**
+ * Manifest V3 Background Service Worker for Immersive Gemini.
+ * Handles message routing, two-tier caching, concurrency queue, context menus, and keyboard shortcuts.
+ */
+
+import { MESSAGE_TYPES } from '../shared/constants.js';
+import {
+  getSettings,
+  saveSettings,
+  getActiveModelId,
+  getUsageStats,
+  incrementUsageStats
+} from '../shared/storage.js';
+import { hashString, isOnlinePdfUrl, normalizeOnlinePdfUrl } from '../shared/utils.js';
+import {
+  buildCacheKey,
+  getCachedTranslations,
+  setCachedTranslations,
+  getCacheStats,
+  clearAllCache
+} from './cache-db.js';
+import {
+  fetchAvailableModels,
+  translateBatchWithGemini,
+  explainSelectionWithGemini,
+  translateInputTextWithGemini,
+  translateImageWithGemini,
+  translateYoutubeCuesWithGemini,
+  translateYoutubeAudioWithGemini,
+  analyzePdfWithGemini,
+  testGeminiConnection
+} from './gemini-client.js';
+
+// Lightweight concurrency semaphore for LLM network requests
+let activeRequests = 0;
+const waitQueue = [];
+
+async function withConcurrencyLimit(maxConcurrency, fn) {
+  const limit = Math.max(1, Math.min(8, Number(maxConcurrency) || 3));
+  if (activeRequests >= limit) {
+    await new Promise((resolve) => waitQueue.push(resolve));
+  }
+  activeRequests++;
+  try {
+    return await fn();
+  } finally {
+    activeRequests--;
+    if (waitQueue.length > 0) {
+      const next = waitQueue.shift();
+      next();
+    }
+  }
+}
+
+async function sendMessageToTabSafely(tabId, message) {
+  if (!tabId) return null;
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    return null;
+  }
+}
+
+async function openPdfTranslationNewTab(rawPdfUrl, sourceTab = null, autoTranslate = true) {
+  const normalizedUrl = normalizeOnlinePdfUrl(rawPdfUrl);
+  const query = normalizedUrl
+    ? `?url=${encodeURIComponent(normalizedUrl)}&auto=${autoTranslate ? '1' : '0'}`
+    : '';
+  const studioUrl = chrome.runtime.getURL(`studio/studio.html${query}`);
+  const createProps = { url: studioUrl, active: true };
+  if (sourceTab && typeof sourceTab.index === 'number') {
+    createProps.index = sourceTab.index + 1;
+  }
+  await chrome.tabs.create(createProps);
+}
+
+// Show a "PDF" badge on the toolbar icon when the user is viewing an online PDF
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const url = changeInfo.url || tab?.url || '';
+  if (!url) return;
+  if (isOnlinePdfUrl(url)) {
+    chrome.action.setBadgeText({ tabId, text: 'PDF' }).catch(() => {});
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#4f46e5' }).catch(() => {});
+  } else if (changeInfo.status === 'loading') {
+    chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+  }
+});
+
+// Register Context Menus on install/update
+chrome.runtime.onInstalled.addListener(async () => {
+  try {
+    await chrome.contextMenus.removeAll();
+    chrome.contextMenus.create({
+      id: 'immersive-gemini-toggle-page',
+      title: '切换网页双语对照翻译 / 在线 PDF 新标签页精译 (Alt+A)',
+      contexts: ['page']
+    });
+    chrome.contextMenus.create({
+      id: 'immersive-gemini-translate-image',
+      title: '🖼️ 识别并原位翻译此图片中的文字 (青简 · 译读)',
+      contexts: ['image']
+    });
+    chrome.contextMenus.create({
+      id: 'immersive-gemini-translate-pdf-link',
+      title: '📄 在新标签页双语翻译此在线 PDF (青简 · 译读)',
+      contexts: ['link', 'page']
+    });
+    chrome.contextMenus.create({
+      id: 'immersive-gemini-explain-selection',
+      title: '使用 AI 深度精解选中文本',
+      contexts: ['selection']
+    });
+    chrome.contextMenus.create({
+      id: 'immersive-gemini-open-studio',
+      title: '打开 PDF / EPUB / Markdown 文档翻译工作台',
+      contexts: ['page', 'action']
+    });
+  } catch {
+    // ignore duplicate context menu registration notices
+  }
+});
+
+// Context Menu Click Handler (Always confirms action with visual feedback toast on tab)
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === 'immersive-gemini-translate-pdf-link') {
+    const targetUrl = info.linkUrl || info.srcUrl || info.pageUrl || tab?.url || '';
+    await openPdfTranslationNewTab(targetUrl, tab, true);
+    return;
+  }
+
+  if (info.menuItemId === 'immersive-gemini-open-studio') {
+    const candidateUrl = tab?.url && isOnlinePdfUrl(tab.url) ? tab.url : '';
+    await openPdfTranslationNewTab(candidateUrl, tab, Boolean(candidateUrl));
+    return;
+  }
+
+  if (!tab || !tab.id) return;
+
+  if (info.menuItemId === 'immersive-gemini-translate-image' && info.srcUrl) {
+    await sendMessageToTabSafely(tab.id, {
+      type: MESSAGE_TYPES.SHOW_PAGE_TOAST,
+      payload: {
+        mode: 'image-translate',
+        imageUrl: info.srcUrl
+      }
+    });
+    return;
+  }
+
+  if (info.menuItemId === 'immersive-gemini-toggle-page') {
+    if (isOnlinePdfUrl(tab.url || info.pageUrl || '')) {
+      await openPdfTranslationNewTab(tab.url || info.pageUrl, tab, true);
+      return;
+    }
+
+    const res = await sendMessageToTabSafely(tab.id, {
+      type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
+    });
+    if (!res) {
+      // Content script might not be injected yet on a pre-existing tab
+      try {
+        await chrome.scripting.insertCSS({
+          target: { tabId: tab.id },
+          files: ['content/content.css']
+        });
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content-main.js']
+        });
+        await sendMessageToTabSafely(tab.id, {
+          type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
+        });
+      } catch {
+        // ignore restricted browser internal pages (chrome://, edge://, chrome web store)
+      }
+    }
+  } else if (info.menuItemId === 'immersive-gemini-explain-selection' && info.selectionText) {
+    await sendMessageToTabSafely(tab.id, {
+      type: MESSAGE_TYPES.SHOW_PAGE_TOAST,
+      payload: {
+        mode: 'selection-explain',
+        selectionText: info.selectionText
+      }
+    });
+  }
+});
+
+// Keyboard Shortcut Commands
+chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) return;
+
+  if (command === 'toggle-page-translation') {
+    if (isOnlinePdfUrl(tab.url || '')) {
+      await openPdfTranslationNewTab(tab.url, tab, true);
+      return;
+    }
+    await sendMessageToTabSafely(tab.id, {
+      type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
+    });
+  } else if (command === 'cycle-translation-style') {
+    await sendMessageToTabSafely(tab.id, {
+      type: MESSAGE_TYPES.CYCLE_TRANSLATION_STYLE
+    });
+  }
+});
+
+/**
+ * Handle batch paragraph translation with two-tier cache lookup.
+ */
+async function handleTranslateBatch(payload) {
+  const settings = await getSettings();
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (items.length === 0) return { translations: [] };
+
+  const targetLang = payload.targetLang || settings.targetLang;
+  const modelId = getActiveModelId(settings);
+  const glossarySig = hashString(settings.glossaryText || '');
+
+  const keyedItems = items.map((item, idx) => {
+    const id = item.id ?? idx;
+    const text = String(item.text || '');
+    const cacheKey = buildCacheKey(text, targetLang, modelId, glossarySig);
+    return { id, text, cacheKey };
+  });
+
+  const finalMap = new Map();
+  let uncached = keyedItems;
+
+  if (settings.enableCache !== false) {
+    const cachedMap = await getCachedTranslations(keyedItems.map((k) => k.cacheKey));
+    uncached = [];
+    let hits = 0;
+    for (const item of keyedItems) {
+      if (cachedMap.has(item.cacheKey)) {
+        finalMap.set(item.id, cachedMap.get(item.cacheKey));
+        hits++;
+      } else {
+        uncached.push(item);
+      }
+    }
+    if (hits > 0) {
+      await incrementUsageStats({ cacheHits: hits });
+    }
+  }
+
+  if (uncached.length > 0) {
+    const freshResults = await withConcurrencyLimit(settings.maxConcurrency, () =>
+      translateBatchWithGemini(
+        uncached.map((u) => ({ id: u.id, text: u.text })),
+        settings,
+        {
+          targetLang,
+          pageTitle: payload.pageTitle || ''
+        }
+      )
+    );
+
+    const toCache = [];
+    for (const res of freshResults) {
+      finalMap.set(res.id, res.translation);
+      const orig = uncached.find((u) => Number(u.id) === Number(res.id));
+      if (orig && res.translation) {
+        toCache.push({ key: orig.cacheKey, translation: res.translation });
+      }
+    }
+
+    if (settings.enableCache !== false && toCache.length > 0) {
+      await setCachedTranslations(toCache);
+    }
+  }
+
+  const translations = keyedItems.map((k) => ({
+    id: k.id,
+    translation: finalMap.get(k.id) ?? k.text,
+    cached: !uncached.some((u) => u.id === k.id)
+  }));
+
+  return { translations, modelId };
+}
+
+/**
+ * Handle YouTube subtitle cue batch translation with cache support.
+ */
+async function handleTranslateYoutubeCues(payload) {
+  const settings = await getSettings();
+  const cues = Array.isArray(payload?.cues) ? payload.cues : [];
+  if (cues.length === 0) return { cues: [] };
+
+  const targetLang = settings.targetLang;
+  const modelId = getActiveModelId(settings);
+  const glossarySig = hashString(settings.glossaryText || '');
+
+  const keyedCues = cues.map((c) => ({
+    ...c,
+    cacheKey: buildCacheKey(`YT:${c.text}`, targetLang, modelId, glossarySig)
+  }));
+
+  const cachedMap =
+    settings.enableCache !== false
+      ? await getCachedTranslations(keyedCues.map((c) => c.cacheKey))
+      : new Map();
+
+  const allCached = keyedCues.every((c) => cachedMap.has(c.cacheKey));
+  if (allCached) {
+    await incrementUsageStats({ cacheHits: keyedCues.length });
+    return {
+      cues: keyedCues.map((c) => ({
+        id: c.id,
+        translation: cachedMap.get(c.cacheKey)
+      }))
+    };
+  }
+
+  const translated = await withConcurrencyLimit(settings.maxConcurrency, () =>
+    translateYoutubeCuesWithGemini(
+      {
+        cues: keyedCues.map((c) => ({ id: c.id, text: c.text })),
+        contextBefore: payload.contextBefore || '',
+        contextAfter: payload.contextAfter || '',
+        videoTitle: payload.videoTitle || ''
+      },
+      settings
+    )
+  );
+
+  const toCache = [];
+  for (const item of translated) {
+    const orig = keyedCues.find((k) => Number(k.id) === Number(item.id));
+    if (orig && item.translation) {
+      toCache.push({ key: orig.cacheKey, translation: item.translation });
+    }
+  }
+  if (settings.enableCache !== false && toCache.length > 0) {
+    await setCachedTranslations(toCache);
+  }
+
+  return { cues: translated };
+}
+
+// Central runtime message dispatcher
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.type) return false;
+
+  (async () => {
+    try {
+      switch (message.type) {
+        case MESSAGE_TYPES.TRANSLATE_BATCH: {
+          const data = await handleTranslateBatch(message.payload);
+          sendResponse({ ok: true, data });
+          break;
+        }
+        case MESSAGE_TYPES.TRANSLATE_SELECTION: {
+          const settings = await getSettings();
+          const data = await explainSelectionWithGemini(message.payload || {}, settings);
+          sendResponse({ ok: true, data });
+          break;
+        }
+        case MESSAGE_TYPES.TRANSLATE_INPUT_TEXT: {
+          const settings = await getSettings();
+          const translatedText = await translateInputTextWithGemini(message.payload || {}, settings);
+          sendResponse({ ok: true, data: { translatedText } });
+          break;
+        }
+        case MESSAGE_TYPES.TRANSLATE_IMAGE: {
+          const settings = await getSettings();
+          const data = await withConcurrencyLimit(settings.maxConcurrency, () =>
+            translateImageWithGemini(message.payload || {}, settings)
+          );
+          sendResponse({ ok: true, data });
+          break;
+        }
+        case MESSAGE_TYPES.TRANSLATE_YOUTUBE_CUES: {
+          const data = await handleTranslateYoutubeCues(message.payload || {});
+          sendResponse({ ok: true, data });
+          break;
+        }
+        case MESSAGE_TYPES.TRANSLATE_YOUTUBE_AUDIO: {
+          const settings = await getSettings();
+          const data = await translateYoutubeAudioWithGemini(message.payload || {}, settings);
+          sendResponse({ ok: true, data });
+          break;
+        }
+        case MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL: {
+          const settings = await getSettings();
+          const blocks = await analyzePdfWithGemini(message.payload || {}, settings);
+          sendResponse({ ok: true, data: { blocks } });
+          break;
+        }
+        case MESSAGE_TYPES.TEST_API_KEY: {
+          const current = await getSettings();
+          const merged = { ...current, ...(message.payload || {}) };
+          const res = await testGeminiConnection(merged);
+          sendResponse({ ok: true, data: res });
+          break;
+        }
+        case MESSAGE_TYPES.FETCH_MODELS: {
+          const current = await getSettings();
+          const merged = { ...current, ...(message.payload || {}) };
+          const models = await fetchAvailableModels(merged);
+          let nextModelId = merged.modelId;
+          if (models.length > 0 && !models.some((m) => m.id === nextModelId)) {
+            nextModelId = models[0].id;
+          }
+          await saveSettings({ availableModels: models, modelId: nextModelId });
+          sendResponse({ ok: true, data: { models, selectedModelId: nextModelId } });
+          break;
+        }
+        case MESSAGE_TYPES.GET_CACHE_STATS: {
+          const [cacheStats, usageStats] = await Promise.all([
+            getCacheStats(),
+            getUsageStats()
+          ]);
+          sendResponse({ ok: true, data: { ...cacheStats, ...usageStats } });
+          break;
+        }
+        case MESSAGE_TYPES.CLEAR_CACHE: {
+          const res = await clearAllCache();
+          sendResponse({ ok: true, data: res });
+          break;
+        }
+        case MESSAGE_TYPES.OPEN_OPTIONS_PAGE: {
+          await chrome.runtime.openOptionsPage();
+          sendResponse({ ok: true });
+          break;
+        }
+        case MESSAGE_TYPES.OPEN_DOCUMENT_STUDIO: {
+          const pdfUrl = message.payload?.pdfUrl || '';
+          const autoTranslate = message.payload?.autoTranslate !== false;
+          await openPdfTranslationNewTab(pdfUrl, sender?.tab || null, Boolean(pdfUrl && autoTranslate));
+          sendResponse({ ok: true });
+          break;
+        }
+        case MESSAGE_TYPES.SYNC_TAB_BADGE: {
+          const tabId = sender?.tab?.id;
+          if (tabId) {
+            const isTranslated = Boolean(message.payload?.isPageTranslated);
+            const tabUrl = sender?.tab?.url || '';
+            if (isOnlinePdfUrl(tabUrl)) {
+              await chrome.action.setBadgeText({ tabId, text: 'PDF' }).catch(() => {});
+              await chrome.action.setBadgeBackgroundColor({ tabId, color: '#4f46e5' }).catch(() => {});
+            } else if (isTranslated) {
+              await chrome.action.setBadgeText({ tabId, text: '✓' }).catch(() => {});
+              await chrome.action.setBadgeBackgroundColor({ tabId, color: '#10b981' }).catch(() => {});
+            } else {
+              await chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+            }
+          }
+          sendResponse({ ok: true });
+          break;
+        }
+        default:
+          sendResponse({ ok: false, error: `Unknown message type: ${message.type}` });
+      }
+    } catch (err) {
+      sendResponse({
+        ok: false,
+        error: err?.message || String(err)
+      });
+    }
+  })();
+
+  return true; // Keep message channel open for async response
+});

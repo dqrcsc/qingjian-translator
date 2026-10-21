@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>青简 · 译读 — 文档翻译工作台 (PDF / EPUB / Markdown / HTML)</title>
+  <link rel="stylesheet" href="studio.css" />
+</head>
+<body>
+  <div class="studio-app">
+    <!-- Top Toolbar (Concise, Non-Wrapping) -->
+    <header class="studio-topbar">
+      <div class="topbar-left">
+        <img src="../icons/icon-48.png" alt="Logo" class="topbar-logo" />
+        <div class="topbar-title-wrap">
+          <h1>青简 · 译读</h1>
+          <span id="docStatusSubtitle" class="topbar-sub">PDF · EPUB · Markdown 双语精读案头</span>
+        </div>
+      </div>
+
+      <div class="topbar-center">
+        <label class="upload-pill-btn" for="fileInput" title="选择本地 PDF / EPUB / Markdown / HTML / SRT 文档">
+          <span>📂 打开文档</span>
+          <input
+            type="file"
+            id="fileInput"
+            accept=".pdf,.epub,.md,.markdown,.html,.htm,.txt,.srt,.vtt"
+            hidden
+          />
+        </label>
+
+        <div class="online-url-bar">
+          <input
+            type="url"
+            id="onlinePdfUrlInput"
+            class="online-url-input"
+            placeholder="输入在线 PDF 链接 (如 arxiv.org/pdf/...)…"
+          />
+          <button id="loadOnlinePdfBtn" class="ghost-btn">🌐 加载</button>
+        </div>
+
+        <select id="layoutStyleSelect" class="toolbar-select" title="译文排版视图样式（保持原文论文排版或流式卡片阅读）">
+          <option value="paper-layout">样式: 📄 保持排版</option>
+          <option value="card-stream">样式: ✦ 卡片流</option>
+        </select>
+
+        <select id="viewModeSelect" class="toolbar-select" title="右侧译文显示模式">
+          <option value="bilingual">视图: 双语对照</option>
+          <option value="translation-only">视图: 仅看译文</option>
+        </select>
+      </div>
+
+      <div class="topbar-right">
+        <label class="ghost-btn" for="figureImageInput" title="上传或直接 Ctrl+V 粘贴论文插图/网页截图，精准识别并原位翻译图中文字">
+          <span>🖼️ 译图</span>
+          <input type="file" id="figureImageInput" accept="image/*" hidden />
+        </label>
+
+        <button id="startTranslateDocBtn" class="primary-action-btn" disabled>
+          ✦ 开始翻译
+        </button>
+
+        <div class="export-dropdown">
+          <button id="exportMenuBtn" class="secondary-action-btn" disabled>
+            📥 导出 ▾
+          </button>
+          <div id="exportDropdownMenu" class="dropdown-menu" hidden>
+            <button data-export="pdf-translation-only" data-doc-export="1">📄 导出保持排版 PDF (纯译文版)</button>
+            <button data-export="pdf-bilingual" data-doc-export="1">📖 导出保持排版 PDF (中英双语版)</button>
+            <div class="dropdown-divider" data-doc-export="1"></div>
+            <button data-export="html" data-doc-export="1">🌐 导出保持排版 HTML 网页 (.bilingual.html)</button>
+            <button data-export="md" data-doc-export="1">📝 导出双语 Markdown (.bilingual.md)</button>
+            <button data-export="epub" data-doc-export="1">📗 导出双语 EPUB 电子书 (.bilingual.epub)</button>
+            <button data-export="txt" data-sub-export="1" hidden>📄 导出双语字幕文本 (.bilingual.txt，Mac直接打开)</button>
+            <button data-export="srt" data-sub-export="1" hidden>🎬 导出双语 SRT 字幕 (.bilingual.srt)</button>
+          </div>
+        </div>
+
+        <button id="studioSettingsBtn" class="icon-only-btn" title="打开插件设置">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Progress Bar -->
+    <div id="progressBarWrap" class="progress-wrap" hidden>
+      <div id="progressBarFill" class="progress-fill" style="width: 0%"></div>
+    </div>
+
+    <!-- Empty Dropzone State -->
+    <section id="emptyDropzoneSection" class="dropzone-container">
+      <div id="dropzoneCard" class="dropzone-card">
+        <div class="dropzone-icon">📄</div>
+        <h2>拖拽文档到此处，选择本地文件，或直接输入在线 PDF 链接</h2>
+        <p>支持<b>保持原文论文排版（保留原图 + 图内文字原位译文）</b>与<b>滚动按需流式翻译（省 Token）</b>；也可直接 <code>Ctrl+V</code> 粘贴截图译图</p>
+
+        <div class="format-badges">
+          <span class="fmt-badge">📕 在线 / 本地 PDF (保持排版 + 保留原图译字)</span>
+          <span class="fmt-badge">⚡ 滚动按需懒加载翻译 (默认首译前 2 页)</span>
+          <span class="fmt-badge">📗 EPUB (章节目录 + 导出双语电子书)</span>
+          <span class="fmt-badge">📘 Markdown / HTML (保留代码块与公式)</span>
+        </div>
+
+        <div class="dropzone-cta-row">
+          <label for="fileInput" class="primary-action-btn large-btn">📂 选择本地文件上传</label>
+          <button id="emptyDemoBtn" class="secondary-action-btn large-btn">✨ 预览「保持原文排版 + 原图译字」示例论文</button>
+          <button id="loadDemoDocBtn" class="ghost-btn large-btn">🌐 试试在线 arXiv PDF 翻译</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Split Workspace View (Left: Original PDF or Chapter/Outline View, Right: Paper Layout / Bilingual Stream) -->
+    <main id="workspaceSplitMain" class="workspace-split" hidden>
+      <!-- Left Pane: Original PDF Native Viewer OR Document Source / EPUB Chapter Navigator -->
+      <section class="left-pane">
+        <div class="pane-header">
+          <span id="leftPaneTitle">📖 原文档</span>
+          <div id="epubChapterSelectWrap" hidden>
+            <select id="epubChapterSelect" class="toolbar-select"></select>
+          </div>
+        </div>
+        <div class="left-pane-body">
+          <div id="pdfCanvasScrollViewer" class="pdf-canvas-scroll-viewer" hidden></div>
+          <embed
+            id="pdfNativeEmbed"
+            type="application/pdf"
+            class="pdf-embed-viewer"
+            hidden
+          />
+          <div id="sourceOutlineViewer" class="source-outline-viewer"></div>
+        </div>
+      </section>
+
+      <!-- Right Pane: Preserved Paper Layout + Classic Bilingual Card Stream -->
+      <section class="right-pane">
+        <div class="pane-header">
+          <div class="right-header-left">
+            <button id="toggleTocSidebarBtn" class="ghost-btn mini-btn" type="button" title="展开/收起章节目录大纲">
+              📑 目录
+            </button>
+            <span id="rightPaneTitle">📄 原文排版</span>
+          </div>
+          <div class="right-pane-controls">
+            <div id="pdfPageJumpWrap" class="page-jump-control" hidden>
+              <button id="prevPageStepBtn" class="ghost-btn mini-btn" type="button" title="上一页">‹</button>
+              <input
+                type="number"
+                id="jumpPageInput"
+                class="page-num-input"
+                min="1"
+                max="500"
+                value="1"
+                placeholder="页"
+                title="输入要定位或翻译的 PDF 页码"
+              />
+              <span id="totalPagesBadge" class="page-total-label">/ 1</span>
+              <button id="nextPageStepBtn" class="ghost-btn mini-btn" type="button" title="下一页">›</button>
+              <button id="translateSinglePageBtn" class="ghost-btn mini-btn" type="button" title="立即翻译当前指定页">译本页</button>
+            </div>
+            <select id="paperColumnModeSelect" class="toolbar-select mini-select" title="论文排版分栏方式">
+              <option value="page-width">单栏</option>
+              <option value="two-column">双栏</option>
+            </select>
+            <input
+              type="text"
+              id="streamSearchInput"
+              class="search-input"
+              placeholder="搜索…"
+            />
+            <span id="progressCounterBadge" class="counter-badge">0 / 0 页</span>
+          </div>
+        </div>
+
+        <div class="right-pane-body-split">
+          <!-- Collapsible Left TOC Outline Sidebar inside Right Reader Pane -->
+          <aside id="pdfTocSidebar" class="pdf-toc-sidebar">
+            <div class="pdf-toc-header">
+              <span>📑 章节与图表</span>
+              <span id="pdfTocCountBadge" class="pdf-toc-count">0</span>
+            </div>
+            <div id="pdfTocList" class="pdf-toc-list"></div>
+          </aside>
+
+          <div id="bilingualStreamContainer" class="bilingual-stream mode-paper-layout"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Layout-Preserving PDF Export & Token Confirmation Modal -->
+    <div id="pdfExportConfirmModal" class="pdf-export-modal-backdrop" hidden>
+      <div class="pdf-export-modal-card" role="dialog" aria-modal="true" aria-labelledby="pdfExportModalTitle">
+        <div class="pdf-export-modal-header">
+          <div>
+            <h3 id="pdfExportModalTitle">📄 导出保持排版 PDF — 翻译进度与 Token 消耗确认</h3>
+            <p class="pdf-export-modal-sub">支持保留原论文排版、数学公式与原位汉化图表，导出多页完整 PDF</p>
+          </div>
+          <button type="button" id="closePdfExportModalBtn" class="icon-only-btn" title="关闭">✕</button>
+        </div>
+
+        <div class="pdf-export-modal-body">
+          <!-- 1. Export Mode Selection (Pure Translation vs Bilingual) -->
+          <div class="pdf-export-section-label">1. 选择导出 PDF 的排版呈现形式</div>
+          <div class="pdf-export-mode-grid">
+            <label class="pdf-export-mode-option" id="exportModeCardTransOnly">
+              <input type="radio" name="pdfExportViewMode" value="translation-only" checked />
+              <div class="mode-opt-title">📄 纯译文保持排版 PDF</div>
+              <div class="mode-opt-desc">仅保留中文译文、公式与汉化原图，首行缩进、版面整洁，适合流畅通读与打印存档</div>
+            </label>
+            <label class="pdf-export-mode-option" id="exportModeCardBilingual">
+              <input type="radio" name="pdfExportViewMode" value="bilingual" />
+              <div class="mode-opt-title">📖 中英双语保持排版 PDF</div>
+              <div class="mode-opt-desc">每段保留英文原文与中文译文上下对照、公式与汉化原图，适合精读与学术细节核对</div>
+            </label>
+          </div>
+
+          <!-- 2. Current Lazy Translation Progress Summary -->
+          <div class="pdf-export-section-label">2. 当前文档翻译进度与页码范围</div>
+          <div class="pdf-export-stats-row">
+            <div class="pdf-stat-box">
+              <span class="pdf-stat-num" id="modalTotalPagesText">1</span>
+              <span class="pdf-stat-label">文档总页数</span>
+            </div>
+            <div class="pdf-stat-box is-done">
+              <span class="pdf-stat-num" id="modalDonePagesText">0</span>
+              <span class="pdf-stat-label">已翻译页数</span>
+            </div>
+            <div class="pdf-stat-box is-pending">
+              <span class="pdf-stat-num" id="modalRemainingPagesText">0</span>
+              <span class="pdf-stat-label">待补译页数</span>
+            </div>
+          </div>
+
+          <!-- 3. Scope Radio Options -->
+          <div class="pdf-export-scope-list">
+            <label class="pdf-scope-item">
+              <input type="radio" name="pdfExportScope" value="all" checked />
+              <div class="pdf-scope-content">
+                <div class="pdf-scope-title">🔥 补全翻译剩余页面后，导出完整 PDF（推荐）</div>
+                <div class="pdf-scope-desc" id="scopeAllDescText">自动按序翻译所有未译页面，全部完成后自动弹出多页 PDF 导出</div>
+              </div>
+            </label>
+
+            <label class="pdf-scope-item">
+              <input type="radio" name="pdfExportScope" value="range" />
+              <div class="pdf-scope-content">
+                <div class="pdf-scope-title">
+                  <span>🎯 自定义页码范围翻译并导出：第</span>
+                  <input type="number" id="exportRangeStartInput" class="range-num-input" min="1" value="1" />
+                  <span>页 至 第</span>
+                  <input type="number" id="exportRangeEndInput" class="range-num-input" min="1" value="5" />
+                  <span>页</span>
+                </div>
+                <div class="pdf-scope-desc">适合仅导出论文正文核心章节（如跳过末尾 References 参考文献与附录，大幅节省 Token）</div>
+              </div>
+            </label>
+
+            <label class="pdf-scope-item" id="scopeTranslatedOnlyWrap">
+              <input type="radio" name="pdfExportScope" value="translated-only" />
+              <div class="pdf-scope-content">
+                <div class="pdf-scope-title">⚡ 仅立即导出目前已翻译完成的页面（0 额外 Token 消耗）</div>
+                <div class="pdf-scope-desc" id="scopeTranslatedOnlyDescText">无需等待剩余页面翻译，立即将当前已译好的页面导出为保持排版的 PDF</div>
+              </div>
+            </label>
+          </div>
+
+          <!-- 4. Token & Time Consumption Warning Banner -->
+          <div id="pdfExportTokenWarningBox" class="pdf-token-warning-box">
+            <div class="token-warn-title" id="pdfTokenWarnTitle">⚠️ 懒加载补全翻译与 Token 消耗提醒</div>
+            <div class="token-warn-body" id="pdfTokenWarnBody">
+              当前采用滚动按需懒加载机制。导出所选范围需先补充翻译剩余页面。
+            </div>
+          </div>
+
+          <!-- 5. Live Batch Translation Progress Inside Modal -->
+          <div id="pdfExportLiveProgressBox" class="pdf-export-live-progress" hidden>
+            <div class="live-prog-header">
+              <span id="pdfExportLiveStatusText">⏳ 正在按序补全翻译第 1 / 1 页…</span>
+              <span id="pdfExportLivePercentText">0%</span>
+            </div>
+            <div class="live-prog-track">
+              <div id="pdfExportLiveBarFill" class="live-prog-fill" style="width: 0%"></div>
+            </div>
+            <div class="live-prog-hint">翻译期间正在逐页提取原文版面与裁剪重绘论文插图，请勿关闭此页面…</div>
+          </div>
+        </div>
+
+        <div class="pdf-export-modal-footer">
+          <button type="button" id="cancelPdfExportModalBtn" class="ghost-btn">取消</button>
+          <button type="button" id="abortAndExportDoneBtn" class="secondary-action-btn" hidden>
+            ⏸ 停止补译并仅导出已译页
+          </button>
+          <button type="button" id="confirmPdfExportBtn" class="primary-action-btn">
+            ✦ 确认补全翻译并导出 PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/pdf_worker.js"></script>
+  <script src="vendor/pdf.js"></script>
+  <script type="module" src="studio.js"></script>
+</body>
+</html>

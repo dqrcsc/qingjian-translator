@@ -1,0 +1,637 @@
+/**
+ * Host-page non-intrusive stylesheet for Immersive Gemini bilingual blocks & YouTube dual subtitles.
+ * All selectors are strictly prefixed with `ig-` to prevent style collisions.
+ */
+
+:root {
+  --ig-accent: #4f46e5;
+  --ig-accent-soft: rgba(79, 70, 229, 0.1);
+  --ig-border-accent: #6366f1;
+  --ig-marker-bg: rgba(253, 224, 71, 0.28);
+}
+
+/* Base shared properties for injected <font class="notranslate ig-trans-node"> */
+.ig-trans-node {
+  font-family: inherit;
+  color: inherit;
+  letter-spacing: 0.01em;
+  transition: opacity 0.2s ease, filter 0.22s ease, background-color 0.2s ease;
+}
+
+/* Inline translation variant for UI labels, titles, nav items, legends, flex items */
+.ig-trans-inline {
+  display: inline;
+  margin-left: 0.42em;
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: inherit;
+  opacity: 0.88;
+}
+
+/* Block translation variant for prose paragraphs (<p>, <blockquote>, long list items) */
+.ig-trans-block {
+  display: block;
+  margin-top: 6px;
+  margin-bottom: 2px;
+  font-size: 0.96em;
+  line-height: 1.65;
+  word-break: break-word;
+  white-space: pre-line;
+  opacity: 0.92;
+  text-align: start;
+}
+
+.ig-orig-text {
+  font: inherit;
+  color: inherit;
+}
+
+/* Style 1: Clean (清爽对照 - Default) */
+html[data-ig-style="clean"] .ig-trans-node,
+html:not([data-ig-style]) .ig-trans-node {
+  opacity: 0.88;
+}
+
+/* Style 2: Blockquote (引用竖线) */
+html[data-ig-style="blockquote"] .ig-trans-block {
+  padding: 5px 11px;
+  border-left: 3px solid var(--ig-border-accent);
+  background: var(--ig-accent-soft);
+  border-radius: 0 6px 6px 0;
+}
+
+html[data-ig-style="blockquote"] .ig-trans-inline {
+  padding: 1px 6px;
+  border-left: 2px solid var(--ig-border-accent);
+  background: var(--ig-accent-soft);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Style 3: Underline (精致虚线下划线) */
+html[data-ig-style="underline"] .ig-trans-node {
+  text-decoration: underline dashed rgba(99, 102, 241, 0.65);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+}
+
+/* Style 4: Mask / Blur (学习模糊模式 - 鼠标悬停清晰显现) */
+html[data-ig-style="mask"] .ig-trans-node {
+  filter: blur(5px);
+  user-select: none;
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+html[data-ig-style="mask"] .ig-trans-node:hover,
+html[data-ig-style="mask"] *:hover > .ig-trans-node {
+  filter: blur(0);
+  user-select: text;
+  background: transparent;
+}
+
+/* Style 5: Marker (荧光马克笔) */
+html[data-ig-style="marker"] .ig-trans-node {
+  background: linear-gradient(180deg, transparent 55%, var(--ig-marker-bg) 55%);
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+/* Style 6: Translation-Only (仅显示译文模式 — 隐藏原文文本节点，仅呈现母语译文) */
+html[data-ig-style="translation-only"] [data-ig-status="done"] .ig-orig-text,
+html[data-ig-style="translation-only"] [data-ig-status="done"] [data-ig-orig-inline="1"],
+html[data-ig-style="translation-only"] [data-ig-status="done"] br:not(.ig-trans-br) {
+  display: none !important;
+}
+
+html[data-ig-style="translation-only"] [data-ig-status="done"] .ig-trans-node {
+  display: inline !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  font-weight: inherit !important;
+  opacity: 1 !important;
+  white-space: pre-line;
+}
+
+/* Zero-layout-shift inline loading spinner (Immersive Translate style) */
+.ig-trans-loading {
+  display: inline-block;
+  width: 0.72em;
+  height: 0.72em;
+  min-width: 9px;
+  min-height: 9px;
+  max-width: 13px;
+  max-height: 13px;
+  margin-left: 0.38em;
+  vertical-align: -0.08em;
+  border-radius: 50%;
+  border: 1.6px solid rgba(99, 102, 241, 0.28);
+  border-top-color: #6366f1;
+  animation: ig-spin 0.68s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes ig-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error & Retry inline badge */
+.ig-trans-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  cursor: pointer;
+}
+
+/* Hover-to-translate target outline when holding Alt */
+.ig-hover-target-highlight {
+  outline: 2px dashed rgba(99, 102, 241, 0.7) !important;
+  outline-offset: 4px !important;
+  border-radius: 4px;
+  transition: outline 0.12s ease;
+}
+
+/* Input box triple-space translating shimmer */
+.ig-input-translating {
+  box-shadow: 0 0 0 2px #6366f1, 0 0 12px rgba(99, 102, 241, 0.45) !important;
+  transition: box-shadow 0.2s ease !important;
+}
+
+/* ==========================================================================
+   YouTube Dual Subtitle Overlay & Interactive Bilingual Timeline Sidebar
+   ========================================================================== */
+
+.ig-yt-dual-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 68px;
+  transform: translateX(-50%);
+  width: 94%;
+  max-width: 1360px;
+  z-index: 65;
+  text-align: center;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  transition: bottom 0.15s ease;
+}
+
+.ig-yt-sub-box {
+  display: inline-block;
+  padding: 9px 24px;
+  border-radius: 10px;
+  background: rgba(10, 12, 20, var(--ig-yt-bg-opacity, 0.72));
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  cursor: grab;
+  max-width: 96%;
+}
+
+.ig-yt-line-orig {
+  color: #f8fafc;
+  font-size: clamp(18px, calc(var(--ig-yt-font-size, 22px) * 0.96), 34px);
+  font-weight: 500;
+  line-height: 1.4;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+  margin-bottom: 4px;
+}
+
+.ig-yt-line-trans {
+  color: var(--ig-yt-trans-color, #fde047);
+  font-size: clamp(20px, calc(var(--ig-yt-font-size, 22px) * 1.12), 40px);
+  font-weight: 600;
+  line-height: 1.44;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+}
+
+/* Automatically scale up subtitles in Theater Mode and Fullscreen Mode */
+.html5-video-player.ytp-big-mode .ig-yt-line-orig,
+.html5-video-player.ytp-fullscreen .ig-yt-line-orig {
+  font-size: clamp(22px, calc(var(--ig-yt-font-size, 22px) * 1.24), 42px);
+}
+
+.html5-video-player.ytp-big-mode .ig-yt-line-trans,
+.html5-video-player.ytp-fullscreen .ig-yt-line-trans {
+  font-size: clamp(25px, calc(var(--ig-yt-font-size, 22px) * 1.4), 48px);
+}
+
+/* Hide YouTube's default caption container when our Dual Subtitle Overlay is active to avoid duplicate overlap */
+.html5-video-player.ig-yt-dual-active .ytp-caption-window-container {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* YouTube Player Control Bar Button — override YouTube's fixed 48px .ytp-button width */
+.html5-video-player .ytp-chrome-controls .ytp-button.ig-yt-ctrl-btn,
+.ytp-right-controls .ig-yt-ctrl-btn,
+.ig-yt-ctrl-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: top !important;
+  width: auto !important;
+  min-width: max-content !important;
+  height: 100% !important;
+  padding: 0 6px !important;
+  cursor: pointer !important;
+  background: transparent !important;
+  border: none !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  opacity: 0.94 !important;
+}
+
+.ig-yt-ctrl-btn:hover {
+  opacity: 1 !important;
+}
+
+.ig-yt-ctrl-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  white-space: nowrap !important;
+  gap: 5px !important;
+  padding: 4px 10px 4px 8px !important;
+  border-radius: 6px !important;
+  background: rgba(15, 23, 42, 0.88) !important;
+  border: 1.5px solid #10b981 !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  line-height: 1.2 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  transition: all 0.16s ease !important;
+}
+
+.ig-yt-ctrl-pill.is-off {
+  background: rgba(30, 41, 59, 0.65) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.ig-yt-pill-check {
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 999px !important;
+  background: #10b981 !important;
+  border: 1.5px solid #34d399 !important;
+  color: #ffffff !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 9.5px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+}
+
+.ig-yt-ctrl-pill.is-off .ig-yt-pill-check {
+  background: transparent !important;
+  border-color: rgba(148, 163, 184, 0.55) !important;
+  color: transparent !important;
+}
+
+/* YouTube Right-Side Interactive Bilingual Timeline Panel */
+.ig-yt-timeline-panel {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  width: 384px;
+  height: calc(100vh - 96px);
+  max-height: 760px;
+  background: rgba(15, 23, 42, 0.96);
+  color: #f8fafc;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.55);
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  backdrop-filter: blur(12px);
+}
+
+.ig-yt-timeline-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: nowrap;
+  background: rgba(30, 41, 59, 0.7);
+}
+
+.ig-yt-timeline-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ig-yt-timeline-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.ig-yt-mini-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(51, 65, 85, 0.65);
+  color: #f1f5f9;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ig-yt-mini-btn:hover {
+  background: #4f46e5;
+  border-color: #6366f1;
+}
+
+.ig-yt-mini-btn.is-active {
+  background: #dc2626;
+  border-color: #ef4444;
+}
+
+.ig-yt-export-bar {
+  padding: 8px 12px;
+  background: rgba(30, 41, 59, 0.92);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.ig-yt-export-bar[hidden] {
+  display: none !important;
+}
+
+.ig-yt-export-opt {
+  flex: 1;
+  padding: 5px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: center;
+  border-radius: 6px;
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  background: rgba(79, 70, 229, 0.25);
+  color: #e0e7ff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ig-yt-export-opt:hover {
+  background: #4f46e5;
+  color: #ffffff;
+  border-color: #818cf8;
+}
+
+.ig-yt-timeline-search {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.ig-yt-timeline-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.8);
+  color: #f8fafc;
+  font-size: 12px;
+  outline: none;
+}
+
+.ig-yt-timeline-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ig-yt-cue-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ig-yt-cue-item:hover {
+  background: rgba(51, 65, 85, 0.65);
+}
+
+.ig-yt-cue-item.is-current {
+  background: rgba(79, 70, 229, 0.22);
+  border-color: rgba(99, 102, 241, 0.65);
+}
+
+.ig-yt-cue-time {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #818cf8;
+  margin-bottom: 3px;
+}
+
+.ig-yt-cue-orig {
+  font-size: 12.5px;
+  color: #e2e8f0;
+  line-height: 1.4;
+}
+
+.ig-yt-cue-trans {
+  font-size: 12.5px;
+  color: #fde047;
+  line-height: 1.42;
+  margin-top: 3px;
+}
+
+/* ==========================================================================
+   Webpage & X.com Image OCR + In-Place Bounding-Box Translation Overlay
+   ========================================================================== */
+
+.ig-img-host-rel {
+  position: relative !important;
+}
+
+.ig-img-overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 18;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.ig-img-overlay-layer.is-hidden {
+  display: none !important;
+}
+
+.ig-img-seamless-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.ig-img-region-hotspot {
+  position: absolute;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  pointer-events: auto;
+  cursor: help;
+}
+
+.ig-img-region-box {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+  border: none;
+  box-shadow: none;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-weight: 500;
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: auto;
+  cursor: help;
+  transition: opacity 0.18s ease;
+}
+
+.ig-img-region-box:hover {
+  opacity: 0.15;
+}
+
+.ig-img-control-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.86);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.ig-img-ctrl-btn {
+  border: none;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.ig-img-ctrl-btn:hover {
+  background: rgba(99, 102, 241, 0.35);
+}
+
+.ig-img-ctrl-btn.is-active {
+  background: #10b981;
+  color: #052e16;
+}
+
+.ig-img-bilingual-drawer {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  max-height: 62%;
+  overflow-y: auto;
+  z-index: 24;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  color: #f8fafc;
+  font-size: 12.5px;
+  line-height: 1.5;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  text-align: left;
+}
+
+.ig-img-bilingual-drawer[hidden] {
+  display: none !important;
+}
+
+.ig-img-drawer-row {
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.ig-img-drawer-row:last-child {
+  border-bottom: none;
+}
+
+.ig-img-drawer-orig {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+.ig-img-drawer-trans {
+  color: #fde047;
+  font-size: 12.5px;
+  font-weight: 500;
+  margin-top: 2px;
+}

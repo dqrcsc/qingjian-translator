@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>青简 · 译读 — 设置与多模型引擎中心</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="options-layout">
+    <!-- Left Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img src="../icons/icon-48.png" alt="Logo" />
+        <div>
+          <h2>青简 · 译读</h2>
+          <span>QingJian · 多模型智译引擎</span>
+        </div>
+      </div>
+
+      <nav class="nav-list">
+        <a href="#sec-api" class="nav-item is-active" data-section="sec-api">🔑 AI 模型与引擎配置</a>
+        <a href="#sec-style" class="nav-item" data-section="sec-style">🎨 双语样式与微交互</a>
+        <a href="#sec-youtube" class="nav-item" data-section="sec-youtube">🎬 YouTube 双语字幕</a>
+        <a href="#sec-glossary" class="nav-item" data-section="sec-glossary">📚 术语库与提示词定制</a>
+        <a href="#sec-sites" class="nav-item" data-section="sec-sites">🌐 站点规则与缓存管理</a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="openStudioFromOptionsBtn" class="studio-btn">
+          📄 打开文档翻译工作台
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <div class="top-save-bar">
+        <div>
+          <h1>设置与 AI 翻译定制中心</h1>
+          <p class="subtitle">所有设置与各厂商 API Key 均仅保存在您的浏览器本地 (chrome.storage.local)</p>
+        </div>
+        <div class="save-actions">
+          <span id="saveStatusToast" class="save-status"></span>
+          <button id="saveAllBtn" class="primary-btn">保存全部更改</button>
+        </div>
+      </div>
+
+      <!-- Section 1: Multi-Provider AI API -->
+      <section id="sec-api" class="card-section">
+        <div class="section-header">
+          <h2>🔑 自有 AI 大模型引擎配置 (开放多模型 · BYOK)</h2>
+          <p>本插件不绑定任何内置模型。请先选择服务商（或自定义网关）、填入您的 API Key，随后点击「从接口拉取模型」自动同步，或直接手动填写您拥有的模型 ID。</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="providerSelect">模型服务商模板 (自动预填对应通信协议与官方 Base URL)</label>
+            <select id="providerSelect"></select>
+            <span id="providerHelpText" style="font-size:11.5px;color:#94a3b8;margin-top:2px;"></span>
+          </div>
+
+          <div class="form-group">
+            <label for="apiProtocolSelect">接口通信协议 (支持主流 OpenAI 协议与 Gemini 原生协议)</label>
+            <select id="apiProtocolSelect">
+              <option value="gemini">Google Gemini 原生协议 (/v1beta/models/*:generateContent)</option>
+              <option value="openai">OpenAI 兼容协议 (/v1/chat/completions · 支持绝大多数厂商)</option>
+            </select>
+          </div>
+
+          <div class="form-group full-width">
+            <label for="apiBaseUrlInput">API Base URL (切换服务商时自动预填，允许手动修改)</label>
+            <div class="input-with-actions">
+              <input
+                type="url"
+                id="apiBaseUrlInput"
+                placeholder="https://generativelanguage.googleapis.com/v1beta"
+              />
+              <button type="button" id="resetBaseUrlBtn" class="secondary-btn" title="恢复当前所选服务商的官方默认 Base URL">恢复默认地址</button>
+            </div>
+          </div>
+
+          <div class="form-group full-width">
+            <label for="apiKeyInput"><span id="apiKeyLabelText">API Key</span> <span class="req">* (请手动填写您自己的密钥)</span></label>
+            <div class="input-with-actions">
+              <input
+                type="password"
+                id="apiKeyInput"
+                placeholder="在此粘贴您的 API Key..."
+                autocomplete="off"
+              />
+              <button type="button" id="toggleKeyVisBtn" class="secondary-btn">显示</button>
+              <button type="button" id="testApiBtn" class="accent-btn">⚡ 测试连接与延迟</button>
+            </div>
+            <div id="apiTestResult" class="test-result" hidden></div>
+          </div>
+
+          <div class="form-group">
+            <label for="modelIdSelect">
+              方式一：从接口拉取并选择模型 <span id="modelListCountBadge" style="font-weight:400;color:#818cf8;font-size:11.5px;">(填入 Key 后点击右侧按钮同步)</span>
+            </label>
+            <div class="input-with-actions">
+              <select id="modelIdSelect"></select>
+              <button type="button" id="fetchModelsBtn" class="secondary-btn" title="从当前服务商接口拉取此 API Key 支持的所有可用模型">🔄 从接口拉取模型</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="customModelIdInput">方式二：直接手动填写模型 ID (无需拉取列表，直接输入您拥有的模型名称)</label>
+            <input
+              type="text"
+              id="customModelIdInput"
+              placeholder="直接输入您拥有的模型 ID；留空则使用左侧已拉取的下拉模型"
+            />
+          </div>
+
+          <div class="form-group full-width">
+            <label for="temperatureInput">生成温度 (Temperature: <span id="tempVal">0.2</span>)</label>
+            <input
+              type="range"
+              id="temperatureInput"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.2"
+            />
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Styles & Micro-Interactions -->
+      <section id="sec-style" class="card-section">
+        <div class="section-header">
+          <h2>🎨 网页双语样式与高频微交互</h2>
+          <p>实时预览并定制双语对照排版及划词、三击空格、悬停翻译体验。</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="targetLangSelect">网页与文档目标阅读语言</label>
+            <select id="targetLangSelect"></select>
+          </div>
+
+          <div class="form-group">
+            <label for="inputTargetLangSelect">输入框「连按3次空格」目标输出语言</label>
+            <select id="inputTargetLangSelect"></select>
+          </div>
+
+          <div class="form-group full-width">
+            <label>双语译文显示样式 (点击卡片切换默认样式)</label>
+            <div id="stylePreviewCards" class="style-preview-grid"></div>
+          </div>
+
+          <div class="form-group full-width">
+            <div class="toggles-grid">
+              <label class="switch-card">
+                <input type="checkbox" id="enableFloatingBallCheck" />
+                <div>
+                  <strong>启用网页右侧悬浮球</strong>
+                  <span>支持一键切换双语翻译与上下拖拽停靠位置</span>
+                </div>
+              </label>
+
+              <label class="switch-card">
+                <input type="checkbox" id="enableSelectionTooltipCheck" />
+                <div>
+                  <strong>启用划词 AI 语境精解</strong>
+                  <span>选中词汇时结合所在段落上下文输出精准释义与语法拆解</span>
+                </div>
+              </label>
+
+              <label class="switch-card">
+                <input type="checkbox" id="enableTripleSpaceInputCheck" />
+                <div>
+                  <strong>启用输入框「连按3次空格」实时翻译</strong>
+                  <span>在搜索框、评论区或 AI 对话框输入母语后三击空格自动转为外语</span>
+                </div>
+              </label>
+
+              <label class="switch-card">
+                <input type="checkbox" id="enableHoverTranslateCheck" />
+                <div>
+                  <strong>启用「按住 Alt + 鼠标悬停」单段速译</strong>
+                  <span>无需开启整页翻译，指向任意段落按下 Alt 即可单独翻译该段</span>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 3: YouTube Dual Subtitles -->
+      <section id="sec-youtube" class="card-section">
+        <div class="section-header">
+          <h2>🎬 YouTube 视频双语字幕与多模态听译</h2>
+          <p>自动提取视频字幕轨道并通过上下文时间窗合并翻译，支持双语字幕导出与无字幕视频 AI 音频听译。</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="youtubeAutoEnableCheck" />
+              <span>打开 YouTube 视频时自动开启 AI 双语字幕</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="youtubeShowSidebarCheck" />
+              <span>默认展开播放器右侧「双语字幕时间轴列表」</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="youtubeSubFontSizeInput">双语字幕字号 (px)</label>
+            <input type="number" id="youtubeSubFontSizeInput" min="12" max="36" value="18" />
+          </div>
+
+          <div class="form-group">
+            <label for="youtubeTransColorInput">译文字幕高亮颜色</label>
+            <input type="color" id="youtubeTransColorInput" value="#fde047" />
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4: Glossary & Custom Prompt -->
+      <section id="sec-glossary" class="card-section">
+        <div class="section-header">
+          <h2>📚 翻译风格预设、自定义术语库与 System Prompt</h2>
+          <p>确保专业领域词汇、人名、产品名在全文翻译中保持 100% 一致性。</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <label for="tonePresetSelect">翻译语调与专业领域预设</label>
+            <select id="tonePresetSelect"></select>
+          </div>
+
+          <div class="form-group full-width">
+            <label for="glossaryTextarea">自定义专业术语表 (每行一条，格式：<code>原文 = 译文</code>)</label>
+            <textarea
+              id="glossaryTextarea"
+              rows="5"
+              placeholder="LLM = 大语言模型&#10;Agent = 智能体&#10;Immersive Translate = 沉浸式翻译"
+            ></textarea>
+          </div>
+
+          <div class="form-group full-width">
+            <label for="customSystemPromptTextarea">自定义补充 System Prompt (可选)</label>
+            <textarea
+              id="customSystemPromptTextarea"
+              rows="3"
+              placeholder="例如：保留所有计算机科学专有名词英文缩写，译文行文风格简洁克制…"
+            ></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 5: Site Rules & Cache -->
+      <section id="sec-sites" class="card-section">
+        <div class="section-header">
+          <h2>🌐 站点自动翻译规则、在线 PDF 与本地缓存</h2>
+          <p>管理白名单/黑名单域名、在线 PDF 默认阅读行为、批量打包参数与 IndexedDB 本地翻译缓存。</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <label class="switch-card">
+              <input type="checkbox" id="autoTranslateOnlinePdfCheck" />
+              <div>
+                <strong>访问在线 PDF 链接时自动打开翻译工作台 (默认关闭)</strong>
+                <span>关闭时：访问在线 PDF 保持浏览器原生阅读器，仅在点击「青简」插件翻译按钮或按 Alt+A 时新建标签页跳转至翻译工作台；开启后：访问在线 PDF 链接将自动新建标签页进行双语翻译。</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="alwaysTranslateDomainsTextarea">始终自动翻译的网站域名 (每行一个，仅对普通网页生效)</label>
+            <textarea
+              id="alwaysTranslateDomainsTextarea"
+              rows="4"
+              placeholder="news.ycombinator.com&#10;arxiv.org&#10;github.com"
+            ></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="neverTranslateDomainsTextarea">永不自动翻译的网站域名 (每行一个)</label>
+            <textarea
+              id="neverTranslateDomainsTextarea"
+              rows="4"
+              placeholder="localhost&#10;127.0.0.1"
+            ></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="batchMaxItemsInput">单次请求最大合并段落数 (Batch Size)</label>
+            <input type="number" id="batchMaxItemsInput" min="1" max="25" value="10" />
+          </div>
+
+          <div class="form-group">
+            <label for="maxConcurrencyInput">最大并发 API 请求数</label>
+            <input type="number" id="maxConcurrencyInput" min="1" max="8" value="3" />
+          </div>
+
+          <div class="form-group full-width">
+            <div class="cache-banner">
+              <div>
+                <strong id="cacheStatsTitle">本地 IndexedDB 缓存统计加载中…</strong>
+                <p id="cacheStatsDesc">相同段落与字幕二次访问时直接0延迟命中本地缓存，不消耗 Token。</p>
+              </div>
+              <div class="cache-btn-row">
+                <button type="button" id="clearCacheBtn" class="secondary-btn">🗑️ 清空翻译缓存</button>
+                <button type="button" id="resetDefaultBtn" class="secondary-btn">恢复默认设置</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

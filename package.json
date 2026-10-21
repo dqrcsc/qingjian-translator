@@ -1,0 +1,29 @@
+{
+  "name": "qingjian-translator",
+  "version": "1.0.0",
+  "description": "青简 · 译读 (QingJian) — 开放多模型（Gemini / DeepSeek / OpenCode Go / OpenAI 兼容协议）双语对照精读与多模态翻译 Chrome 扩展（网页双语、贴图原位译文、YouTube 双语字幕、学术论文 PDF/EPUB/MD 文档翻译工作台）",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "bilingual-translator",
+    "immersive-translation",
+    "gemini",
+    "deepseek",
+    "openai",
+    "pdf-translator",
+    "youtube-subtitles",
+    "epub-translator"
+  ],
+  "scripts": {
+    "icons": "node scripts/generate-icons.mjs",
+    "verify": "node scripts/verify-extension.mjs",
+    "pack": "node scripts/pack-release.mjs",
+    "build": "node scripts/generate-icons.mjs && node scripts/verify-extension.mjs && node scripts/pack-release.mjs"
+  }
+}
