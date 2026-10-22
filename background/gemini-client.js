@@ -346,7 +346,7 @@ async function readApiError(response) {
   }
 }
 
-function translationMap(parsedList, inputs) {
+function translationMap(parsedList, inputs, { allowPlaceholderRetry = false } = {}) {
   const expected = new Map(inputs.map(item => [Number(item.id), item]));
   const result = new Map();
   const seen = new Set();
@@ -364,6 +364,7 @@ function translationMap(parsedList, inputs) {
     const translation = entry.translation.trim();
     const placeholders = text => (String(text).match(/\{\{\d+\}\}/g) || []).sort().join('|');
     if (placeholders(expected.get(id).text) !== placeholders(translation)) {
+      if (allowPlaceholderRetry) continue;
       throw new Error('模型未完整保留代码或公式占位符，请重试');
     }
     result.set(id, translation);
@@ -708,7 +709,9 @@ ${JSON.stringify(inputPayload)}`;
                 : []
       : [];
 
-  const byId = translationMap(parsedList, inputPayload);
+  const byId = translationMap(parsedList, inputPayload, {
+    allowPlaceholderRetry: !options._isMissingSubsetRetry && inputPayload.length > 1
+  });
   const missingItems = inputPayload.filter(item => !byId.has(item.id));
   if (missingItems.length > 0) {
     if (options._isMissingSubsetRetry) {
@@ -870,7 +873,9 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
     }
   }
   const parsed = safeParseJson(raw);
-  const mapById = translationMap(Array.isArray(parsed) ? parsed : [], cues);
+  const mapById = translationMap(Array.isArray(parsed) ? parsed : [], cues, {
+    allowPlaceholderRetry: !_isMissingSubsetRetry && cues.length > 1
+  });
   const missing = cues.filter(c => !mapById.has(c.id));
   if (missing.length > 0) {
     if (_isMissingSubsetRetry) throw new Error(`模型遗漏了 ${missing.length} 条字幕译文，请重试`);

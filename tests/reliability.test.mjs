@@ -75,9 +75,29 @@ test('duplicate, unknown, missing and non-integer IDs cannot become successful b
   }
 });
 
-test('damaged placeholders fail rather than being cached', async () => {
+test('damaged placeholders fail rather than being cached, and multi-item batches retry only the damaged item', async () => {
   mockReplies([{ id: 1, translation: '丢失了占位符' }]);
   await assert.rejects(() => client.translateBatchWithGemini([{ id: 1, text: 'Use {{0}} and {{1}}.' }], settings), /占位/);
+
+  const batchWithPlaceholder = [
+    { id: 10, text: 'Keep {{0}} intact.' },
+    { id: 20, text: 'Plain sentence.' }
+  ];
+  mockReplies(
+    [{ id: 10, translation: '丢失占位符' }, { id: 20, translation: '普通句子' }],
+    [{ id: 10, translation: '保留 {{0}} 完整。' }]
+  );
+  const recovered = await client.translateBatchWithGemini(batchWithPlaceholder, settings);
+  assert.deepEqual(recovered.map(x => x.translation), ['保留 {{0}} 完整。', '普通句子']);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].messages.at(-1).content, /"id":10/);
+  assert.doesNotMatch(calls[1].messages.at(-1).content, /"id":20/);
+
+  mockReplies(
+    [{ id: 10, translation: '丢失占位符' }, { id: 20, translation: '普通句子' }],
+    [{ id: 10, translation: '重试仍丢失占位符' }]
+  );
+  await assert.rejects(() => client.translateBatchWithGemini(batchWithPlaceholder, settings), /占位/);
 });
 
 test('subtitle IDs retry missing items and reject an empty result', async () => {
@@ -336,11 +356,81 @@ function audioContext(protocol = 'gemini') {
   return { ctx, toasts, button, recorders, requested, stopped: () => stopped, respond: value => reply(value) };
 }
 
-test('unsupported audio protocol fails before capture', async () => {
+test('unsupported audio protocol fails before capture while default or upgraded Gemini settings succeed', async () => {
   const a = audioContext('openai'); await a.ctx.toggleExperimentalAudioListen(a.button);
   assert.equal(a.ctx.ytAudioListenActive, false);
   assert.equal(a.recorders.length, 0);
   assert.match(a.toasts.join(' '), /不支持/);
+
+  const upgraded = audioContext(undefined);
+  await upgraded.ctx.toggleExperimentalAudioListen(upgraded.button);
+  assert.equal(upgraded.ctx.ytAudioListenActive, true);
+  assert.equal(upgraded.recorders.length, 1);
+  upgraded.ctx.stopYoutubeAudioListen();
+
+  const nonGoogleDefault = audioContext(undefined);
+  nonGoogleDefault.ctx.settings = { providerId: 'deepseek' };
+  await nonGoogleDefault.ctx.toggleExperimentalAudioListen(nonGoogleDefault.button);
+  assert.equal(nonGoogleDefault.ctx.ytAudioListenActive, false);
+  assert.equal(nonGoogleDefault.recorders.length, 0);
+});
+
+test('disablePageTranslation clears flushQueueTimer and does not wipe a re-enabled session during async RAF cleanup', async () => {
+  const rafQueue = [];
+  const clearedTimers = [];
+  const makeEl = status => ({
+    dataset: { igStatus: status, igBlockId: '1' },
+    querySelectorAll: () => [{ remove() {} }]
+  });
+  const elRequeued = makeEl('done');
+  const elUntouched = makeEl('done');
+  const ctx = vm.createContext({
+    pageTranslationSession: 0,
+    pageRequests: { cancel() {} },
+    isPageTranslated: true,
+    pendingParagraphQueue: [{ id: 1, text: 'old' }],
+    flushQueueTimer: 99,
+    scrollRescanTimer: null,
+    postEnableTimers: [],
+    viewportObserver: { disconnect() {} },
+    domMutationObserver: { disconnect() {} },
+    window: { removeEventListener() {} },
+    handleScrollRescan() {},
+    clearTimeout: id => clearedTimers.push(id),
+    cleanupAllImageOverlays() {},
+    blockMap: new Map([[1, { element: elRequeued }]]),
+    totalTranslatedCount: 5,
+    updateFloatingBallStatus() {},
+    document: { querySelectorAll: () => [elRequeued, elUntouched] },
+    requestAnimationFrame: fn => rafQueue.push(fn),
+    unwrapOriginalTextNodes() {},
+    showPageToast() {}
+  });
+  const resetStart = contentSource.indexOf('  function resetElementTranslationState(');
+  const resetFn = contentSource.slice(resetStart, contentSource.indexOf('\n  function queueParagraphForTranslation(', resetStart));
+  const disableStart = contentSource.indexOf('  function disablePageTranslation(');
+  const disableFn = contentSource.slice(disableStart, contentSource.indexOf('\n  function togglePageTranslation(', disableStart));
+  vm.runInContext(`${resetFn}\n${disableFn}`, ctx);
+
+  ctx.disablePageTranslation();
+  assert.deepEqual(clearedTimers, [99]);
+  assert.equal(ctx.flushQueueTimer, null);
+  assert.equal(ctx.blockMap.size, 0);
+  assert.equal(ctx.totalTranslatedCount, 0);
+  assert.equal(elRequeued.dataset.igStatus, undefined);
+  assert.equal(elRequeued.dataset.igCleanupSession, '1');
+
+  // Simulate immediate re-enable queuing elRequeued before the RAF cleanup callback fires
+  ctx.resetElementTranslationState(elRequeued);
+  elRequeued.dataset.igStatus = 'queued';
+  ctx.blockMap.set(2, { element: elRequeued });
+  ctx.totalTranslatedCount = 1;
+
+  while (rafQueue.length > 0) rafQueue.shift()();
+  assert.equal(ctx.blockMap.size, 1);
+  assert.equal(ctx.totalTranslatedCount, 1);
+  assert.equal(elRequeued.dataset.igStatus, 'queued');
+  assert.equal(elUntouched.dataset.igCleanupSession, undefined);
 });
 
 test('audio errors stop capture and stopping discards pending results', async () => {

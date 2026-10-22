@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4 — 2026-10-22
+
+### Edge-case and resilience fixes
+
+- **Multi-item batch placeholder recovery**: When an individual item in a multi-item paragraph or subtitle batch omits an inline `{{n}}` placeholder on the first pass, retain the valid translations from the batch and retry only the damaged item via the missing-subset retry path; still reject and prevent caching if the retry or a single-item request fails placeholder validation.
+- **Default/upgraded Gemini protocol resolution in content script**: Add `providerId: 'google'` and `apiProtocol: 'gemini'` to content-script `DEFAULT_SETTINGS` and resolve the active protocol consistently in `toggleExperimentalAudioListen`, preventing default Google Gemini users whose storage lacks an explicit `apiProtocol` key from being blocked before YouTube audio capture.
+- **Page translation rapid-toggle & image cancellation state**: Clear `flushQueueTimer` and reset `blockMap`, `totalTranslatedCount` and image overlays synchronously in `disablePageTranslation`, and guard deferred `requestAnimationFrame` DOM cleanup with `igCleanupSession` so immediately re-enabling page translation does not lose newly queued paragraphs. Reset `data-ig-img-status="loading"` when an image translation request is cancelled.
+
 ## 1.0.3 — 2026-10-21
 
 ### PDF.js upgrade

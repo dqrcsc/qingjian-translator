@@ -33,6 +33,8 @@
 
 
   const DEFAULT_SETTINGS = {
+    providerId: 'google',
+    apiProtocol: 'gemini',
     modelId: '',
     customModelId: '',
     targetLang: 'zh-CN',
@@ -78,6 +80,7 @@
 
   let settings = { ...DEFAULT_SETTINGS };
   let isPageTranslated = false;
+  let pageTranslationSession = 0;
   let totalTranslatedCount = 0;
   let pendingParagraphQueue = [];
   let flushQueueTimer = null;
@@ -1340,8 +1343,22 @@
     }
   }
 
+  function resetElementTranslationState(el) {
+    if (!el) return;
+    el.querySelectorAll(
+      '.ig-trans-node, .ig-trans-block, .ig-trans-inline, .ig-trans-loading, .ig-trans-error'
+    ).forEach((n) => n.remove());
+    unwrapOriginalTextNodes(el);
+    delete el.dataset.igStatus;
+    delete el.dataset.igBlockId;
+    delete el.dataset.igCleanupSession;
+  }
+
   function queueParagraphForTranslation(el) {
     if (!el || el.dataset.igStatus === 'queued' || el.dataset.igStatus === 'done') return;
+    if (el.dataset.igCleanupSession) {
+      resetElementTranslationState(el);
+    }
     if (isVisuallyHidden(el)) {
       delete el.dataset.igStatus;
       return;
@@ -1575,6 +1592,7 @@
       openCurrentPdfInNewTab();
       return;
     }
+    pageTranslationSession++;
     isPageTranslated = true;
     ensureObservers();
     scanAndObserveContainer(document.body);
@@ -1594,9 +1612,14 @@
   }
 
   function disablePageTranslation() {
+    const cleanupSession = ++pageTranslationSession;
     pageRequests.cancel();
     isPageTranslated = false;
     pendingParagraphQueue = [];
+    if (flushQueueTimer) {
+      clearTimeout(flushQueueTimer);
+      flushQueueTimer = null;
+    }
     window.removeEventListener('scroll', handleScrollRescan);
     if (scrollRescanTimer) {
       clearTimeout(scrollRescanTimer);
@@ -1607,7 +1630,17 @@
     if (viewportObserver) viewportObserver.disconnect();
     if (domMutationObserver) domMutationObserver.disconnect();
 
+    cleanupAllImageOverlays();
+    blockMap.clear();
+    totalTranslatedCount = 0;
+    updateFloatingBallStatus();
+
     const translatedEls = Array.from(document.querySelectorAll('[data-ig-status]'));
+    for (const el of translatedEls) {
+      delete el.dataset.igStatus;
+      delete el.dataset.igBlockId;
+      el.dataset.igCleanupSession = String(cleanupSession);
+    }
     const BATCH = 30;
     (async () => {
       for (let i = 0; i < translatedEls.length; i += BATCH) {
@@ -1615,21 +1648,13 @@
         await new Promise((resolve) =>
           requestAnimationFrame(() => {
             for (const el of slice) {
-              el.querySelectorAll(
-                '.ig-trans-node, .ig-trans-block, .ig-trans-inline, .ig-trans-loading, .ig-trans-error'
-              ).forEach((n) => n.remove());
-              unwrapOriginalTextNodes(el);
-              delete el.dataset.igStatus;
-              delete el.dataset.igBlockId;
+              if (el.dataset.igCleanupSession !== String(cleanupSession)) continue;
+              resetElementTranslationState(el);
             }
             resolve();
           })
         );
       }
-      cleanupAllImageOverlays();
-      blockMap.clear();
-      totalTranslatedCount = 0;
-      updateFloatingBallStatus();
     })();
     showPageToast('已恢复网页原文显示', 'info');
   }
@@ -3367,7 +3392,10 @@
       showPageToast('已停止 AI 音频切片听译', 'info');
       return;
     }
-    if (settings.apiProtocol !== 'gemini') {
+    const activeProtocol =
+      settings?.apiProtocol ||
+      (settings?.providerId && settings.providerId !== 'google' ? 'openai' : 'gemini');
+    if (activeProtocol !== 'gemini') {
       showPageToast('音频听译需要支持音频的 Gemini 原生协议模型，当前 OpenAI 兼容接口不支持。', 'warn', true);
       return;
     }
@@ -3758,9 +3786,16 @@
     }
 
     const signal = pageRequests.signal;
+    const resetCancelledImageState = () => {
+      if (img && img.dataset.igImgStatus === 'loading') delete img.dataset.igImgStatus;
+      if (triggerBtn) triggerBtn.textContent = '🖼️ AI 译图';
+    };
     try {
       const payload = await extractImagePayload(img, fallbackSrcUrl);
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        resetCancelledImageState();
+        return;
+      }
       const response = await sendModelRequest({
         type: 'TRANSLATE_IMAGE',
         payload: {
@@ -3770,7 +3805,10 @@
         }
       });
 
-      if (signal.aborted || response?.cancelled) return;
+      if (signal.aborted || response?.cancelled) {
+        resetCancelledImageState();
+        return;
+      }
       if (!response || !response.ok) {
         throw new Error(response?.error || '图片文字翻译请求失败');
       }

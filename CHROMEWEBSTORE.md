@@ -89,6 +89,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.4 | 2026-10-22 | Multi-item batch placeholder subset retry, upgraded Gemini audio protocol fallback, and rapid page-translation toggle cleanup guards. | Ready |
 | 1.0.3 | 2026-10-21 | Official PDF.js 6.4.299, local worker/assets, end-to-end cancellation and real Chromium regression checks. | Awaiting store review |
 | 1.0.2 | 2026-10-21 | Reliability fixes, regression tests, EPUB navigation, release licensing and corrected data-flow disclosures. See CHANGELOG.md for validation boundaries. | Awaiting browser acceptance / store review |
 | 1.0.0 | 2026-10-21 | Initial public release of 青简 · 译读 (QingJian) featuring Pure Open-Model BYOK AI Engine (Gemini, DeepSeek, OpenCode Go, OpenRouter, OpenAI, SiliconFlow, Qwen, Kimi, GLM), Webpage Bilingual Translation with 6 visual styles, Webpage/X.com Image In-Place OCR Translation, Selection AI Deep Explanation, Triple-Space Input Translation, YouTube Dual Subtitles + Audio Translation, and Academic PDF (Layout-Preserving + Seamless Figure Inpainting + Lazy Loading) / EPUB / Markdown Document Studio. | Ready |
