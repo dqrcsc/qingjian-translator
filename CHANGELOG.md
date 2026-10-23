@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.6 — 2026-10-23
 
 ### 请求总时间预算与长网页资源回收
 
@@ -9,7 +9,7 @@
 - 图片节点被替换但父容器保留时，清理旧控件、覆盖层及其图片引用；新控件绑定新图片，避免旧按钮被复用。
 - 补齐实际后台 Port / legacy 入口、超时后重试、兼容回退、子集补译、队列、迟到响应和设置页持久化回归；Chromium 直接检查扩展持有的段落记录与观察目标，覆盖连续增删、同步搬移、重新插入和图片替换。
 
-验证：47 项检查、54 项 Node 回归、真实 Chromium 和 ZIP 逐文件验证。见 [验收记录](docs/verification/2026-10-23-budget-and-resource-reclamation.md)。本轮仅更新源码，版本号仍为 1.0.5，未替换既有 Release 安装包。
+验证：47 项检查、54 项 Node 回归、真实 Chromium 和 ZIP 逐文件验证。见 [验收记录](docs/verification/2026-10-23-budget-and-resource-reclamation.md)。安装包与中文更新说明见 [v1.0.6 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.6)。
 
 ## 1.0.5 — 2026-10-23
 
