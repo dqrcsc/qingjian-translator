@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.8 — 2026-10-23
+
+### 重译绕过缓存与复合元素重试清理
+
+- **工作台单段重译与全文「重新翻译」绕过缓存**：`handleTranslateBatch` 新增 `bypassCache` 支持，强制重新调用模型并用最新译文更新持久缓存；`retranslateBlock` 单段重译及已完成文档点击「✦ 重新翻译」（含 PDF 已完成页重置与常规文档已译段落重译）均自动启用 `bypassCache: true`，未完成文档继续仅补译未译段落并复用缓存。
+- **网页多段元素局部失败重试清理**：复合元素（`isMultiSeg`）点击 `⚠️ 重试` 徽章时，清理归属该节点的残留分段记录与旧子节点并重置元素状态，避免已成功子段出现双份译文叠加。
+- **YouTube 错误状态条自动重挂载与预取简化**：当播放器 DOM 重建导致 `ytErrorEl` 脱离文档树（`isConnected === false`）时自动重建挂载，并移除 `prefetchYoutubeCuesAround` 中被单请求互斥锁短路的同帧冗余调用。
+
+验证：47 项结构/功能检查、82 项 Node 回归测试与 234 个 ZIP 运行时文件校验全部通过。安装包与说明见 [v1.0.8 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.8)。
+
 ## 1.0.7 — 2026-10-23
 
 ### 安全、译文归属与失败恢复

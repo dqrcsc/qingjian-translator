@@ -215,8 +215,9 @@ async function handleTranslateBatch(payload, signal) {
 
   const finalMap = new Map();
   let uncached = keyedItems;
+  const bypassCache = Boolean(payload?.bypassCache);
 
-  if (settings.enableCache !== false) {
+  if (settings.enableCache !== false && !bypassCache) {
     const cachedMap = await getCachedTranslations(keyedItems.map((k) => k.cacheKey));
     uncached = [];
     let hits = 0;

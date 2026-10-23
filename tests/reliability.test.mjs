@@ -135,6 +135,30 @@ test('real background batch entry counts successful output once across subset re
   }
 });
 
+test('TRANSLATE_BATCH with bypassCache forces a fresh model request and updates the persisted cache', async () => {
+  const payload = { items: [{ id: 77, text: 'cached retranslate target' }], pageTitle: 'studio-doc' };
+  mockReplies([{ id: 77, translation: '初版译文' }]);
+  const first = await message('TRANSLATE_BATCH', payload);
+  assert.equal(first.ok, true);
+  assert.equal(first.data.translations[0].translation, '初版译文');
+  assert.equal(calls.length, 1);
+
+  mockReplies([{ id: 77, translation: '重译后新译文' }]);
+  const cachedHit = await message('TRANSLATE_BATCH', payload);
+  assert.equal(cachedHit.data.translations[0].translation, '初版译文');
+  assert.equal(calls.length, 0, 'normal batch request still hits cache');
+
+  const bypassed = await message('TRANSLATE_BATCH', { ...payload, bypassCache: true });
+  assert.equal(bypassed.ok, true);
+  assert.equal(bypassed.data.translations[0].translation, '重译后新译文');
+  assert.equal(bypassed.data.translations[0].cached, false);
+  assert.equal(calls.length, 1, 'bypassCache must invoke the model');
+
+  const afterBypass = await message('TRANSLATE_BATCH', payload);
+  assert.equal(afterBypass.data.translations[0].translation, '重译后新译文');
+  assert.equal(calls.length, 1, 'updated translation is now served from cache');
+});
+
 test('cache identity includes endpoint, protocol, provider, prompt and context', () => {
   const sig = cache.buildStyleSignature(settings);
   for (const changed of [

@@ -197,6 +197,20 @@ test('success and error rendering release records while error badges can retry',
   inserted[1].node.click({ stopPropagation() {} });
   assert.deepEqual(retried, [failed]);
   assert.equal(failed.dataset.igStatus, undefined);
+
+  // Multi-segment element with a lingering sibling segment in blockMap clears all state on error retry
+  const multiEl = h.element(true);
+  let removedChildNodes = 0;
+  multiEl.querySelectorAll = () => [{ remove() { removedChildNodes++; } }];
+  h.ctx.blockMap.set(10, { element: multiEl, text: 'seg1', placeholders: [], isMultiSeg: true });
+  h.ctx.blockMap.set(11, { element: multiEl, text: 'seg2', placeholders: [], isMultiSeg: true });
+  h.ctx.pendingParagraphQueue = [{ id: 10, text: 'seg1' }];
+  await h.ctx.renderBatchErrorWithRAF([{ id: 11 }], 'segment failure');
+  assert.equal(h.ctx.blockMap.has(10), true);
+  inserted.at(-1).node.click({ stopPropagation() {} });
+  assert.equal(h.ctx.blockMap.size, 0, 'sibling segment record must be purged before re-queuing');
+  assert.equal(h.ctx.pendingParagraphQueue.length, 0);
+  assert.ok(removedChildNodes > 0, 'existing partial segment nodes must be removed on retry');
 });
 
 test('replacing only an image releases old controls and binds the new button to the new image', () => {
@@ -273,6 +287,13 @@ for (const live of [false, true]) {
     assert.equal(vm.runInContext('ytTranslationStopped', h.ctx), false);
     assert.equal(vm.runInContext('ytTranslationBusy', h.ctx), false);
     assert.equal(vm.runInContext(live ? "ytLiveCaptionCache.get('Hello fixture')" : 'ytCues[0].translation', h.ctx), '你好');
+
+    // If the player DOM was replaced so ytErrorEl became detached (isConnected: false), next failure re-mounts it
+    vm.runInContext('ytLiveCaptionCache.clear(); ytCues[0].translation = "";', h.ctx);
+    h.errors[0].isConnected = false;
+    const prevErrorCount = h.errors.length;
+    const afterDetach = h.run(live); h.replies.shift()({ ok: false, error: 'API failed (401)' }); await afterDetach;
+    assert.equal(h.errors.length, prevErrorCount + 1, 'detached error banner must be recreated and re-appended');
   });
 }
 

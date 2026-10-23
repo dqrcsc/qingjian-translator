@@ -14,7 +14,7 @@ function harness() {
     WeakMap, DOMException, documentRequests: { get signal() { return controller.signal; } },
     bilingualStreamContainer: { querySelectorAll: () => [button] }, document: { getElementById: () => element },
     docStatusSubtitle: { textContent: '' }, getSettings: async () => ({ targetLang: 'zh-CN' }),
-    sendModelRequest: () => new Promise((resolve, reject) => replies.push({ resolve, reject })),
+    sendModelRequest: req => new Promise((resolve, reject) => replies.push({ req, resolve, reject })),
     MESSAGE_TYPES: { TRANSLATE_BATCH: 'TRANSLATE_BATCH' }, renderRichAcademicHtml: text => text
   });
   vm.runInContext(identities + retranslate, ctx);
@@ -48,6 +48,7 @@ test('single-block 401 preserves previous translation, reports failure, restores
   assert.equal(h.block.translation, 'Old translation'); assert.equal(h.element.innerHTML, 'Old translation');
   assert.equal(h.button.disabled, false); assert.match(h.ctx.docStatusSubtitle.textContent, /401.*保留原译文/);
   const retried = h.ctx.retranslateBlock(h.block); await tick();
+  assert.equal(h.replies[0].req.payload.bypassCache, true, 'single-block retranslate must bypass cache');
   h.replies.shift().resolve({ ok: true, data: { translations: [{ id: 0, translation: 'New translation' }] } }); await retried;
   assert.equal(h.block.translation, 'New translation'); assert.equal(h.element.innerHTML, 'New translation');
   assert.equal(h.button.disabled, false);
@@ -125,4 +126,40 @@ test('asynchronous imports allocate fresh IDs after image uploads and reject a l
   assert.equal(ctx.currentDoc.blocks[2].original, 'BETA original.');
   ctx.currentDoc.blocks = [];
   assert.equal(ctx.allocateBlockId(), 4, 'removal or an import with fewer blocks must not move the counter backwards');
+});
+
+test('startDocumentTranslation re-translates completed blocks with bypassCache when all blocks in scope are already translated', async () => {
+  const startIdx = source.indexOf('async function startDocumentTranslation(');
+  const startSection = source.slice(
+    startIdx,
+    source.indexOf('\n// ============================================================================', startIdx)
+  );
+  const sentPayloads = [];
+  const blocks = [
+    { id: 1, type: 'paragraph', original: 'First', translation: '初译一' },
+    { id: 2, type: 'paragraph', original: 'Second', translation: '初译二' }
+  ];
+  const ctx = vm.createContext({
+    currentDoc: { fileType: 'md', fileName: 'demo.md', bookTitle: 'Demo', blocks, translatedPages: new Set() },
+    documentSession: 1, isTranslating: false, stopRequested: false,
+    startTranslateDocBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
+    docStatusSubtitle: { textContent: '' }, epubChapterSelect: { value: 'all' },
+    getSettings: async () => ({ targetLang: 'zh-CN', batchMaxItems: 10, batchMaxChars: 2200 }),
+    createBatches: list => (list.length ? [list] : []),
+    MESSAGE_TYPES: { TRANSLATE_BATCH: 'TRANSLATE_BATCH' },
+    sendModelRequest: async req => {
+      sentPayloads.push(req.payload);
+      return { ok: true, data: { translations: req.payload.items.map(it => ({ id: it.id, translation: `重译:${it.text}` })) } };
+    },
+    document: { getElementById: () => null },
+    renderRichAcademicHtml: text => text,
+    updateProgressCounterBadge() {},
+    setTimeout() {},
+    WeakMap
+  });
+  vm.runInContext(identities + startSection, ctx);
+  await ctx.startDocumentTranslation();
+  assert.equal(sentPayloads.length, 1);
+  assert.equal(sentPayloads[0].bypassCache, true);
+  assert.deepEqual(blocks.map(b => b.translation), ['重译:First', '重译:Second']);
 });

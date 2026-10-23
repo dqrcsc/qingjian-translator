@@ -1618,7 +1618,13 @@
           errBadge.addEventListener('click', (e) => {
             e.stopPropagation();
             errBadge.remove();
-            delete el.dataset.igStatus;
+            for (const [id, rec] of blockMap) {
+              if (rec.element === el) blockMap.delete(id);
+            }
+            if (pendingParagraphQueue.length > 0) {
+              pendingParagraphQueue = pendingParagraphQueue.filter((it) => blockMap.has(it.id));
+            }
+            resetElementTranslationState(el);
             queueParagraphForTranslation(el);
           });
           insertNodeAfterSegmentAnchor(el, record, errBadge);
@@ -2899,7 +2905,7 @@
     const permanent = /\b(?:400|401|402|403|404|422)\b|未配置|不支持|invalid.*(?:key|model)|unauthorized|permission.denied/i.test(message);
     ytTranslationStopped = permanent || ytFailureCount >= 3;
     ytRetryAt = Date.now() + 1000 * (2 ** (ytFailureCount - 1));
-    if (!ytErrorEl) {
+    if (!ytErrorEl || ytErrorEl.isConnected === false) {
       ytErrorEl = document.createElement('div');
       ytErrorEl.className = 'ig-yt-translation-error notranslate';
       ytErrorEl.setAttribute('role', 'status');
@@ -3322,17 +3328,9 @@
 
     if (candidates.length === 0) return;
 
-    // Check if the immediate cue (within next 10s) is untranslated
+    // Check if the immediate cue (within next 10s) is untranslated; otherwise prefetch lookahead window
     const urgent = candidates.filter((c) => c.start <= currentTime + 10).slice(0, 3);
-    if (urgent.length > 0) {
-      dispatchCueBatchTranslation(urgent);
-      const remaining = candidates.filter((c) => !urgent.includes(c)).slice(0, 10);
-      if (remaining.length > 0) {
-        dispatchCueBatchTranslation(remaining);
-      }
-    } else {
-      dispatchCueBatchTranslation(candidates.slice(0, 10));
-    }
+    dispatchCueBatchTranslation(urgent.length > 0 ? urgent : candidates.slice(0, 10));
   }
 
   let lastBridgeTrackRequestAt = 0;

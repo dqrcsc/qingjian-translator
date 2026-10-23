@@ -89,6 +89,9 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.8 | 2026-10-23 | Studio single-block and full-document retranslate cache bypass, multi-segment retry cleanup, and YouTube detached error banner remounting. | Ready |
+| 1.0.7 | 2026-10-23 | Studio private entry, monotonic block IDs, YouTube failure backoff, bounded stats accounting, Web Locks settings serialization, and Gemini native output guards. | GitHub release |
+| 1.0.6 | 2026-10-23 | Per-request 90s total budget (configurable 30-300s) and detached webpage DOM/observer reclamation. | GitHub release |
 | 1.0.5 | 2026-10-23 | Raw-settings protocol normalization, rapid-toggle and image decode lifecycle guards, deduplicated batch output statistics, real content-script browser regressions. | GitHub release; store submission not performed in this release workflow |
 | 1.0.4 | 2026-10-22 | Multi-item batch placeholder subset retry, upgraded Gemini audio protocol fallback, and rapid page-translation toggle cleanup guards. | Ready |
 | 1.0.3 | 2026-10-21 | Official PDF.js 6.4.299, local worker/assets, end-to-end cancellation and real Chromium regression checks. | Awaiting store review |

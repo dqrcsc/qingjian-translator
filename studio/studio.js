@@ -1318,7 +1318,7 @@ async function retranslateBlock(block) {
     const response = await sendModelRequest({
       type: MESSAGE_TYPES.TRANSLATE_BATCH,
       payload: { items: [{ id: request.id, text: request.original }],
-        targetLang: settings.targetLang, pageTitle: doc.bookTitle }
+        targetLang: settings.targetLang, pageTitle: doc.bookTitle, bypassCache: true }
     });
     if (!isCurrent() || response?.cancelled) throw new DOMException('重译已取消', 'AbortError');
     if (!response?.ok) throw new Error(response?.error || '未收到有效译文');
@@ -1963,6 +1963,11 @@ async function startDocumentTranslation(targetPageRange = null) {
         currentDoc.lazyScrollEnabled = true;
         renderWorkspaceBlocks(streamSearchInput.value.trim());
 
+        // If all pages were already translated (user clicked '✦ 重新翻译'), reset translatedPages to re-translate from page 1
+        if (currentDoc.translatedPages.size >= totalPages) {
+          currentDoc.translatedPages.clear();
+        }
+
         // Find the first N untranslated pages (default: first 2 pages) so we don't burn tokens on all 41 pages upfront
         const initialPages = [];
         for (let p = 1; p <= totalPages && initialPages.length < INITIAL_EAGER_PDF_PAGES; p++) {
@@ -1986,12 +1991,14 @@ async function startDocumentTranslation(targetPageRange = null) {
         ? Number(epubChapterSelect.value)
         : null;
 
-    const todoBlocks = currentDoc.blocks.filter(
+    const scopeBlocks = currentDoc.blocks.filter(
       (b) =>
         b.type !== 'code' &&
-        !b.translation &&
         (selectedChapter === null || b.chapterIndex === selectedChapter)
     );
+    const untranslatedBlocks = scopeBlocks.filter((b) => !b.translation);
+    const isFullRetranslate = untranslatedBlocks.length === 0 && scopeBlocks.length > 0;
+    const todoBlocks = isFullRetranslate ? scopeBlocks : untranslatedBlocks;
 
     const batches = createBatches(
       todoBlocks,
@@ -2011,7 +2018,8 @@ async function startDocumentTranslation(targetPageRange = null) {
         payload: {
           items: requests.map(request => ({ id: request.id, text: request.original })),
           targetLang: settings.targetLang,
-          pageTitle: currentDoc.bookTitle
+          pageTitle: currentDoc.bookTitle,
+          bypassCache: isFullRetranslate
         }
       });
 
