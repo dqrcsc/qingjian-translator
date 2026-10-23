@@ -186,3 +186,156 @@ test('every vendored PDF.js resource matches its recorded upstream bytes', async
     assert.equal(createHash('sha256').update(bytes).digest('hex'), value.sha256, name);
   }
 });
+
+// Accelerate only the configured total deadline; leave 45s attempt limits,
+// backoff delays and test polling untouched. Exercise the actual dispatch/port.
+async function withShortBudget(fn) {
+  const nativeTimeout = globalThis.setTimeout;
+  await saveSettings({ requestBudgetSeconds: 30 });
+  globalThis.setTimeout = (callback, ms, ...args) => nativeTimeout(callback,
+    ms > 29000 && ms <= 30000 ? 80 : ms, ...args);
+  try { await fn(); }
+  finally { globalThis.setTimeout = nativeTimeout; await saveSettings({ requestBudgetSeconds: 90 }); }
+}
+
+test('actual port reports deadline as failure, aborts response body, counts nothing and allows retry', async () => {
+  await withShortBudget(async () => {
+    const { getUsageStats } = await import('../shared/storage.js');
+    const before = await getUsageStats();
+    let attempts = 0, signal;
+    globalThis.fetch = async (_url, init) => {
+      attempts++; signal = init.signal;
+      return new Response(new ReadableStream({ start(controller) {
+        signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+      } }));
+    };
+    const a = scope();
+    const result = await a.request(batch('deadline-body'));
+    assert.equal(result.ok, false);
+    assert.equal(result.timedOut, true);
+    assert.equal(result.cancelled, false);
+    assert.match(result.error, /总时间预算/);
+    assert.equal(signal.aborted, true);
+    assert.equal(attempts, 1);
+    assert.equal((await getUsageStats()).totalParagraphs, before.totalParagraphs);
+    globalThis.fetch = async () => { attempts++; return success('重试成功'); };
+    const fresh = await a.request(batch('deadline-body'));
+    assert.equal(fresh.ok, true);
+    assert.equal(fresh.data.translations[0].cached, false);
+    assert.equal(attempts, 2);
+  });
+});
+
+test('actual deadline interrupts retry backoff without another API call', async () => {
+  await withShortBudget(async () => {
+    let attempts = 0;
+    globalThis.fetch = async () => { attempts++; return new Response('busy', { status: 503 }); };
+    const result = await scope().request(batch('deadline-backoff'));
+    assert.equal(result.timedOut, true);
+    assert.equal(attempts, 1);
+    globalThis.fetch = async () => success('available');
+    assert.equal((await scope().request(batch('after-deadline-backoff'))).ok, true);
+  });
+});
+
+test('subset repair shares the original deadline and counts no completed output', async () => {
+  await withShortBudget(async () => {
+    const { getUsageStats } = await import('../shared/storage.js');
+    const before = await getUsageStats();
+    let attempts = 0, repairSignal;
+    globalThis.fetch = async (_url, init) => {
+      attempts++;
+      if (attempts === 1) return success('missing placeholder');
+      repairSignal = init.signal;
+      return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    };
+    const result = await scope().request({ type: 'TRANSLATE_BATCH', payload: { items: [
+      { id: 1, text: 'deadline-repair {{0}}' }, { id: 2, text: 'deadline-repair plain' }
+    ] } });
+    assert.equal(result.timedOut, true);
+    assert.equal(attempts, 2);
+    assert.equal(repairSignal.aborted, true);
+    const after = await getUsageStats();
+    assert.equal(after.totalParagraphs, before.totalParagraphs);
+    assert.equal(after.estimatedCharsTranslated, before.estimatedCharsTranslated);
+  });
+});
+
+test('legacy message entry and image download obey the same total budget', async () => {
+  await withShortBudget(async () => {
+    let signal, count = 0, replies = 0;
+    globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+      count++; signal = init.signal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    const response = await new Promise(resolve => chrome.runtime.onMessage.emit({ type: 'TRANSLATE_IMAGE',
+      payload: { imageUrl: 'https://mock.invalid/deadline-image.png' } }, {}, value => { replies++; resolve(value); }));
+    assert.equal(response.timedOut, true);
+    assert.equal(response.cancelled, false);
+    assert.equal(signal.aborted, true);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(replies, 1);
+    assert.equal(count, 1, 'expired download must never start the model request');
+  });
+});
+
+test('compatibility endpoint fallback shares the deadline and aborts its active response', async () => {
+  await withShortBudget(async () => {
+    await saveSettings({ apiBaseUrl: 'https://mock.invalid' });
+    const urls = [];
+    let fallbackSignal;
+    try {
+      globalThis.fetch = async (url, init) => {
+        urls.push(url);
+        if (urls.length === 1) return new Response('not found', { status: 404 });
+        fallbackSignal = init.signal;
+        return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+      };
+      const result = await scope().request(batch('deadline-fallback'));
+      assert.equal(result.timedOut, true);
+      assert.deepEqual(urls, ['https://mock.invalid/v1/chat/completions', 'https://mock.invalid/chat/completions']);
+      assert.equal(fallbackSignal.aborted, true);
+    } finally { await saveSettings({ apiBaseUrl: 'https://mock.invalid/v1' }); }
+  });
+});
+
+test('a non-cooperative late fetch cannot populate the cache or completed statistics after timeout', async () => {
+  await withShortBudget(async () => {
+    const { getUsageStats } = await import('../shared/storage.js');
+    const before = await getUsageStats();
+    let finish, attempts = 0;
+    globalThis.fetch = () => { attempts++; return new Promise(resolve => { finish = resolve; }); };
+    const a = scope();
+    assert.equal((await a.request(batch('deadline-late-fetch'))).timedOut, true);
+    finish(success('late result'));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal((await getUsageStats()).totalParagraphs, before.totalParagraphs);
+    globalThis.fetch = async () => { attempts++; return success('fresh result'); };
+    const retry = await a.request(batch('deadline-late-fetch'));
+    assert.equal(retry.data.translations[0].translation, 'fresh result');
+    assert.equal(retry.data.translations[0].cached, false);
+    assert.equal(attempts, 2);
+  });
+});
+
+test('actual queued request expires without sending or cancelling the active scope', async () => {
+  await withShortBudget(async () => {
+    await saveSettings({ requestBudgetSeconds: 300 });
+    let attempts = 0, activeSignal;
+    globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+      attempts++; activeSignal = init.signal;
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    });
+    const activeScope = scope(), active = activeScope.request(batch('longer-budget-active'));
+    try {
+      await until(() => attempts === 1);
+      await saveSettings({ requestBudgetSeconds: 30 });
+      const waiting = await scope().request(batch('shorter-budget-queued'));
+      assert.equal(waiting.timedOut, true);
+      assert.equal(attempts, 1);
+      assert.equal(activeSignal.aborted, false);
+    } finally { activeScope.cancel(); await active; }
+    globalThis.fetch = async () => success('available');
+    assert.equal((await scope().request(batch('after-queued-timeout'))).ok, true);
+  });
+});

@@ -419,7 +419,7 @@ test('disablePageTranslation clears flushQueueTimer and does not wipe a re-enabl
     pendingParagraphQueue: [{ id: 1, text: 'old' }],
     flushQueueTimer: 99,
     scrollRescanTimer: null,
-    postEnableTimers: [],
+    postEnableTimers: [], mutationScanTimer: 100, pendingScanRoots: new Set([elUntouched]),
     viewportObserver: { disconnect() {} },
     domMutationObserver: { disconnect() {} },
     window: { removeEventListener() {} },
@@ -441,7 +441,9 @@ test('disablePageTranslation clears flushQueueTimer and does not wipe a re-enabl
   vm.runInContext(`${resetFn}\n${disableFn}`, ctx);
 
   ctx.disablePageTranslation();
-  assert.deepEqual(clearedTimers, [99]);
+  assert.deepEqual(clearedTimers, [99, 100]);
+  assert.equal(ctx.mutationScanTimer, null);
+  assert.equal(ctx.pendingScanRoots.size, 0);
   assert.equal(ctx.flushQueueTimer, null);
   assert.equal(ctx.blockMap.size, 0);
   assert.equal(ctx.totalTranslatedCount, 0);

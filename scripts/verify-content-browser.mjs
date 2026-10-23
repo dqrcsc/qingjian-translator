@@ -9,7 +9,8 @@ export async function verifyContentBrowser(context, sw) {
     <style>p{margin:2px;font:14px/18px sans-serif}img{width:240px;height:160px}</style>
     ${Array.from({ length: 40 }, (_, i) => `<p class="fixture">This is an English test paragraph number ${i}.</p>`).join('')}
     <img id="fixture-image" src="/image.svg" alt="English diagram">`;
-  let imageCalls = 0;
+  let imageCalls = 0, holdParagraphReplies = false;
+  const heldReplies = [];
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }); res.end(); return;
@@ -31,8 +32,12 @@ export async function verifyContentBrowser(context, sw) {
     } else {
       answer = [...parts.matchAll(/"id"\s*:\s*(\d+)/g)].map(m => ({ id: Number(m[1]), translation: `段落译文 ${m[1]}` }));
     }
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }));
+    const reply = () => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }));
+    };
+    if (holdParagraphReplies && !Array.isArray(parts)) heldReplies.push(reply);
+    else reply();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -78,15 +83,29 @@ export async function verifyContentBrowser(context, sw) {
     };
     const tabId = await sw.evaluate(async url => (await chrome.tabs.query({})).find(tab => tab.url === url)?.id, url);
     assert.ok(tabId);
-    return { page, evaluate, tabId };
+    const retainedParagraphs = async () => {
+      const prototype = await cdp.send('Runtime.evaluate', { contextId: world, expression: 'Map.prototype' });
+      const objects = await cdp.send('Runtime.queryObjects', { prototypeObjectId: prototype.result.objectId });
+      try {
+        const result = await cdp.send('Runtime.callFunctionOn', { objectId: objects.objects.objectId,
+          functionDeclaration: 'function() { return this.reduce((n, map) => n + [...map.values()].filter(v => v && v.element && v.element.nodeType === 1).length, 0); }',
+          returnByValue: true });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+        return result.result.value;
+      } finally {
+        await cdp.send('Runtime.releaseObject', { objectId: objects.objects.objectId });
+        await cdp.send('Runtime.releaseObject', { objectId: prototype.result.objectId });
+      }
+    };
+    return { page, evaluate, tabId, retainedParagraphs };
   }
   try {
     await store(settings);
-    const { page, evaluate, tabId } = await open(`${base}/fixture`);
+    const { page, evaluate, tabId, retainedParagraphs } = await open(`${base}/fixture`);
     // Hold only extension callbacks, leaving page rendering and the native observer running.
     await evaluate(`(() => {
       const nativeRAF = requestAnimationFrame, NativeIO = IntersectionObserver;
-      globalThis.__frames = []; globalThis.__observations = [];
+      globalThis.__frames = []; globalThis.__observations = []; globalThis.__observedTargets = new Set();
       globalThis.__holdFrames = false; globalThis.__holdObservations = false;
       globalThis.requestAnimationFrame = fn => __holdFrames ? __frames.push(fn) : nativeRAF(fn);
       globalThis.IntersectionObserver = class extends NativeIO {
@@ -94,6 +113,9 @@ export async function verifyContentBrowser(context, sw) {
           if (__holdObservations) __observations.push(() => fn(entries, observer));
           else fn(entries, observer);
         }, options); }
+        observe(el) { __observedTargets.add(el); return super.observe(el); }
+        unobserve(el) { __observedTargets.delete(el); return super.unobserve(el); }
+        disconnect() { __observedTargets.clear(); return super.disconnect(); }
       };
       globalThis.__flushFrames = async () => {
         while (__frames.length) { __frames.shift()(performance.now()); await Promise.resolve(); }
@@ -119,6 +141,61 @@ export async function verifyContentBrowser(context, sw) {
     await toggle();
     await page.waitForFunction(() => !document.querySelector('p.fixture .ig-trans-node'));
     checks.push('Actual content injection: 40 paragraphs survive both RAF/observer orderings and final disable removes translations');
+
+    // Query actual isolated-world Maps; no production debug hooks or source rewrites.
+    await page.locator('p.fixture').evaluateAll(nodes => nodes.forEach(node => node.remove()));
+    await toggle();
+    const appendParagraphs = (count, extraStyle = '') => page.evaluate(({ count, extraStyle }) => {
+      const host = document.createElement('section'); host.id = 'long-page'; host.style.cssText = extraStyle;
+      for (let i = 0; i < count; i++) {
+        const p = document.createElement('p'); p.className = 'dynamic';
+        p.textContent = `Dynamic English paragraph number ${i} for resource reclamation.`; host.appendChild(p);
+      }
+      document.body.prepend(host);
+    }, { count, extraStyle });
+    for (let cycle = 0; cycle < 5; cycle++) {
+      await appendParagraphs(50);
+      await page.waitForFunction(() => document.querySelectorAll('p.dynamic[data-ig-status="done"]').length === 50);
+      assert.equal(await retainedParagraphs(), 0, `completed cycle ${cycle} retains no paragraph records`);
+      // Moving connected content in a single mutation turn must preserve translations.
+      await page.evaluate(() => document.body.appendChild(document.querySelector('#long-page')));
+      await page.waitForTimeout(80);
+      assert.equal(await page.locator('p.dynamic[data-ig-status="done"]').count(), 50);
+      assert.equal(await page.locator('p.dynamic .ig-trans-node').count(), 50);
+      await page.locator('#long-page').evaluate(node => node.remove());
+      await wait(() => evaluate('__observedTargets.size === 0'), 'completed removal releases observations');
+      assert.equal(await retainedParagraphs(), 0);
+    }
+    await appendParagraphs(200, 'position:absolute;top:10000px');
+    await wait(() => evaluate('__observedTargets.size === 200'), 'offscreen paragraphs observed');
+    await page.locator('#long-page').evaluate(node => node.remove());
+    await wait(() => evaluate('__observedTargets.size === 0'), 'offscreen removal unobserves every target');
+    assert.equal(await retainedParagraphs(), 0);
+
+    // Hold intersection delivery so removal happens before the 75ms batch flush.
+    await evaluate('__holdObservations = true');
+    await appendParagraphs(3);
+    await wait(() => evaluate('__observations.length > 0'), 'queued removal observations');
+    await evaluate('__flushObservations(); document.querySelector("#long-page").remove(); __holdObservations = false');
+    await wait(async () => await retainedParagraphs() === 0, 'queued removal releases map');
+
+    holdParagraphReplies = true;
+    await appendParagraphs(3);
+    await wait(() => heldReplies.length > 0, 'active paragraph request');
+    assert.equal(await retainedParagraphs(), 3, 'measurement must detect active records');
+    await page.evaluate(() => { globalThis.removedHost = document.querySelector('#long-page'); removedHost.remove(); });
+    await wait(async () => await retainedParagraphs() === 0, 'active removal releases records before response');
+    holdParagraphReplies = false;
+    heldReplies.splice(0).forEach(reply => reply());
+    await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(() => removedHost.querySelectorAll('.ig-trans-node, [data-ig-status]').length), 0);
+    await page.evaluate(() => { document.body.prepend(removedHost); delete globalThis.removedHost; });
+    await page.waitForFunction(() => document.querySelectorAll('p.dynamic[data-ig-status="done"]').length === 3);
+    assert.equal(await retainedParagraphs(), 0, 'reinsertion translates and releases new records');
+    await page.locator('#long-page').evaluate(node => node.remove());
+    await toggle();
+    assert.equal(await evaluate('__observedTargets.size'), 0);
+    checks.push('Long page: 5 × 50 completed paragraphs retain 0 records; 200 offscreen targets unobserved after removal; queued/active removal, no late writes, synchronous moves and reinsertion pass');
 
     // Defer Image.onload in the content world while the real image still decodes.
     await evaluate(`(() => {
@@ -150,6 +227,28 @@ export async function verifyContentBrowser(context, sw) {
     await toggle(); await toggle();
     await page.waitForFunction(() => !document.querySelector('.ig-img-overlay-layer'));
     checks.push('Actual image entry: cancellation during decode cannot restore an old layer or clear replacement loading; latest image renders once');
+    // Keep the image host connected while replacing only its image child.
+    await page.evaluate(() => {
+      const host = document.createElement('figure'); host.id = 'replacement-image-host';
+      const img = document.querySelector('#fixture-image'); img.parentElement.insertBefore(host, img); host.appendChild(img);
+    });
+    await toggle();
+    await page.locator('#replacement-image-host .ig-img-control-bar').waitFor();
+    const oldBar = await page.locator('#replacement-image-host .ig-img-control-bar').elementHandle();
+    await page.evaluate(() => {
+      const old = document.querySelector('#fixture-image'); const fresh = document.createElement('img');
+      fresh.id = old.id; fresh.src = old.src; old.replaceWith(fresh);
+    });
+    await wait(async () => !(await oldBar.evaluate(node => node.isConnected)), 'old image controls released');
+    await oldBar.dispose();
+    await page.locator('#replacement-image-host .ig-img-control-bar [data-role="trigger"]').click();
+    await wait(() => evaluate('__decoded.length === 1'), 'replacement image decode');
+    await evaluate('__decoded.shift()()');
+    await page.waitForFunction(() => document.querySelector('#fixture-image').dataset.igImgStatus === 'done');
+    assert.equal(await page.locator('#replacement-image-host .ig-img-overlay-layer').count(), 1);
+    assert.equal(await page.locator('#replacement-image-host .ig-img-control-bar').count(), 1);
+    await toggle();
+    checks.push('Image node replacement preserves its host but releases old controls; new button translates the new image and renders one overlay');
     await page.close();
 
     // The URL selects the real YouTube integration; all YouTube traffic is fulfilled locally.

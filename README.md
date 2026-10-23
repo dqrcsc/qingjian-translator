@@ -370,10 +370,12 @@ translator_plugin/
 
 #### 3) 信号量并发控制与动态双阈值分批 (`service-worker.js` & `utils.js`)
 - **轻量级异步信号量 (`withConcurrencyLimit`)**：在 Service Worker 中维护 `activeRequests` 与 `waitQueue` 队列，限制同时在途的 LLM 请求数（默认 `maxConcurrency = 3`，可在 1~8 之间配置），避免高密度滚动网页时瞬间发出数十个请求触发上游 API 的 `429 Too Many Requests` 限流。
+- **单个后台请求总时间预算**：默认 90 秒，可在设置页调整为 30–300 秒。从后台收到请求起计时，排队、下载、响应体读取、重试等待、接口回退和子集补译共用预算；超时会明确报错并停止后续请求，可手动重试。原有单次尝试 45 秒限制仍保留。预算按请求/批次计算，不是整篇网页或整份文档的总时限。
 - **双阈值智能打包 (`createBatches`)**：同时受 `batchMaxItems`（默认 10 段）与 `batchMaxChars`（默认 2,200 字符）约束，既防止单次请求 Token 过长导致输出截断，又避免短词条单独成批造成请求往返浪费。
 
 #### 4) 网页 DOM 语义探针、YouTube 跨沙箱拦截与 PDF 像素级插图重绘
 - **网页 DOM 语义探针 (`content/content-main.js`)**：自顶向下识别散文块与 UI 叶子节点，自动剔除 `.sr-only`、`aria-hidden="true"` 与图标字体节点，对行内 `<code>` 与数学公式执行 `{{n}}` 占位保护，并根据容器 Flex/Grid 布局自动切换 Block（段落上下对照）与 Inline（同行紧随对照）注入模式。
+- **长网页资源回收**：段落完成或失败后释放内部记录；节点移除后清理观察目标、待发送段落和旧图片控件，避免持续滚动积累引用。同步 DOM 搬移保留已有译文，移除后重新插入可重新翻译；动态扫描合并到一个定时器，待扫描根最多保留 100 个，超过后合并为文档根。详见 [本轮验收记录](./docs/verification/2026-10-23-budget-and-resource-reclamation.md)。
 - **YouTube 双沙箱字幕引擎 (`content/youtube-page-bridge.js`)**：在 `world: "MAIN"` 拦截 `/api/timedtext` 请求并捕获 `pot` 会话令牌，自动剥离 `tlang` 机翻参数锁定原声轨道，合并 ASR 碎句，并通过 `window.postMessage` 将清洗后的字幕流移交 Isolated World 执行两级预取与滑动上下文窗口翻译。
 - **PDF 论文双引擎重构与插图像素级无痕汉化 (`studio/pdf-engine.js` & `studio/math-renderer.js`)**：
   - 结合内置 `PDF.js` 的 2.0x 高清 Canvas 渲染与 `page.getTextContent()` 矢量文本坐标矩阵，既支持 Gemini 多模态端到端视觉版面理解，也支持 DeepSeek 等纯文本模型的 2D 坐标双栏/标题/公式/图注精确重构；
@@ -390,7 +392,7 @@ translator_plugin/
 # 1. 使用纯 Node.js SDF 渲染引擎重新生成 16x16 / 48x48 / 128x128 「三联青简」图标
 npm run icons
 
-# 2. 运行 46 项结构/功能检查与 39 项故障回归（模拟接口）
+# 2. 运行 47 项结构/功能检查与 54 项故障回归（模拟接口）
 npm run verify
 
 # 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.5.zip)

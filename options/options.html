@@ -319,6 +319,12 @@
           </div>
 
           <div class="form-group full-width">
+            <label for="requestBudgetInput">单个请求总时间预算（秒）</label>
+            <input type="number" id="requestBudgetInput" min="30" max="300" value="90" />
+            <p class="help-text">默认 90 秒，可设为 30–300 秒。每个请求从后台接收起计时，包含排队、下载、模型响应、重试等待及补译。超时后停止本次请求，可手动重试；不是整页或整份文档的总时限。</p>
+          </div>
+
+          <div class="form-group full-width">
             <label class="switch-card">
               <input type="checkbox" id="enableCacheCheck" />
               <div>

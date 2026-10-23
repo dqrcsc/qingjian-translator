@@ -1001,6 +1001,61 @@
 
   let scrollRescanTimer = null;
   let postEnableTimers = [];
+  const pendingScanRoots = new Set();
+  let mutationScanTimer = null;
+
+  function pruneDetachedParagraphs() {
+    const detached = new Set();
+    for (const [id, record] of blockMap) {
+      if (record.element.isConnected === false) {
+        blockMap.delete(id);
+        detached.add(record.element);
+      }
+    }
+    for (const el of detached) resetElementTranslationState(el);
+    pendingParagraphQueue = pendingParagraphQueue.filter(item => blockMap.has(item.id));
+    if (!pendingParagraphQueue.length && flushQueueTimer) {
+      clearTimeout(flushQueueTimer);
+      flushQueueTimer = null;
+    }
+  }
+
+  function releaseDetachedContent(root) {
+    if (root.nodeType !== Node.ELEMENT_NODE || root.isConnected !== false) return;
+    const elements = [root, ...root.querySelectorAll('[data-ig-status], img, [data-ig-cleanup-session]')];
+    for (const el of elements) {
+      if (el.isConnected !== false) continue;
+      viewportObserver?.unobserve(el);
+      if (el.dataset.igStatus || el.dataset.igCleanupSession) resetElementTranslationState(el);
+      if (el.tagName?.toLowerCase() === 'img') {
+        releaseImageControls(imageControlBars.get(el));
+        delete el.dataset.igHoverBound;
+      }
+      if (el.dataset.igImgStatus) {
+        imageTranslationTasks.delete(el);
+        delete el.dataset.igImgStatus;
+      }
+    }
+    if (hoveredElement?.isConnected === false) hoveredElement = null;
+    if (lastContextMenuImage?.isConnected === false) lastContextMenuImage = null;
+  }
+
+  function scheduleMutationScan(roots) {
+    for (const root of pendingScanRoots) if (root.isConnected === false) pendingScanRoots.delete(root);
+    for (const root of roots) if (root.isConnected !== false) pendingScanRoots.add(root);
+    if (pendingScanRoots.size > 100) {
+      pendingScanRoots.clear();
+      pendingScanRoots.add(document.body);
+    }
+    if (!pendingScanRoots.size || mutationScanTimer) return;
+    mutationScanTimer = setTimeout(() => {
+      mutationScanTimer = null;
+      const roots = [...pendingScanRoots];
+      pendingScanRoots.clear();
+      if (!isPageTranslated) return;
+      for (const root of roots) if (root.isConnected !== false) scanAndObserveContainer(root);
+    }, 50);
+  }
 
   function handleScrollRescan() {
     if (!isPageTranslated || scrollRescanTimer) return;
@@ -1020,6 +1075,7 @@
             if (!entry.isIntersecting) continue;
             const el = entry.target;
             viewportObserver.unobserve(el);
+            if (el.isConnected === false) continue;
             if (el.tagName && el.tagName.toLowerCase() === 'img') {
               if (
                 isPageTranslated &&
@@ -1044,7 +1100,14 @@
       domMutationObserver = new MutationObserver((mutations) => {
         if (!isPageTranslated) return;
         const addedRoots = [];
+        let removed = false;
         for (const m of mutations) {
+          for (const node of m.removedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE && node.isConnected === false) {
+              releaseDetachedContent(node);
+              removed = true;
+            }
+          }
           for (const node of m.addedNodes) {
             if (
               node.nodeType === Node.ELEMENT_NODE &&
@@ -1062,19 +1125,14 @@
             }
           }
         }
-        if (addedRoots.length > 0) {
-          requestAnimationFrame(() => {
-            for (const root of addedRoots) {
-              scanAndObserveContainer(root);
-            }
-          });
-        }
+        if (removed) pruneDetachedParagraphs();
+        scheduleMutationScan(addedRoots);
       });
     }
   }
 
   function scanAndObserveContainer(root = document.body) {
-    if (!root || !viewportObserver) return;
+    if (!root || root.isConnected === false || !viewportObserver) return;
     const rawCandidates = [];
     if (root.matches && root.matches(BLOCK_SELECTOR)) {
       rawCandidates.push(root);
@@ -1358,7 +1416,7 @@
   }
 
   function queueParagraphForTranslation(el) {
-    if (!el || el.dataset.igStatus === 'queued' || el.dataset.igStatus === 'done') return;
+    if (!el || el.isConnected === false || el.dataset.igStatus === 'queued' || el.dataset.igStatus === 'done') return;
     if (el.dataset.igCleanupSession) {
       resetElementTranslationState(el);
     }
@@ -1414,6 +1472,7 @@
   }
 
   async function flushTranslationQueue() {
+    pruneDetachedParagraphs();
     if (flushQueueTimer) {
       clearTimeout(flushQueueTimer);
       flushQueueTimer = null;
@@ -1482,8 +1541,10 @@
           for (const item of slice) {
             const segId = Number(item.id);
             const record = blockMap.get(segId);
+            blockMap.delete(segId);
             if (!record || !record.element) continue;
             const el = record.element;
+            if (el.isConnected === false) continue;
 
             if (record.isMultiSeg) {
               el.querySelectorAll(`[data-ig-seg-id="${segId}"]`).forEach((n) => n.remove());
@@ -1533,8 +1594,10 @@
         for (const item of batch) {
           const segId = Number(item.id);
           const record = blockMap.get(segId);
+          blockMap.delete(segId);
           if (!record || !record.element) continue;
           const el = record.element;
+          if (el.isConnected === false) continue;
           if (record.isMultiSeg) {
             el.querySelectorAll(`.ig-trans-loading[data-ig-seg-id="${segId}"]`).forEach((n) => n.remove());
           } else {
@@ -1630,6 +1693,9 @@
     }
     postEnableTimers.forEach((t) => clearTimeout(t));
     postEnableTimers = [];
+    if (mutationScanTimer) clearTimeout(mutationScanTimer);
+    mutationScanTimer = null;
+    pendingScanRoots.clear();
     if (viewportObserver) viewportObserver.disconnect();
     if (domMutationObserver) domMutationObserver.disconnect();
 
@@ -3696,14 +3762,33 @@
     }
   }
 
+  const imageControlBars = new WeakMap();
+  const imageControlOwners = new WeakMap();
+
+  function releaseImageControls(bar) {
+    if (!bar) return;
+    const owner = imageControlOwners.get(bar);
+    if (owner) imageControlBars.delete(owner);
+    imageControlOwners.delete(bar);
+    bar.parentElement?.querySelectorAll(':scope > .ig-img-overlay-layer, :scope > .ig-img-bilingual-drawer')
+      .forEach(node => node.remove());
+    bar.remove();
+  }
+
   function mountImageControlBar(img) {
     const host = ensureImageHostContainer(img);
     if (!host) return null;
     let bar = host.querySelector(':scope > .ig-img-control-bar');
+    if (bar && imageControlOwners.get(bar)?.isConnected === false) {
+      releaseImageControls(bar);
+      bar = null;
+    }
     if (bar) return bar;
 
     bar = document.createElement('div');
     bar.className = 'notranslate ig-img-control-bar';
+    imageControlBars.set(img, bar);
+    imageControlOwners.set(bar, img);
     bar.setAttribute('translate', 'no');
 
     const actionBtn = document.createElement('button');
@@ -4127,6 +4212,7 @@
   }
 
   function cleanupAllImageOverlays() {
+    document.querySelectorAll('.ig-img-control-bar').forEach(releaseImageControls);
     document
       .querySelectorAll('.ig-img-overlay-layer, .ig-img-bilingual-drawer, .ig-img-control-bar')
       .forEach((el) => el.remove());

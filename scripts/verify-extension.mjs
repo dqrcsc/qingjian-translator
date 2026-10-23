@@ -130,6 +130,7 @@ const jsFiles = [
   'shared/utils.js',
   'shared/protocol.js',
   'shared/request-client.js',
+  'shared/request-budget.js',
   'background/request-queue.js',
   'background/cache-db.js',
   'background/gemini-client.js',

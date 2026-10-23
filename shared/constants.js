@@ -230,6 +230,7 @@ export const DEFAULT_SETTINGS = {
   batchMaxItems: 10,
   batchMaxChars: 2200,
   maxConcurrency: 3,
+  requestBudgetSeconds: 90,
   enableCache: true,
 
   // YouTube Dual Subtitles

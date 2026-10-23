@@ -33,6 +33,7 @@ import {
 } from './gemini-client.js';
 
 import { withConcurrencyLimit, abortRequestScope } from './request-queue.js';
+import { createRequestBudget, normalizeRequestBudgetSeconds } from '../shared/request-budget.js';
 
 async function getRequestSettings(signal) {
   signal?.throwIfAborted();
@@ -347,7 +348,7 @@ async function handleTranslateYoutubeCues(payload, signal) {
 }
 
 // Central runtime message dispatcher
-async function dispatchMessage(message, sender, sendResponse, signal) {
+async function dispatchRequest(message, sender, sendResponse, signal) {
     try {
       signal?.throwIfAborted();
       switch (message.type) {
@@ -468,6 +469,27 @@ async function dispatchMessage(message, sender, sendResponse, signal) {
     }
 }
 
+async function dispatchMessage(message, sender, sendResponse, requestBudget) {
+  if (!cancellableTypes.has(message.type)) return dispatchRequest(message, sender, sendResponse);
+  const budget = requestBudget || createRequestBudget();
+  try {
+    const settings = await budget.wait(getSettings());
+    budget.configure(normalizeRequestBudgetSeconds(settings.requestBudgetSeconds) * 1000);
+    budget.signal.throwIfAborted();
+    const response = await budget.wait(new Promise(resolve => {
+      void dispatchRequest(message, sender, resolve, budget.signal);
+    }));
+    budget.signal.throwIfAborted();
+    sendResponse(response);
+  } catch (error) {
+    const timedOut = budget.signal.aborted && budget.signal.reason?.name === 'TimeoutError';
+    sendResponse({ ok: false, timedOut, cancelled: budget.signal.aborted && !timedOut,
+      error: timedOut ? budget.signal.reason.message : budget.signal.aborted ? '请求已取消' : error?.message || String(error) });
+  } finally {
+    budget.dispose();
+  }
+}
+
 // Keep non-model commands and older installed clients compatible.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false;
@@ -497,12 +519,13 @@ chrome.runtime.onConnect.addListener(port => {
       port.postMessage({ requestId, response: { ok: false, error: '不支持的可取消请求' } });
       return;
     }
-    const controller = new AbortController();
+    const budget = createRequestBudget();
+    const controller = budget.controller;
     controllers.set(requestId, controller);
     void dispatchMessage(message, port.sender, response => {
       controllers.delete(requestId);
-      if (disconnected || controller.signal.aborted) return;
+      if (disconnected) return;
       try { port.postMessage({ requestId, response }); } catch { controller.abort(); }
-    }, controller.signal);
+    }, budget);
   });
 });

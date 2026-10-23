@@ -146,6 +146,41 @@ try {
   await page.waitForFunction(() => document.querySelector('#leftPaneTitle').textContent.includes('replacement.md'));
   checks.push('Replacing the document aborts old work and loads the replacement');
 
+  stage = 'total request deadline';
+  await page.evaluate(async () => {
+    const { saveSettings } = await import('../shared/storage.js');
+    await saveSettings({ requestBudgetSeconds: 30 });
+  });
+  // Accelerate only the configured 30s deadline, not the 45s attempt timeout.
+  await sw.evaluate(() => {
+    globalThis.__nativeTimeout = setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => __nativeTimeout(fn, ms > 29000 && ms <= 30000 ? 250 : ms, ...args);
+  });
+  const deadlineStart = calls.length;
+  try {
+    const timedOut = await page.evaluate(() => QingJianRequests.createScope().request({
+      type: 'TRANSLATE_BATCH', payload: { items: [{ id: 1, text: 'real-port-deadline' }] }
+    }));
+    assert.equal(timedOut.timedOut, true);
+    assert.equal(timedOut.cancelled, false);
+    assert.match(timedOut.error, /总时间预算/);
+    await until(() => calls[deadlineStart]?.closed, 'deadline closes stalled response body');
+    assert.equal(calls.length, deadlineStart + 1, 'no request retried after deadline');
+    mode = 'fast';
+    const retry = await page.evaluate(() => QingJianRequests.createScope().request({
+      type: 'TRANSLATE_BATCH', payload: { items: [{ id: 1, text: 'real-port-deadline' }] }
+    }));
+    assert.equal(retry.ok, true);
+    assert.equal(retry.data.translations[0].cached, false);
+    checks.push('Actual port deadline: stalled body aborted, explicit timeout delivered, no retry/cache pollution, fresh request succeeds');
+  } finally {
+    await sw.evaluate(() => { globalThis.setTimeout = __nativeTimeout; delete globalThis.__nativeTimeout; });
+    await page.evaluate(async () => {
+      const { saveSettings } = await import('../shared/storage.js'); await saveSettings({ requestBudgetSeconds: 90 });
+    });
+    mode = 'slow';
+  }
+
   const last = calls.length;
   await page.evaluate(() => {
     globalThis.closingScope = QingJianRequests.createScope();
@@ -167,6 +202,23 @@ try {
   await popup.close();
   await until(() => quickCall.closed, 'popup close aborts quick translation');
   checks.push('Closing popup cancels its actual quick-translation request');
+  const options = await context.newPage();
+  options.on('pageerror', error => errors.push(error.message));
+  await options.goto(`chrome-extension://${extensionId}/options/options.html`);
+  await options.waitForFunction(() => document.querySelector('#requestBudgetInput').value === '90');
+  for (const [input, expected] of [['120', 120], ['1', 30], ['999', 300], ['', 90]]) {
+    // This section can be hidden by navigation; use the actual input and save handler.
+    await options.locator('#requestBudgetInput').evaluate((node, value) => { node.value = value; }, input);
+    await options.locator('#saveAllBtn').click();
+    await options.waitForFunction(async value => {
+      const { getSettings } = await import('../shared/storage.js');
+      return (await getSettings()).requestBudgetSeconds === value;
+    }, expected);
+    await options.reload();
+    await options.waitForFunction(value => document.querySelector('#requestBudgetInput').value === String(value), expected);
+  }
+  await options.close();
+  checks.push('Actual settings save/reload persists request budget and clamps 1/999/empty to 30/300/90 seconds');
   stage = 'content lifecycle regressions';
   console.log('Checking actual content-script settings, rapid toggles and delayed image decoding…');
   checks.push(...await verifyContentBrowser(context, sw));

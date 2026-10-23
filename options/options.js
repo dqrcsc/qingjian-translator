@@ -1,4 +1,5 @@
 import '../shared/request-client.js';
+import { normalizeRequestBudgetSeconds } from '../shared/request-budget.js';
 const settingsRequests = globalThis.QingJianRequests.createScope();
 window.addEventListener('pagehide', () => settingsRequests.cancel());
 /**
@@ -63,6 +64,7 @@ const alwaysTranslateDomainsTextarea = document.getElementById('alwaysTranslateD
 const neverTranslateDomainsTextarea = document.getElementById('neverTranslateDomainsTextarea');
 const batchMaxItemsInput = document.getElementById('batchMaxItemsInput');
 const maxConcurrencyInput = document.getElementById('maxConcurrencyInput');
+const requestBudgetInput = document.getElementById('requestBudgetInput');
 
 const cacheStatsTitle = document.getElementById('cacheStatsTitle');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
@@ -223,6 +225,7 @@ async function fillFormFromSettings() {
   neverTranslateDomainsTextarea.value = s.neverTranslateDomains || '';
   batchMaxItemsInput.value = s.batchMaxItems || 10;
   maxConcurrencyInput.value = s.maxConcurrency || 3;
+  requestBudgetInput.value = normalizeRequestBudgetSeconds(s.requestBudgetSeconds);
 
   // Auto-fetch models if API key is present and we haven't fetched dynamic models yet
   if (s.apiKey && (!s.availableModels || s.availableModels.length === 0)) {
@@ -264,7 +267,8 @@ function collectFormValues() {
     alwaysTranslateDomains: alwaysTranslateDomainsTextarea.value,
     neverTranslateDomains: neverTranslateDomainsTextarea.value,
     batchMaxItems: Math.max(1, Math.min(25, Number(batchMaxItemsInput.value) || 10)),
-    maxConcurrency: Math.max(1, Math.min(8, Number(maxConcurrencyInput.value) || 3))
+    maxConcurrency: Math.max(1, Math.min(8, Number(maxConcurrencyInput.value) || 3)),
+    requestBudgetSeconds: normalizeRequestBudgetSeconds(requestBudgetInput.value)
   };
 }
 
