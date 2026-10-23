@@ -17,8 +17,7 @@ import {
   getProviderDefinition,
   getLanguageEnglishName,
   parseGlossary,
-  incrementUsageStats,
-  saveSettings
+  incrementUsageStats
 } from '../shared/storage.js';
 
 function buildSystemInstruction(settings, targetLangCode) {
@@ -539,7 +538,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
       if (fallbackModel && fallbackModel !== activeModel) {
         console.info(`[QingJian] Auto-switching deprecated model ${activeModel} -> ${fallbackModel}`);
         settings.requestSignal?.throwIfAborted();
-        await saveSettings({ modelId: fallbackModel, customModelId: '' });
+        // Keep fallback local to this request; a late result must not alter a new provider.
         return callGeminiApi(
           { ...settings, modelId: fallbackModel, customModelId: '' },
           payload,
@@ -559,15 +558,13 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
   const candidate = data?.candidates?.[0];
   const parts = candidate?.content?.parts || [];
 
-  // Join all non-thought text parts (thinking models may emit thought parts before the actual text part)
-  const nonThoughtParts = parts.filter((p) => typeof p.text === 'string' && !p.thought);
-  const rawText =
-    nonThoughtParts.length > 0
-      ? nonThoughtParts.map((p) => p.text).join('')
-      : parts
-          .filter((p) => typeof p.text === 'string')
-          .map((p) => p.text)
-          .join('');
+  const finishReason = candidate?.finishReason;
+  const blockReason = data?.promptFeedback?.blockReason;
+  if (blockReason || (finishReason && finishReason !== 'STOP')) {
+    throw new Error(`Gemini API 未返回完整可用结果 (finishReason: ${blockReason || finishReason})。`);
+  }
+  const rawText = parts.filter(p => typeof p.text === 'string' && !p.thought)
+    .map(p => p.text).join('');
 
   if (!rawText) {
     const finishReason =
@@ -718,7 +715,7 @@ ${JSON.stringify(inputPayload)}`;
       throw new Error(`模型遗漏了 ${missingItems.length} 条译文，请重试`);
     }
     settings.requestSignal?.throwIfAborted();
-    await incrementUsageStats({ batchRetries: 1 });
+    await incrementUsageStats({ batchRetries: 1 }, settings.requestSignal);
     const retried = await translateBatchWithGemini(missingItems, settings, {
       ...options, _isMissingSubsetRetry: true
     });
@@ -731,7 +728,7 @@ ${JSON.stringify(inputPayload)}`;
     requests: 1,
     paragraphs: options._isMissingSubsetRetry ? 0 : items.length,
     chars: options._isMissingSubsetRetry ? 0 : totalChars
-  });
+  }, settings.requestSignal);
 
   return inputPayload.map(item => ({ id: item.id, translation: byId.get(item.id) }));
 }
@@ -790,7 +787,7 @@ Return a JSON object with:
 
   const raw = await callGeminiApi(settings, payload);
   settings.requestSignal?.throwIfAborted();
-  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length });
+  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length }, settings.requestSignal);
   return safeParseJson(raw);
 }
 
@@ -817,7 +814,7 @@ export async function translateInputTextWithGemini({ text, targetLang }, setting
 
   const raw = await callGeminiApi(settings, payload);
   settings.requestSignal?.throwIfAborted();
-  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length });
+  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length }, settings.requestSignal);
   return raw.trim().replace(/^["']|["']$/g, '');
 }
 
@@ -882,7 +879,7 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
   if (missing.length > 0) {
     if (_isMissingSubsetRetry) throw new Error(`模型遗漏了 ${missing.length} 条字幕译文，请重试`);
     settings.requestSignal?.throwIfAborted();
-    await incrementUsageStats({ batchRetries: 1 });
+    await incrementUsageStats({ batchRetries: 1 }, settings.requestSignal);
     const retried = await translateYoutubeCuesWithGemini({
       cues: missing, contextBefore, contextAfter, videoTitle, _isMissingSubsetRetry: true
     }, settings);
@@ -894,7 +891,7 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
     requests: 1,
     paragraphs: _isMissingSubsetRetry ? 0 : cues.length,
     chars: _isMissingSubsetRetry ? 0 : cues.reduce((s, c) => s + (c.text?.length || 0), 0)
-  });
+  }, settings.requestSignal);
 
   return cues.map(c => ({ id: c.id, translation: mapById.get(c.id) }));
 }
@@ -941,7 +938,7 @@ Previous spoken context: "${previousContext}"
 
   const raw = await callGeminiApi(settings, payload);
   settings.requestSignal?.throwIfAborted();
-  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: 120 });
+  await incrementUsageStats({ requests: 1, paragraphs: 1, chars: 120 }, settings.requestSignal);
   return safeParseJson(raw);
 }
 
@@ -1061,7 +1058,7 @@ export async function analyzePdfWithGemini(
     requests: 1,
     paragraphs: Array.isArray(blocks) ? blocks.length : 1,
     chars: Array.isArray(blocks) ? blocks.reduce((s, b) => s + (b.original?.length || 0), 0) : 500
-  });
+  }, settings.requestSignal);
   return Array.isArray(blocks) ? blocks : [];
 }
 
@@ -1191,7 +1188,7 @@ Rules:
     requests: 1,
     paragraphs: Math.max(1, regions.length),
     chars: regions.reduce((s, r) => s + (r.original?.length || 0), 0)
-  });
+  }, settings.requestSignal);
 
   return {
     hasText: Boolean(parsed?.hasText && regions.length > 0),
@@ -1255,9 +1252,7 @@ export async function testGeminiConnection(overrideSettings) {
   );
   const latencyMs = Date.now() - start;
 
-  if (availableModels.length > 0) {
-    await saveSettings({ availableModels, modelId: targetModelId });
-  }
+  // The options page commits results only while the originating draft is current.
 
   return {
     ok: true,

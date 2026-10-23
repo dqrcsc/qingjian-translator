@@ -172,16 +172,18 @@ async function pruneIndexedDbIfNeeded(db) {
 export async function getCacheStats() {
   try {
     const db = await openCacheDB();
-    const count = await new Promise((resolve) => {
+    const count = await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.count();
-      req.onsuccess = () => resolve(req.result || 0);
-      req.onerror = () => resolve(memCache.size);
+      const req = tx.objectStore(STORE_NAME).count();
+      let count = 0;
+      req.onsuccess = () => { count = req.result || 0; };
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => resolve(count);
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('缓存读取失败'));
     });
-    return { indexedDbCount: count, memoryCount: memCache.size };
+    return { indexedDbCount: count, memoryCount: memCache.size, indexedDbAvailable: true };
   } catch {
-    return { indexedDbCount: memCache.size, memoryCount: memCache.size };
+    return { indexedDbCount: null, memoryCount: memCache.size, indexedDbAvailable: false };
   }
 }
 
@@ -189,15 +191,15 @@ export async function clearAllCache() {
   memCache.clear();
   try {
     const db = await openCacheDB();
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.clear();
+      const req = tx.objectStore(STORE_NAME).clear();
+      req.onerror = () => reject(req.error);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('缓存清理失败'));
     });
+    return { cleared: true, memoryCleared: true, indexedDbCleared: true };
   } catch {
-    // ignore IndexedDB clear errors
+    return { cleared: false, memoryCleared: true, indexedDbCleared: false };
   }
-  return { cleared: true };
 }

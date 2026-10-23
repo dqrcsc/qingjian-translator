@@ -40,8 +40,22 @@ export async function getSettings() {
   return merged;
 }
 
-export async function saveSettings(partialSettings) {
+// Serialize read/modify/write across options, popup and worker contexts as well.
+function withSettingsLock(update) {
+  return globalThis.navigator?.locks
+    ? navigator.locks.request('qingjian-settings-write', update) : update();
+}
+let settingsUpdateChain = Promise.resolve();
+export function saveSettings(partialSettings, { expected } = {}) {
+  const update = () => withSettingsLock(() => writeSettings(partialSettings, expected));
+  settingsUpdateChain = settingsUpdateChain.then(update, update);
+  return settingsUpdateChain;
+}
+
+async function writeSettings(partialSettings, expected) {
   const current = await getSettings();
+  if (expected && ['providerId', 'apiProtocol', 'apiBaseUrl', 'apiKey', 'modelId', 'customModelId']
+    .some(key => current[key] !== expected[key])) return null;
   const updated = { ...current, ...partialSettings };
   // A provider switch without an explicit protocol must not inherit the old provider's protocol.
   updated.apiProtocol = getActiveProtocol(
@@ -67,9 +81,14 @@ export async function saveSettings(partialSettings) {
   return updated;
 }
 
-export async function resetSettings() {
-  await chrome.storage.local.set({ [STORAGE_KEY]: { ...DEFAULT_SETTINGS } });
-  return { ...DEFAULT_SETTINGS };
+export function resetSettings() {
+  const reset = async () => {
+    await chrome.storage.local.set({ [STORAGE_KEY]: { ...DEFAULT_SETTINGS } });
+    return { ...DEFAULT_SETTINGS };
+  };
+  const update = () => withSettingsLock(reset);
+  settingsUpdateChain = settingsUpdateChain.then(update, update);
+  return settingsUpdateChain;
 }
 
 export function onSettingsChanged(callback) {
@@ -85,6 +104,8 @@ export function onSettingsChanged(callback) {
 }
 
 let statsUpdateChain = Promise.resolve();
+let pendingStatsUpdates = 0;
+const MAX_PENDING_STATS_UPDATES = 32;
 
 export async function getUsageStats() {
   const result = await chrome.storage.local.get(STATS_KEY);
@@ -97,9 +118,33 @@ export async function getUsageStats() {
   };
 }
 
-export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0, batchRetries = 0 }) {
+// Storage APIs cannot be aborted, but their callers must release request slots.
+// A late read must never resume an expired update and write stale counters.
+function waitForStorage(promise, signal, timeoutMs = 0) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+    const abort = () => { cleanup(); reject(signal.reason); };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (timeoutMs) timer = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
+    Promise.resolve(promise).then(value => {
+      cleanup();
+      if (signal?.aborted) reject(signal.reason);
+      else resolve(value);
+    }, error => { cleanup(); reject(error); });
+    if (signal?.aborted) abort();
+  });
+}
+
+export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0, batchRetries = 0 }, signal) {
+  signal?.throwIfAborted();
+  // Accounting is best effort when storage is unavailable; never retain an unbounded queue.
+  if (pendingStatsUpdates >= MAX_PENDING_STATS_UPDATES) return Promise.resolve(null);
+  pendingStatsUpdates++;
   const runUpdate = async () => {
-    const current = await getUsageStats();
+    signal?.throwIfAborted();
+    const current = await waitForStorage(getUsageStats(), signal);
+    signal?.throwIfAborted();
     const next = {
       batchRetries: (current.batchRetries || 0) + batchRetries,
       totalRequests: (current.totalRequests || 0) + requests,
@@ -107,11 +152,17 @@ export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, c
       cacheHits: (current.cacheHits || 0) + cacheHits,
       estimatedCharsTranslated: (current.estimatedCharsTranslated || 0) + chars
     };
+    // Keep physical writes serialized even when their original caller has stopped waiting.
     await chrome.storage.local.set({ [STATS_KEY]: next });
     return next;
   };
-  statsUpdateChain = statsUpdateChain.then(runUpdate, runUpdate);
-  return statsUpdateChain;
+  statsUpdateChain = statsUpdateChain.then(runUpdate, runUpdate)
+    .finally(() => { pendingStatsUpdates--; });
+  // Slow bookkeeping must not turn successful model output into repeated request timeouts.
+  return waitForStorage(statsUpdateChain, signal, 250).catch(() => {
+    signal?.throwIfAborted();
+    return null; // Failed bookkeeping must not discard a successful translation.
+  });
 }
 
 export function getActiveModelId(settings) {

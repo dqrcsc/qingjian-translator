@@ -5,18 +5,21 @@ import http from 'node:http';
 
 export async function verifyContentBrowser(context, sw) {
   const checks = [], errors = [], pages = [];
+  const recordCheck = label => { checks.push(label); console.log(`  ✓ ${label}`); };
   const html = `<!doctype html><title>Content regression fixture</title>
     <style>p{margin:2px;font:14px/18px sans-serif}img{width:240px;height:160px}</style>
     ${Array.from({ length: 40 }, (_, i) => `<p class="fixture">This is an English test paragraph number ${i}.</p>`).join('')}
     <img id="fixture-image" src="/image.svg" alt="English diagram">`;
-  let imageCalls = 0, holdParagraphReplies = false;
+  let imageCalls = 0, holdParagraphReplies = false, holdImageReplies = false;
+  let subtitleMode = 'ok';
+  const subtitleCalls = [], heldSubtitleReplies = [], heldImageReplies = [];
   const heldReplies = [];
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }); res.end(); return;
     }
     if (req.method === 'GET') {
-      if (req.url === '/image.svg') {
+      if (req.url.startsWith('/image.svg')) {
         res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
         res.end('<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="white"/><text x="20" y="60">Hello diagram</text></svg>');
       } else { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(html); }
@@ -25,6 +28,16 @@ export async function verifyContentBrowser(context, sw) {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     const parts = body.messages.at(-1).content;
+    if (typeof parts === 'string' && parts.includes('Subtitle Cues to Translate')) {
+      subtitleCalls.push({ at: Date.now(), prompt: parts });
+      if (subtitleMode !== 'ok') {
+        const code = subtitleMode === '503' ? 503 : 401;
+        const fail = () => { res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ error: { message: `fixture subtitle ${code}` } })); };
+        if (subtitleMode === 'hold401') heldSubtitleReplies.push(fail);
+        else fail();
+        return;
+      }
+    }
     let answer;
     if (Array.isArray(parts)) {
       imageCalls++;
@@ -36,7 +49,8 @@ export async function verifyContentBrowser(context, sw) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }));
     };
-    if (holdParagraphReplies && !Array.isArray(parts)) heldReplies.push(reply);
+    if (holdImageReplies && Array.isArray(parts)) heldImageReplies.push(reply);
+    else if (holdParagraphReplies && !Array.isArray(parts)) heldReplies.push(reply);
     else reply();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -56,6 +70,7 @@ export async function verifyContentBrowser(context, sw) {
   };
   async function open(url, route) {
     const page = await context.newPage(); pages.push(page);
+    page.setDefaultTimeout(12000);
     await page.setViewportSize({ width: 1200, height: 1200 });
     page.on('pageerror', error => errors.push(error.message));
     if (route) await page.route('https://www.youtube.com/**', route);
@@ -140,7 +155,7 @@ export async function verifyContentBrowser(context, sw) {
     }
     await toggle();
     await page.waitForFunction(() => !document.querySelector('p.fixture .ig-trans-node'));
-    checks.push('Actual content injection: 40 paragraphs survive both RAF/observer orderings and final disable removes translations');
+    recordCheck('Actual content injection: 40 paragraphs survive both RAF/observer orderings and final disable removes translations');
 
     // Query actual isolated-world Maps; no production debug hooks or source rewrites.
     await page.locator('p.fixture').evaluateAll(nodes => nodes.forEach(node => node.remove()));
@@ -195,11 +210,12 @@ export async function verifyContentBrowser(context, sw) {
     await page.locator('#long-page').evaluate(node => node.remove());
     await toggle();
     assert.equal(await evaluate('__observedTargets.size'), 0);
-    checks.push('Long page: 5 × 50 completed paragraphs retain 0 records; 200 offscreen targets unobserved after removal; queued/active removal, no late writes, synchronous moves and reinsertion pass');
+    recordCheck('Long page: 5 × 50 completed paragraphs retain 0 records; 200 offscreen targets unobserved after removal; queued/active removal, no late writes, synchronous moves and reinsertion pass');
 
     // Defer Image.onload in the content world while the real image still decodes.
     await evaluate(`(() => {
       const NativeImage = Image;
+      globalThis.__NativeImage = NativeImage;
       globalThis.__decoded = [];
       globalThis.Image = function(...args) {
         const image = new NativeImage(...args);
@@ -226,7 +242,7 @@ export async function verifyContentBrowser(context, sw) {
     assert.match(await page.locator('.ig-img-bilingual-drawer').textContent(), /图译 2/);
     await toggle(); await toggle();
     await page.waitForFunction(() => !document.querySelector('.ig-img-overlay-layer'));
-    checks.push('Actual image entry: cancellation during decode cannot restore an old layer or clear replacement loading; latest image renders once');
+    recordCheck('Actual image entry: cancellation during decode cannot restore an old layer or clear replacement loading; latest image renders once');
     // Keep the image host connected while replacing only its image child.
     await page.evaluate(() => {
       const host = document.createElement('figure'); host.id = 'replacement-image-host';
@@ -248,7 +264,70 @@ export async function verifyContentBrowser(context, sw) {
     assert.equal(await page.locator('#replacement-image-host .ig-img-overlay-layer').count(), 1);
     assert.equal(await page.locator('#replacement-image-host .ig-img-control-bar').count(), 1);
     await toggle();
-    checks.push('Image node replacement preserves its host but releases old controls; new button translates the new image and renders one overlay');
+    recordCheck('Image node replacement preserves its host but releases old controls; new button translates the new image and renders one overlay');
+    // Source tracking must also work while paragraph translation is disabled.
+    await evaluate('globalThis.Image = __NativeImage');
+    const imageNode = page.locator('#fixture-image');
+    const imageTrigger = page.locator('#replacement-image-host [data-role="trigger"]');
+    const hoverImage = () => imageNode.dispatchEvent('mouseover');
+    const imageDone = () => page.waitForFunction(() => document.querySelector('#fixture-image').dataset.igImgStatus === 'done');
+    await hoverImage();
+    assert.equal(await imageNode.getAttribute('data-ig-hover-bound'), '1');
+    await imageTrigger.click(); await imageDone();
+    const replaceSource = async (attribute, suffix) => {
+      await imageNode.evaluate((img, { attribute, url }) => img.setAttribute(attribute, attribute === 'srcset' ? `${url} 1x` : url), { attribute, url: `${base}/image.svg?${suffix}` });
+      await page.waitForFunction(suffix => document.querySelector('#fixture-image').currentSrc.includes(suffix), suffix);
+      await page.waitForFunction(() => !document.querySelector('.ig-img-overlay-layer'));
+      await imageTrigger.waitFor();
+    };
+    await replaceSource('src', 'new-src');
+    await imageTrigger.click(); await imageDone();
+    await replaceSource('srcset', 'new-srcset');
+    await imageTrigger.click(); await imageDone();
+    assert.equal((await send(tabId, { type: 'GET_PAGE_STATUS' })).isPageTranslated, false);
+    assert.equal(await page.locator('.ig-img-overlay-layer').count(), 1);
+    recordCheck('Manual image session: same IMG src and srcset replacements remove completed stale layers and permit new translation without paragraph activation');
+
+    // Responsive selection can change currentSrc without any src/srcset attribute mutation.
+    await page.setViewportSize({ width: 400, height: 1200 });
+    await imageNode.evaluate((img, base) => {
+      img.sizes = '50vw';
+      img.srcset = `${base}/image.svg?responsive-small 240w, ${base}/image.svg?responsive-large 960w`;
+    }, base);
+    await page.waitForFunction(() => document.querySelector('#fixture-image').currentSrc.includes('responsive-small'));
+    await imageTrigger.click(); await imageDone();
+    const responsiveAttributes = await imageNode.evaluate(img => [img.src, img.srcset, img.sizes]);
+    await page.setViewportSize({ width: 1200, height: 1200 });
+    await page.waitForFunction(() => document.querySelector('#fixture-image').currentSrc.includes('responsive-large'));
+    await page.waitForFunction(() => !document.querySelector('.ig-img-overlay-layer'));
+    assert.deepEqual(await imageNode.evaluate(img => [img.src, img.srcset, img.sizes]), responsiveAttributes);
+    await imageTrigger.click(); await imageDone();
+    recordCheck('Responsive image load: viewport-only currentSrc change invalidates old translation with unchanged src/srcset/sizes attributes');
+
+    await replaceSource('srcset', 'inflight-old');
+    holdImageReplies = true;
+    await imageTrigger.click();
+    await wait(() => heldImageReplies.length === 1, 'old source image request held');
+    await replaceSource('srcset', 'inflight-new');
+    await imageTrigger.click();
+    await wait(() => heldImageReplies.length === 2, 'new source image request held');
+    heldImageReplies.shift()();
+    await page.waitForTimeout(180);
+    assert.equal(await imageNode.getAttribute('data-ig-img-status'), 'loading');
+    assert.equal(await page.locator('.ig-img-overlay-layer').count(), 0);
+    heldImageReplies.shift()(); holdImageReplies = false;
+    await imageDone();
+    assert.equal(await page.locator('.ig-img-overlay-layer').count(), 1);
+    recordCheck('Image source replacement in flight: old HTTP reply cannot restore a layer or clear replacement task; latest reply owns the one overlay');
+
+    await hoverImage();
+    await toggle(); await toggle();
+    assert.equal(await page.locator('.ig-img-control-bar').count(), 0);
+    assert.equal(await imageNode.getAttribute('data-ig-hover-bound'), null);
+    await hoverImage(); await hoverImage();
+    assert.equal(await page.locator('.ig-img-control-bar').count(), 1);
+    await imageTrigger.click(); await imageDone();
+    recordCheck('Disable/re-hover: release clears hover ownership; repeated hover recreates exactly one working image translation control');
     await page.close();
 
     // The URL selects the real YouTube integration; all YouTube traffic is fulfilled locally.
@@ -281,7 +360,99 @@ export async function verifyContentBrowser(context, sw) {
       await audio.page.locator('[data-act="audio-listen"]').click();
       assert.equal(await audio.evaluate('__captures'), before + Number(allowed), JSON.stringify(raw));
     }
-    checks.push('Actual initial storage load, storage changes and YouTube audio button: missing Google/DeepSeek/custom and explicit protocols gated before capture');
+    recordCheck('Actual initial storage load, storage changes and YouTube audio button: missing Google/DeepSeek/custom and explicit protocols gated before capture');
+    await audio.page.close();
+    const subtitleSettings = { ...settings, youtubeAutoEnable: true };
+    const captionsHtml = '<!doctype html><title>Subtitle reliability fixture</title><div id="movie_player" class="html5-video-player"><video></video><div class="ytp-right-controls"></div><div class="ytp-caption-window-container"><span class="ytp-caption-segment"></span></div></div>';
+    const routeCaptions = route => route.fulfill({ status: 200,
+      contentType: route.request().resourceType() === 'document' ? 'text/html' : 'application/json',
+      body: route.request().resourceType() === 'document' ? captionsHtml : '{}' });
+    const setPlayback = (fixture, paused) => fixture.page.evaluate(paused => {
+      const video = document.querySelector('video');
+      Object.defineProperty(video, 'paused', { configurable: true, value: paused });
+      video.dispatchEvent(new Event(paused ? 'pause' : 'playing'));
+    }, paused);
+    const seedCaptions = async (fixture, live) => {
+      await fixture.page.locator('.ig-yt-ctrl-btn').waitFor();
+      await fixture.page.evaluate(live => {
+        if (live) document.querySelector('.ytp-caption-segment').textContent = 'Live English subtitle fixture.';
+        else window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CUES_LOADED', payload: {
+          videoTitle: 'Fixture', videoId: new URL(location.href).searchParams.get('v'),
+          cues: [{ id: 0, text: 'English subtitle fixture.', start: 0, end: 120 }]
+        } }, '*');
+      }, live);
+    };
+    for (const live of [false, true]) {
+      await store(subtitleSettings);
+      subtitleMode = '401';
+      const fixture = await open(`https://www.youtube.com/watch?v=${live ? 'live' : 'cue'}-failure`, routeCaptions);
+      const start = subtitleCalls.length;
+      await seedCaptions(fixture, live);
+      await fixture.page.locator('.ig-yt-translation-error').filter({ hasText: '已暂停' }).waitFor();
+      for (const paused of [false, true]) {
+        await setPlayback(fixture, paused);
+        await fixture.page.waitForTimeout(700);
+        assert.equal(subtitleCalls.length - start, 1, `${live ? 'live' : 'cue'} 401 stays at one request during ${paused ? 'pause' : 'play'}`);
+      }
+      // Live text changes must not bypass a permanent session failure.
+      if (live) await fixture.page.locator('.ytp-caption-segment').evaluate(el => { el.textContent = 'A different live caption.'; });
+      await fixture.page.waitForTimeout(300);
+      assert.equal(subtitleCalls.length - start, 1);
+      subtitleMode = '503';
+      const transientStart = subtitleCalls.length;
+      await fixture.page.locator('.ig-yt-translation-error button').click();
+      await fixture.page.locator('.ig-yt-translation-error').filter({ hasText: '已暂停' }).waitFor({ timeout: 16000 });
+      assert.equal(subtitleCalls.length - transientStart, 9, '3 session attempts × 3 bounded HTTP attempts');
+      const attempts = subtitleCalls.slice(transientStart);
+      assert.ok(attempts[3].at - attempts[2].at >= 900, 'first session retry waits at least ~1s');
+      assert.ok(attempts[6].at - attempts[5].at >= 1900, 'second session retry waits at least ~2s');
+      await fixture.page.waitForTimeout(500);
+      assert.equal(subtitleCalls.length - transientStart, 9, 'no further automatic requests after retry exhaustion');
+      subtitleMode = 'ok';
+      await store({ ...subtitleSettings, modelId: 'fixture-vision-recovered' });
+      await fixture.page.locator('.ig-yt-line-trans').filter({ hasText: '段落译文' }).waitFor();
+      assert.equal(await fixture.page.locator('.ig-yt-translation-error').count(), 0);
+      recordCheck(`${live ? 'Live native captions' : 'Loaded cue track'} real entry: 401 makes one request across play/pause; 503 stops at 9 HTTP calls with 1s/2s session backoff; visible restart and settings-change recovery pass`);
+      await fixture.page.close();
+    }
+
+    // A held old-video 401 must not stop the new video's successful subtitle session.
+    await store(subtitleSettings); subtitleMode = 'hold401';
+    const stale = await open('https://www.youtube.com/watch?v=stale-video', routeCaptions);
+    await seedCaptions(stale, false);
+    await wait(() => heldSubtitleReplies.length === 1, 'held old video request');
+    await stale.page.evaluate(() => history.pushState({}, '', '/watch?v=fresh-video'));
+    // Wait for the production SPA poll to establish the new session, then use the real bridge event.
+    await stale.page.waitForTimeout(1400);
+    subtitleMode = 'ok';
+    await seedCaptions(stale, false);
+    await stale.page.locator('.ig-yt-line-trans').filter({ hasText: '段落译文' }).waitFor();
+    heldSubtitleReplies.shift()();
+    await stale.page.waitForTimeout(300);
+    assert.equal(await stale.page.locator('.ig-yt-translation-error').count(), 0);
+    assert.match(await stale.page.locator('.ig-yt-line-trans').textContent(), /段落译文/);
+    recordCheck('YouTube SPA navigation: delayed old-video 401 cannot poison the new video translation session');
+
+    // Returning to the SAME video must also recover, without a cue-track event.
+    await store(subtitleSettings); subtitleMode = 'hold401';
+    const returning = await open('https://www.youtube.com/watch?v=returning-live', routeCaptions);
+    await seedCaptions(returning, true);
+    await wait(() => heldSubtitleReplies.length === 1, 'held live-caption request before leaving video');
+    await returning.page.evaluate(() => history.pushState({}, '', '/'));
+    await returning.page.waitForTimeout(1400);
+    subtitleMode = 'ok';
+    const returnStart = subtitleCalls.length;
+    await returning.page.evaluate(() => {
+      history.pushState({}, '', '/watch?v=returning-live');
+      document.querySelector('.ytp-caption-segment').textContent = 'Resumed same-video live caption.';
+    });
+    await returning.page.locator('.ig-yt-line-trans').filter({ hasText: '段落译文' }).waitFor();
+    assert.ok(subtitleCalls.length > returnStart, 'same-video live captions resume after route cancellation');
+    heldSubtitleReplies.shift()();
+    await returning.page.waitForTimeout(300);
+    assert.equal(await returning.page.locator('.ig-yt-translation-error').count(), 0);
+    assert.match(await returning.page.locator('.ig-yt-line-trans').textContent(), /段落译文/);
+    recordCheck('YouTube home → same live video: cancelled busy ownership resets, native captions resume without a cue-track event, and old 401 stays ignored');
     assert.deepEqual(errors, [], 'content-script contexts must have no uncaught exceptions');
     return checks;
   } finally {

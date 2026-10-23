@@ -45,3 +45,48 @@ test('save and storage-change entry points normalize missing/empty protocol', as
   assert.equal(changed.apiProtocol, 'openai');
   unsubscribe();
 });
+
+test('statistics cancellation does not allow a late write to overwrite subsequent counters', async () => {
+  const { incrementUsageStats } = await import('../shared/storage.js');
+  const nativeGet = chrome.storage.local.get, nativeSet = chrome.storage.local.set;
+  const statsKey = 'immersive_gemini_stats_v1';
+  let stats = { totalParagraphs: 0 }, release, writes = 0;
+  chrome.storage.local.get = async () => ({ [statsKey]: structuredClone(stats) });
+  chrome.storage.local.set = async value => {
+    writes++;
+    if (writes === 1) await new Promise(resolve => { release = resolve; });
+    stats = structuredClone(value[statsKey]);
+  };
+  const controller = new AbortController();
+  try {
+    const first = incrementUsageStats({ paragraphs: 1 }, controller.signal);
+    while (!release) await new Promise(resolve => setTimeout(resolve, 1));
+    controller.abort();
+    await assert.rejects(first, /abort/i);
+    const second = incrementUsageStats({ paragraphs: 2 });
+    assert.equal(await second, null, 'bookkeeping must stop delaying the caller after 250ms');
+    assert.equal(writes, 1, 'second physical write cannot overtake the first');
+    release();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(writes, 2);
+    assert.equal(stats.totalParagraphs, 3, 'no later counter lost to the old write');
+  } finally { release?.(); chrome.storage.local.get = nativeGet; chrome.storage.local.set = nativeSet; }
+});
+
+test('a stalled physical statistics write bounds the backlog and never delays translations indefinitely', async () => {
+  const { incrementUsageStats } = await import('../shared/storage.js');
+  const nativeGet=chrome.storage.local.get, nativeSet=chrome.storage.local.set;
+  const key='immersive_gemini_stats_v1';
+  let stats={totalParagraphs:0},release,writes=0;
+  chrome.storage.local.get=async()=>({[key]:structuredClone(stats)});
+  chrome.storage.local.set=async value=>{if(++writes===1)await new Promise(r=>{release=r;});stats=structuredClone(value[key]);};
+  try {
+    const pending=Array.from({length:100},()=>incrementUsageStats({paragraphs:1}));
+    await Promise.all(pending);
+    assert.equal(writes,1);
+    release();
+    for(let i=0;i<100&&writes<32;i++)await new Promise(r=>setTimeout(r,1));
+    assert.equal(writes,32);
+    assert.equal(stats.totalParagraphs,32);
+  } finally {release?.();chrome.storage.local.get=nativeGet;chrome.storage.local.set=nativeSet;}
+});

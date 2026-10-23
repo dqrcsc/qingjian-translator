@@ -118,6 +118,34 @@ let currentDoc = {
   blocks: [] // Array of { id, page, chapterIndex, type, column, original, translation, figureBox2d, figureLabels, imageDataUrl, start, end }
 };
 
+// IDs belong to blocks, not their current array position. Reordering or replacing
+// PDF pages must never recycle an ID still referenced by an in-flight request.
+function allocateBlockId(doc = currentDoc) {
+  // An asynchronous import can replace blocks after an image already allocated an ID.
+  const minimumNextId = doc.blocks.reduce((next, block) => Math.max(next, block.id + 1), 0);
+  doc.nextBlockId = Math.max(Number.isSafeInteger(doc.nextBlockId) ? doc.nextBlockId : 0, minimumNextId);
+  return doc.nextBlockId++;
+}
+
+function adoptParsedBlocks(blocks, doc = currentDoc) {
+  // Import completion can race with image uploads in this same document session.
+  // Assign fresh identities instead of reusing parser-local array indices.
+  doc.blocks = blocks.map(block => ({ ...block, id: allocateBlockId(doc) }));
+}
+
+const blockTranslationVersions = new WeakMap();
+const blockRetranslations = new WeakMap();
+function beginBlockTranslation(block) {
+  const version = (blockTranslationVersions.get(block) || 0) + 1;
+  blockTranslationVersions.set(block, version);
+  return { block, id: block.id, original: block.original, version };
+}
+function ownsBlockTranslation(request, doc) {
+  return currentDoc === doc && doc.blocks.includes(request.block) &&
+    request.block.id === request.id && request.block.original === request.original &&
+    blockTranslationVersions.get(request.block) === request.version;
+}
+
 let isTranslating = false;
 let stopRequested = false;
 let isExportBatchRunning = false;
@@ -401,7 +429,7 @@ async function handleFileLoaded(file, options = {}) {
         const localBlocks = await extractPdfBlocksLocally(ab);
         if (session !== documentSession) return;
         if (localBlocks.length > 0) {
-          currentDoc.blocks = localBlocks;
+          adoptParsedBlocks(localBlocks);
           renderWorkspaceBlocks();
         }
       } else {
@@ -427,7 +455,7 @@ async function handleFileLoaded(file, options = {}) {
       currentDoc.bookTitle = parsed.bookTitle;
       currentDoc.bookAuthor = parsed.bookAuthor;
       currentDoc.chapters = parsed.chapters;
-      currentDoc.blocks = parsed.blocks;
+      adoptParsedBlocks(parsed.blocks);
 
       leftPaneTitle.textContent = `📗 EPUB: ${parsed.bookTitle}`;
       if (parsed.chapters.length > 0) {
@@ -444,29 +472,28 @@ async function handleFileLoaded(file, options = {}) {
       const text = await file.text();
       if (session !== documentSession) return;
       const cues = parseSubtitles(text);
-      currentDoc.blocks = cues.map((c, idx) => ({
-        id: idx,
+      adoptParsedBlocks(cues.map((c) => ({
         page: 1,
         type: 'subtitle',
         start: c.start,
         end: c.end,
         original: c.text,
         translation: ''
-      }));
+      })));
       leftPaneTitle.textContent = `🎬 字幕文件 (${name})`;
       renderWorkspaceBlocks();
     } else if (ext === 'html' || ext === 'htm') {
       currentDoc.fileType = 'html';
       const text = await file.text();
       if (session !== documentSession) return;
-      currentDoc.blocks = parseHtmlDocumentToBlocks(text);
+      adoptParsedBlocks(parseHtmlDocumentToBlocks(text));
       leftPaneTitle.textContent = `📙 HTML 文档 (${name})`;
       renderWorkspaceBlocks();
     } else {
       currentDoc.fileType = 'md';
       const text = await file.text();
       if (session !== documentSession) return;
-      currentDoc.blocks = parseMarkdownToBlocks(text);
+      adoptParsedBlocks(parseMarkdownToBlocks(text));
       leftPaneTitle.textContent = `📘 Markdown / 文本 (${name})`;
       renderWorkspaceBlocks();
     }
@@ -1263,40 +1290,60 @@ function renderWorkspaceBlocks(filterKeyword = '') {
     });
   });
 
-  // Bind single block re-translate
+  // Bind single block re-translate. Re-rendering may replace buttons while a request is active.
   bilingualStreamContainer.querySelectorAll('.retranslate-mini-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const session = documentSession;
-      const id = Number(btn.dataset.retrans);
-      const block = currentDoc.blocks.find((x) => x.id === id);
-      if (!block) return;
-      const transEl = document.getElementById(`stream-trans-${id}`);
-      if (transEl) transEl.textContent = 'AI 正在重译…';
-      const settings = await getSettings();
-      if (session !== documentSession) return;
-      const res = await sendModelRequest({
-        type: MESSAGE_TYPES.TRANSLATE_BATCH,
-        payload: {
-          items: [{ id: block.id, text: block.original }],
-          targetLang: settings.targetLang,
-          pageTitle: currentDoc.bookTitle
-        }
-      });
-      if (session !== documentSession) return;
-      if (res && res.ok && res.data?.translations?.[0]) {
-        block.translation = res.data.translations[0].translation;
-        if (transEl) {
-          transEl.innerHTML = renderRichAcademicHtml(block.translation, {
-            blockType: block.type,
-            pageNum: block.page
-          });
-        }
-      }
-    });
+    const block = currentDoc.blocks.find(item => item.id === Number(btn.dataset.retrans));
+    btn.disabled = Boolean(block && blockRetranslations.has(block));
+    btn.addEventListener('click', () => { if (block) void retranslateBlock(block); });
   });
 
   // Re-attach scroll-driven lazy page observer if enabled
   setupLazyPageObserver();
+}
+
+async function retranslateBlock(block) {
+  if (blockRetranslations.has(block) || !currentDoc.blocks.includes(block)) return;
+  const doc = currentDoc, session = documentSession, signal = documentRequests.signal;
+  const request = beginBlockTranslation(block);
+  const task = {};
+  blockRetranslations.set(block, task);
+  const buttons = () => bilingualStreamContainer.querySelectorAll(`[data-retrans="${request.id}"]`);
+  buttons().forEach(btn => { btn.disabled = true; });
+  const transEl = document.getElementById(`stream-trans-${request.id}`);
+  if (transEl) transEl.textContent = 'AI 正在重译…';
+  const isCurrent = () => session === documentSession && !signal.aborted && ownsBlockTranslation(request, doc);
+  try {
+    const settings = await getSettings();
+    if (!isCurrent()) throw new DOMException('重译已取消', 'AbortError');
+    const response = await sendModelRequest({
+      type: MESSAGE_TYPES.TRANSLATE_BATCH,
+      payload: { items: [{ id: request.id, text: request.original }],
+        targetLang: settings.targetLang, pageTitle: doc.bookTitle }
+    });
+    if (!isCurrent() || response?.cancelled) throw new DOMException('重译已取消', 'AbortError');
+    if (!response?.ok) throw new Error(response?.error || '未收到有效译文');
+    const translated = response.data?.translations?.find(item => Number(item.id) === request.id);
+    if (!translated || typeof translated.translation !== 'string' || !translated.translation.trim()) {
+      throw new Error('未收到对应段落的有效译文');
+    }
+    block.translation = translated.translation;
+    docStatusSubtitle.textContent = '✓ 此段重译完成';
+  } catch (error) {
+    if (currentDoc === doc && doc.blocks.includes(block)) {
+      docStatusSubtitle.textContent = error?.name === 'AbortError'
+        ? '此段重译已取消，已保留原译文。'
+        : `⚠️ 此段重译失败：${error?.message || error}。已保留原译文，可点击重试。`;
+    }
+  } finally {
+    if (blockRetranslations.get(block) === task) blockRetranslations.delete(block);
+    if (currentDoc === doc && doc.blocks.includes(block)) {
+      const currentEl = document.getElementById(`stream-trans-${request.id}`);
+      if (currentEl) currentEl.innerHTML = renderRichAcademicHtml(block.translation || '', {
+        blockType: block.type, pageNum: block.page
+      });
+      buttons().forEach(btn => { btn.disabled = false; });
+    }
+  }
 }
 
 // ============================================================================
@@ -1321,6 +1368,7 @@ async function loadImageToCanvas(dataUrl) {
 
 async function handleFigureImageFile(file, attachToBlockId = null) {
   const session = documentSession;
+  const attachTarget = attachToBlockId === null ? null : currentDoc.blocks.find(block => block.id === attachToBlockId);
   if (!file || !file.type.startsWith('image/')) return;
   emptyDropzoneSection.hidden = true;
   workspaceSplitMain.hidden = false;
@@ -1379,10 +1427,10 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
       }
     }
 
-    const targetBlock =
-      attachToBlockId !== null
-        ? currentDoc.blocks.find((b) => b.id === attachToBlockId)
-        : null;
+    if (attachToBlockId !== null && (!attachTarget || !currentDoc.blocks.includes(attachTarget))) {
+      throw new Error('原图注已被替换，请重新选择附图位置');
+    }
+    const targetBlock = attachTarget;
 
     if (targetBlock) {
       targetBlock.imageDataUrl = finalImageDataUrl;
@@ -1397,7 +1445,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
     } else {
       const currentPage = Number(jumpPageInput?.value) || 1;
       const newBlock = {
-        id: currentDoc.blocks.length,
+        id: allocateBlockId(),
         page: currentPage,
         type: 'figure',
         column: 'full',
@@ -1411,9 +1459,6 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
         isCanvasInpainted
       };
       currentDoc.blocks.unshift(newBlock);
-      currentDoc.blocks.forEach((b, idx) => {
-        b.id = idx;
-      });
     }
 
     renderWorkspaceBlocks(streamSearchInput.value.trim());
@@ -1755,7 +1800,7 @@ async function translateSinglePdfPage(pageNum) {
       }
 
       newBlocks.push({
-        id: currentDoc.blocks.length + idx,
+        id: allocateBlockId(),
         page: pageNum,
         type: b.type || 'paragraph',
         column: b.column || 'full',
@@ -1772,8 +1817,7 @@ async function translateSinglePdfPage(pageNum) {
     // Replace any existing blocks on this page and sort by page number
     const filtered = currentDoc.blocks.filter((b) => Number(b.page) !== pageNum);
     currentDoc.blocks = [...filtered, ...newBlocks]
-      .sort((a, b) => (a.page || 1) - (b.page || 1))
-      .map((b, i) => ({ ...b, id: i }));
+      .sort((a, b) => (a.page || 1) - (b.page || 1));
 
     if (!isCurrent()) return;
     currentDoc.translatedPages.add(pageNum);
@@ -1898,7 +1942,7 @@ async function startDocumentTranslation(targetPageRange = null) {
       docStatusSubtitle.textContent = '正在提取 PDF 文本流并按需翻译首屏段落…';
       const localBlocks = await extractPdfBlocksLocally(currentDoc.pdfArrayBuffer);
       if (!isCurrent()) return;
-      currentDoc.blocks = localBlocks;
+      adoptParsedBlocks(localBlocks);
       renderWorkspaceBlocks();
     }
 
@@ -1959,10 +2003,13 @@ async function startDocumentTranslation(targetPageRange = null) {
     let completed = 0;
     for (const batch of batches) {
       if (!isCurrent()) return;
+      const requestDoc = currentDoc;
+      const requests = batch.filter(block => requestDoc.blocks.includes(block)).map(beginBlockTranslation);
+      if (!requests.length) continue;
       const res = await sendModelRequest({
         type: MESSAGE_TYPES.TRANSLATE_BATCH,
         payload: {
-          items: batch.map((b) => ({ id: b.id, text: b.original })),
+          items: requests.map(request => ({ id: request.id, text: request.original })),
           targetLang: settings.targetLang,
           pageTitle: currentDoc.bookTitle
         }
@@ -1974,8 +2021,9 @@ async function startDocumentTranslation(targetPageRange = null) {
       }
 
       for (const item of res.data?.translations || []) {
-        const target = currentDoc.blocks.find((b) => Number(b.id) === Number(item.id));
-        if (target) {
+        const request = requests.find(entry => entry.id === Number(item.id));
+        if (request && ownsBlockTranslation(request, requestDoc)) {
+          const target = request.block;
           target.translation = item.translation;
           const domEl = document.getElementById(`stream-trans-${target.id}`);
           if (domEl) {

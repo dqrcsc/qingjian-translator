@@ -6,7 +6,6 @@
 import { MESSAGE_TYPES } from '../shared/constants.js';
 import {
   getSettings,
-  saveSettings,
   getActiveModelId,
   getUsageStats,
   incrementUsageStats
@@ -230,7 +229,7 @@ async function handleTranslateBatch(payload, signal) {
       }
     }
     if (hits > 0) {
-      await incrementUsageStats({ cacheHits: hits });
+      await incrementUsageStats({ cacheHits: hits }, settings.requestSignal);
     }
   }
 
@@ -306,7 +305,7 @@ async function handleTranslateYoutubeCues(payload, signal) {
       }
     }
     if (hits > 0) {
-      await incrementUsageStats({ cacheHits: hits });
+      await incrementUsageStats({ cacheHits: hits }, settings.requestSignal);
     }
   }
 
@@ -410,7 +409,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
             nextModelId = models[0].id;
           }
           signal?.throwIfAborted();
-          await saveSettings({ availableModels: models, modelId: nextModelId });
+          // Model discovery is read-only; the requesting UI owns configuration updates.
           sendResponse({ ok: true, data: { models, selectedModelId: nextModelId } });
           break;
         }
@@ -424,7 +423,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
         }
         case MESSAGE_TYPES.CLEAR_CACHE: {
           const res = await clearAllCache();
-          sendResponse({ ok: true, data: res });
+          sendResponse({ ok: res.cleared, data: res, error: res.cleared ? undefined : '内存缓存已清空，磁盘缓存清理失败，请重试。' });
           break;
         }
         case MESSAGE_TYPES.OPEN_OPTIONS_PAGE: {

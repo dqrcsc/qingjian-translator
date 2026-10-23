@@ -339,3 +339,77 @@ test('actual queued request expires without sending or cancelling the active sco
     assert.equal((await scope().request(batch('after-queued-timeout'))).ok, true);
   });
 });
+
+test('statistics read stall expires without holding a slot or blocking later statistics; late read cannot write', async () => {
+  await withShortBudget(async () => {
+    await saveSettings({ enableCache: false, maxConcurrency: 1 });
+    const nativeGet = chrome.storage.local.get;
+    let release, calls = 0, stalled = false;
+    chrome.storage.local.get = async key => {
+      if (key === 'immersive_gemini_stats_v1' && !stalled) {
+        stalled = true;
+        await new Promise(resolve => { release = resolve; });
+      }
+      return nativeGet(key);
+    };
+    globalThis.fetch = async () => { calls++; return success('healthy result'); };
+    try {
+      assert.equal((await scope().request(batch('stats-stall-first'))).timedOut, true);
+      const next = await scope().request(batch('stats-stall-next'));
+      assert.equal(next.ok, true);
+      assert.equal(calls, 2);
+      const snapshot = structuredClone(storage.immersive_gemini_stats_v1);
+      release();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      assert.deepEqual(storage.immersive_gemini_stats_v1, snapshot, 'expired read must not write stale counters');
+    } finally { chrome.storage.local.get = nativeGet; release?.(); await saveSettings({ enableCache: true }); }
+  });
+});
+
+test('statistics write stall releases the request slot on cancellation and later work can run', async () => {
+  const nativeSet = chrome.storage.local.set;
+  let release, stalled = false;
+  chrome.storage.local.set = async value => {
+    if (value.immersive_gemini_stats_v1 && !stalled) {
+      stalled = true;
+      await new Promise(resolve => { release = resolve; });
+      return; // Fixture has not committed: already-started real writes cannot be rolled back.
+    }
+    return nativeSet(value);
+  };
+  globalThis.fetch = async () => success('healthy result');
+  const firstScope = scope();
+  try {
+    const pending = firstScope.request(batch('stats-write-stall'));
+    await until(() => release);
+    firstScope.cancel();
+    assert.equal((await pending).cancelled, true);
+    assert.equal((await scope().request(batch('stats-write-after-cancel'))).ok, true);
+  } finally { chrome.storage.local.set = nativeSet; release?.(); }
+});
+
+test('failed statistics reads or writes do not discard successful output and subsequent statistics recover', async () => {
+  const nativeGet = chrome.storage.local.get, nativeSet = chrome.storage.local.set;
+  const key = 'immersive_gemini_stats_v1';
+  globalThis.fetch = async () => success('preserved output');
+  try {
+    for (const method of ['get', 'set']) {
+      let failed = false;
+      chrome.storage.local.get = async name => {
+        if (method === 'get' && name === key && !failed) { failed = true; throw Error('storage unavailable'); }
+        return nativeGet(name);
+      };
+      chrome.storage.local.set = async value => {
+        if (method === 'set' && value[key] && !failed) { failed = true; throw Error('storage unavailable'); }
+        return nativeSet(value);
+      };
+      const result = await scope().request(batch(`stats-${method}-failure`));
+      assert.equal(result.ok, true);
+      assert.equal(result.data.translations[0].translation, 'preserved output');
+      assert.equal(failed, true);
+      const before = storage[key]?.totalParagraphs || 0;
+      assert.equal((await scope().request(batch(`stats-${method}-recovered`))).ok, true);
+      assert.equal(storage[key].totalParagraphs, before + 1);
+    }
+  } finally { chrome.storage.local.get = nativeGet; chrome.storage.local.set = nativeSet; }
+});

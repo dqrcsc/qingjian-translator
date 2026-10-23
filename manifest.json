@@ -83,8 +83,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/*.png",
-        "studio/studio.html"
+        "icons/*.png"
       ],
       "matches": [
         "<all_urls>"

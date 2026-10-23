@@ -63,6 +63,8 @@ function imageHarness() {
     pageRequests: { get signal() { return controller.signal; } },
     settings: { targetLang: 'zh-CN' }, document: { title: 'fixture', createElement: node,
       querySelectorAll: selector => selector === '[data-ig-img-status]' ? [img] : [...children] },
+    invalidateChangedImageSource() {},
+    imageSourceSignature: img => [img.currentSrc || '', img.src || '', img.srcset || '', img.sizes || ''].join('\n'),
     ensureImageHostContainer: () => host,
     mountImageControlBar: () => ({ querySelector: selector => selector.includes('trigger') ? trigger : {} }),
     extractImagePayload: async () => ({}), sendModelRequest: () => new Promise((resolve, reject) => replies.push({ resolve, reject })),
@@ -226,4 +228,77 @@ test('replacing only an image releases old controls and binds the new button to 
   const latest = h.element(true);
   assert.notEqual(h.ctx.mountImageControlBar(latest), newBar);
   assert.equal(host.children.length, 1);
+});
+
+function subtitleHarness() {
+  let now = 0;
+  const replies = [], errors = [];
+  const ctx = vm.createContext({
+    Date: { now: () => now }, subtitleRequests: { cancel() {} },
+    document: { title: 'fixture', body: { appendChild: node => errors.push(node) }, querySelector: () => null,
+      createElement: () => ({ style: {}, setAttribute() {}, appendChild() {}, addEventListener() {}, remove() {} }) },
+    getCurrentYoutubeVideoId: () => 'video', settings: { targetLang: 'zh-CN' },
+    isMostlyChineseText: () => false, isUnexpectedArabicCaption: () => false,
+    safeRuntimeSendMessage: () => new Promise(resolve => replies.push(resolve))
+  });
+  vm.runInContext(section('  let ytCues =', '  function getCurrentYoutubeVideoId(') + '\n' +
+    section('  async function dispatchCueBatchTranslation(', '\n  /**\n   * Two-tier subtitle prefetching:') + '\n' +
+    section('  async function translateLiveYoutubeCaptionText(', '\n  function syncYoutubeSubtitlesLoop('), ctx);
+  vm.runInContext("ytCues = [{ id: 1, text: 'Hello fixture', start: 0, end: 10 }]", ctx);
+  const run = live => vm.runInContext(live ? "translateLiveYoutubeCaptionText('Hello fixture')" : 'dispatchCueBatchTranslation(ytCues)', ctx);
+  return { ctx, replies, errors, run, advance: ms => { now += ms; } };
+}
+
+for (const live of [false, true]) {
+  test(`${live ? 'live captions' : 'cue batches'} latch permanent failures, bound transient retries, and reject old-session state`, async () => {
+    const h = subtitleHarness();
+    const pending = h.run(live); h.replies.shift()({ ok: false, error: 'API failed (401)' }); await pending;
+    for (let i = 0; i < 20; i++) { h.advance(10000); await h.run(live); }
+    assert.equal(h.replies.length, 0, '401 stays stopped despite future frame ticks');
+    assert.match(h.errors[0].textContent, /已暂停/);
+    h.ctx.resetYoutubeTranslationSession();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const request = h.run(live); assert.equal(h.replies.length, 1);
+      h.replies.shift()({ ok: false, error: 'API failed (503)' }); await request;
+      await h.run(live); assert.equal(h.replies.length, 0, 'no retry before backoff');
+      h.advance(2 ** attempt * 1000);
+    }
+    h.advance(60000); await h.run(live); assert.equal(h.replies.length, 0, 'three attempts exhaust session retry budget');
+    h.ctx.resetYoutubeTranslationSession();
+    const old = h.run(live), stale = h.replies.shift();
+    h.ctx.resetYoutubeTranslationSession();
+    const fresh = h.run(live), current = h.replies.shift();
+    stale({ ok: false, error: 'API failed (401)' }); await old;
+    current({ ok: true, data: { cues: [{ id: 1, translation: '你好' }] } }); await fresh;
+    assert.equal(vm.runInContext('ytTranslationStopped', h.ctx), false);
+    assert.equal(vm.runInContext('ytTranslationBusy', h.ctx), false);
+    assert.equal(vm.runInContext(live ? "ytLiveCaptionCache.get('Hello fixture')" : 'ytCues[0].translation', h.ctx), '你好');
+  });
+}
+
+test('leaving YouTube for home then returning to the same live video clears cancelled busy ownership', async () => {
+  const h = subtitleHarness();
+  let poll;
+  const location = { hostname: 'www.youtube.com', pathname: '/watch', videoId: 'same-video' };
+  Object.assign(h.ctx, {
+    window: { location, addEventListener() {} },
+    getCurrentYoutubeVideoId: () => location.pathname === '/watch' ? location.videoId : '',
+    applyYoutubeCssVariables() {}, requestYoutubeTracksFromBridge() {},
+    mountYoutubePlayerUI() {}, stopYoutubeAudioListen() {}, syncYoutubeSubtitlesLoop() {},
+    setTimeout() {}, setInterval: fn => { poll = fn; }, requestAnimationFrame() {}
+  });
+  vm.runInContext(section('  function initYoutubeIntegration()', '  function mountYoutubePlayerUI()'), h.ctx);
+  h.ctx.initYoutubeIntegration();
+  const pending = h.run(true);
+  const cancelled = h.replies.shift();
+  h.ctx.subtitleRequests.cancel = () => cancelled({ ok: false, cancelled: true });
+  location.pathname = '/'; poll(); await pending;
+  assert.equal(vm.runInContext('ytTranslationBusy', h.ctx), false);
+  assert.equal(vm.runInContext('ytLiveCaptionInFlight.size', h.ctx), 0);
+  location.pathname = '/watch'; poll();
+  const resumed = h.run(true);
+  assert.equal(h.replies.length, 1, 'same-video live captions can request again without a track-loaded event');
+  h.replies.shift()({ ok: true, data: { cues: [{ id: 1, translation: '恢复译文' }] } });
+  await resumed;
+  assert.equal(vm.runInContext("ytLiveCaptionCache.get('Hello fixture')", h.ctx), '恢复译文');
 });

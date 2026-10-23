@@ -162,7 +162,12 @@
   if (isExtensionContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes[STORAGE_KEY]) {
-        settings = sanitizeContentSettings(changes[STORAGE_KEY].newValue);
+        const change = changes[STORAGE_KEY];
+        const requestFields = ['providerId', 'apiProtocol', 'apiBaseUrl', 'apiKey', 'modelId', 'customModelId', 'targetLang', 'glossaryText', 'customSystemPrompt'];
+        if (requestFields.some(key => change.oldValue?.[key] !== change.newValue?.[key])) {
+          resetYoutubeTranslationSession();
+        }
+        settings = sanitizeContentSettings(change.newValue);
         applyStyleAttribute(settings.translationStyle);
         applyYoutubeCssVariables();
         updateFloatingBallVisibility();
@@ -2862,6 +2867,59 @@
   const ytLiveCaptionCache = new Map();
   const ytLiveCaptionInFlight = new Set();
 
+  // One automatic request at a time; failures belong to this video/configuration session.
+  let ytTranslationSession = 0;
+  let ytFailureCount = 0;
+  let ytRetryAt = 0;
+  let ytTranslationStopped = false;
+  let ytTranslationBusy = false;
+  let ytErrorEl = null;
+
+  function resetYoutubeTranslationSession() {
+    ytTranslationSession++;
+    subtitleRequests.cancel();
+    ytInFlightBatchIds.clear();
+    ytLiveCaptionInFlight.clear();
+    ytFailureCount = 0;
+    ytRetryAt = 0;
+    ytTranslationStopped = false;
+    ytTranslationBusy = false;
+    ytErrorEl?.remove();
+    ytErrorEl = null;
+    ytLastRenderedSig = '';
+  }
+
+  function canRequestYoutubeTranslation() {
+    return ytDualActive && !ytTranslationStopped && !ytTranslationBusy && Date.now() >= ytRetryAt;
+  }
+
+  function recordYoutubeTranslationFailure(error) {
+    const message = String(error?.message || error || '字幕翻译请求失败');
+    ytFailureCount++;
+    const permanent = /\b(?:400|401|402|403|404|422)\b|未配置|不支持|invalid.*(?:key|model)|unauthorized|permission.denied/i.test(message);
+    ytTranslationStopped = permanent || ytFailureCount >= 3;
+    ytRetryAt = Date.now() + 1000 * (2 ** (ytFailureCount - 1));
+    if (!ytErrorEl) {
+      ytErrorEl = document.createElement('div');
+      ytErrorEl.className = 'ig-yt-translation-error notranslate';
+      ytErrorEl.setAttribute('role', 'status');
+      ytErrorEl.style.cssText = 'position:absolute;top:48px;left:12px;right:12px;z-index:10000;padding:10px;background:#241b16;color:#fff;font:14px sans-serif;pointer-events:auto';
+      (document.querySelector('.html5-video-player') || document.body).appendChild(ytErrorEl);
+    }
+    ytErrorEl.textContent = `${ytTranslationStopped ? '字幕翻译已暂停，请检查模型设置。' : '字幕翻译暂时失败，正在退避重试。'} ${message} `;
+    const retry = document.createElement('button');
+    retry.textContent = '重新尝试';
+    retry.addEventListener('click', () => resetYoutubeTranslationSession());
+    ytErrorEl.appendChild(retry);
+  }
+
+  function clearYoutubeTranslationFailure() {
+    ytFailureCount = 0;
+    ytRetryAt = 0;
+    ytErrorEl?.remove();
+    ytErrorEl = null;
+  }
+
   function getCurrentYoutubeVideoId() {
     try {
       const url = new URL(window.location.href);
@@ -2914,6 +2972,8 @@
         }
         if (Array.isArray(cues) && cues.length > 0) {
           subtitleRequests.cancel();
+          ytTranslationSession++;
+          ytTranslationBusy = false;
           ytLiveCaptionInFlight.clear();
           ytCues = cues.map((c) => ({ ...c, translation: '' }));
           ytVideoTitle = videoTitle || document.title;
@@ -2949,7 +3009,12 @@
         window.location.pathname.startsWith('/watch') ||
         window.location.pathname.startsWith('/shorts');
       if (!isVideoPage) {
-        subtitleRequests.cancel();
+        // Leaving a video is a session boundary, including returning to the same
+        // video later without a fresh cue-track event (live-caption fallback).
+        if (ytCurrentVideoId || ytTranslationBusy) {
+          resetYoutubeTranslationSession();
+          ytCurrentVideoId = '';
+        }
         if (ytAudioListenActive) stopYoutubeAudioListen();
         return;
       }
@@ -2957,7 +3022,7 @@
       const currentVid = getCurrentYoutubeVideoId();
       if (currentVid && currentVid !== ytCurrentVideoId) {
         stopYoutubeAudioListen();
-        subtitleRequests.cancel();
+        resetYoutubeTranslationSession();
         ytCurrentVideoId = currentVid;
         ytCues = [];
         ytInFlightBatchIds.clear();
@@ -3020,7 +3085,8 @@
       ytCtrlBtnEl.addEventListener('click', (e) => {
         e.stopPropagation();
         ytDualActive = !ytDualActive;
-        if (!ytDualActive) { subtitleRequests.cancel(); stopYoutubeAudioListen(); }
+        resetYoutubeTranslationSession();
+        if (!ytDualActive) stopYoutubeAudioListen();
         if (!ytDualActive && ytOverlayEl) ytOverlayEl.innerHTML = '';
         player.classList.toggle('ig-yt-dual-active', ytDualActive && ytCues.length > 0);
         ytLastRenderedSig = '';
@@ -3179,12 +3245,14 @@
   }
 
   async function dispatchCueBatchTranslation(batch) {
-    if (!batch || batch.length === 0) return;
+    if (!batch || batch.length === 0 || !canRequestYoutubeTranslation()) return;
+    ytTranslationBusy = true;
+    const session = ytTranslationSession;
     batch.forEach((c) => ytInFlightBatchIds.add(c.id));
 
     const requestCues = ytCues;
     const requestVideoId = getCurrentYoutubeVideoId();
-    const isCurrent = () => requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
+    const isCurrent = () => session === ytTranslationSession && requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
     const firstId = batch[0].id;
     const lastId = batch[batch.length - 1].id;
     const contextBefore = ytCues
@@ -3208,7 +3276,8 @@
       });
 
       if (!isCurrent()) return;
-      if (res && res.ok && Array.isArray(res.data?.cues)) {
+      if (res && res.ok && Array.isArray(res.data?.cues) && res.data.cues.some(c => c.translation)) {
+        clearYoutubeTranslationFailure();
         for (const item of res.data.cues) {
           const target = ytCues.find((c) => Number(c.id) === Number(item.id));
           if (target && item.translation) {
@@ -3223,11 +3292,15 @@
         }
         ytLastRenderedSig = ''; // Trigger immediate overlay refresh even if paused
       } else {
-        batch.forEach((c) => ytInFlightBatchIds.delete(c.id));
+        if (!res?.cancelled) recordYoutubeTranslationFailure(res?.error || '字幕返回为空');
       }
-    } catch {
-      if (!isCurrent()) return;
-      batch.forEach((c) => ytInFlightBatchIds.delete(c.id));
+    } catch (error) {
+      if (isCurrent()) recordYoutubeTranslationFailure(error);
+    } finally {
+      if (isCurrent()) {
+        batch.forEach((c) => ytInFlightBatchIds.delete(c.id));
+        ytTranslationBusy = false;
+      }
     }
   }
 
@@ -3237,7 +3310,7 @@
    * 2. Lookahead Batch (next 10 cues in [currentTime, currentTime + 75s]) -> pre-cached seamlessly
    */
   function prefetchYoutubeCuesAround(currentTime) {
-    if (!ytDualActive || ytCues.length === 0) return;
+    if (!canRequestYoutubeTranslation() || ytCues.length === 0) return;
     const windowEnd = currentTime + 75;
     const candidates = ytCues.filter(
       (c) =>
@@ -3280,12 +3353,14 @@
   }
 
   async function translateLiveYoutubeCaptionText(rawText) {
-    if (!rawText || ytLiveCaptionCache.has(rawText) || ytLiveCaptionInFlight.has(rawText)) return;
+    if (!canRequestYoutubeTranslation() || !rawText || ytLiveCaptionCache.has(rawText) || ytLiveCaptionInFlight.has(rawText)) return;
     if (isMostlyChineseText(rawText) && /^zh/i.test(settings.targetLang || 'zh-CN')) return;
     if (isUnexpectedArabicCaption(rawText)) return;
+    const session = ytTranslationSession;
+    ytTranslationBusy = true;
     const requestCues = ytCues;
     const requestVideoId = getCurrentYoutubeVideoId();
-    const isCurrent = () => requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
+    const isCurrent = () => session === ytTranslationSession && requestCues === ytCues && requestVideoId === getCurrentYoutubeVideoId();
     ytLiveCaptionInFlight.add(rawText);
     try {
       const res = await safeRuntimeSendMessage({
@@ -3300,11 +3375,19 @@
       if (!isCurrent()) return;
       const trans = res?.ok && res?.data?.cues?.[0]?.translation;
       if (trans) {
+        clearYoutubeTranslationFailure();
         ytLiveCaptionCache.set(rawText, trans);
         ytLastRenderedSig = '';
+      } else if (!res?.cancelled) {
+        recordYoutubeTranslationFailure(res?.error || '字幕返回为空');
       }
+    } catch (error) {
+      if (isCurrent()) recordYoutubeTranslationFailure(error);
     } finally {
-      if (isCurrent()) ytLiveCaptionInFlight.delete(rawText);
+      if (isCurrent()) {
+        ytLiveCaptionInFlight.delete(rawText);
+        ytTranslationBusy = false;
+      }
     }
   }
 
@@ -3764,11 +3847,31 @@
 
   const imageControlBars = new WeakMap();
   const imageControlOwners = new WeakMap();
+  const imageSources = new WeakMap();
+
+  function imageSourceSignature(img) {
+    return [img.currentSrc || '', img.src || '', img.srcset || '', img.sizes || ''].join('\n');
+  }
+
+  function invalidateChangedImageSource(img) {
+    const signature = imageSourceSignature(img);
+    const previous = imageSources.get(img);
+    imageSources.set(img, signature);
+    if (previous === undefined || previous === signature) return false;
+    imageTranslationTasks.delete(img);
+    viewportObserver?.unobserve(img);
+    delete img.dataset.igImgStatus;
+    releaseImageControls(imageControlBars.get(img));
+    return true;
+  }
 
   function releaseImageControls(bar) {
     if (!bar) return;
     const owner = imageControlOwners.get(bar);
-    if (owner) imageControlBars.delete(owner);
+    if (owner) {
+      imageControlBars.delete(owner);
+      delete owner.dataset.igHoverBound;
+    }
     imageControlOwners.delete(bar);
     bar.parentElement?.querySelectorAll(':scope > .ig-img-overlay-layer, :scope > .ig-img-bilingual-drawer')
       .forEach(node => node.remove());
@@ -3776,6 +3879,7 @@
   }
 
   function mountImageControlBar(img) {
+    invalidateChangedImageSource(img);
     const host = ensureImageHostContainer(img);
     if (!host) return null;
     let bar = host.querySelector(':scope > .ig-img-control-bar');
@@ -3859,16 +3963,17 @@
     if (!img && !fallbackSrcUrl) return;
 
     if (img) {
+      invalidateChangedImageSource(img);
       if (img.dataset.igImgStatus === 'loading') return;
       img.dataset.igImgStatus = 'loading';
     }
     const task = {};
     if (img) imageTranslationTasks.set(img, task);
-    const sourceUrl = img?.currentSrc || img?.src;
+    const sourceUrl = img ? imageSourceSignature(img) : '';
     const ownsImage = () => !img || imageTranslationTasks.get(img) === task;
     const signal = pageRequests.signal;
     const isCurrent = () => !signal.aborted && ownsImage() &&
-      (!img || (img.isConnected !== false && (img.currentSrc || img.src) === sourceUrl));
+      (!img || (img.isConnected !== false && imageSourceSignature(img) === sourceUrl));
 
     const host = img ? ensureImageHostContainer(img) : null;
     const bar = img ? mountImageControlBar(img) : null;
@@ -4222,6 +4327,30 @@
   }
 
   function initImageTranslationEngine() {
+    // This observer remains active for manual image translation when paragraph translation is off.
+    const refresh = img => {
+      if (!img || !imageSources.has(img) || !invalidateChangedImageSource(img)) return;
+      if (settings.enableImageTranslate !== false && img.isConnected) {
+        mountImageControlBar(img);
+        if (isPageTranslated && settings.autoTranslatePageImages !== false) {
+          img.dataset.igImgStatus = 'observed';
+          viewportObserver?.observe(img);
+        }
+      }
+    };
+    const imageSourceObserver = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        const target = mutation.target;
+        if (target.tagName === 'IMG') refresh(target);
+        else if (target.tagName === 'SOURCE') target.closest('picture')?.querySelectorAll('img').forEach(refresh);
+      }
+    });
+    imageSourceObserver.observe(document.documentElement, {
+      subtree: true, attributes: true, attributeFilter: ['src', 'srcset', 'sizes', 'media', 'type']
+    });
+    document.addEventListener('load', event => {
+      if (event.target?.tagName === 'IMG') refresh(event.target);
+    }, true);
     document.addEventListener(
       'contextmenu',
       (e) => {

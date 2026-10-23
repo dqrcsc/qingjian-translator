@@ -8,6 +8,9 @@ import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { makePdfFixture } from '../tests/pdf-fixture.mjs';
 import { verifyContentBrowser } from './verify-content-browser.mjs';
+import { verifyStudioBrowser } from './verify-studio-browser.mjs';
+import { verifySettingsBrowser } from './verify-settings-browser.mjs';
+import { verifyGeminiBrowser } from './verify-gemini-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -42,7 +45,7 @@ let stage = 'launch';
 const watchdog = setTimeout(() => {
   console.error(`Browser verification timed out at: ${stage}`);
   void context?.close();
-}, 90000);
+}, 240000);
 async function until(predicate, label) {
   const deadline = Date.now() + 15000;
   while (!predicate()) {
@@ -222,6 +225,12 @@ try {
   stage = 'content lifecycle regressions';
   console.log('Checking actual content-script settings, rapid toggles and delayed image decoding…');
   checks.push(...await verifyContentBrowser(context, sw));
+  stage = 'studio security and identity regressions';
+  checks.push(...await verifyStudioBrowser(context, sw));
+  stage = 'settings and statistics regressions';
+  checks.push(...await verifySettingsBrowser(context, sw));
+  stage = 'native Gemini regressions';
+  checks.push(...await verifyGeminiBrowser(context, sw));
   assert.deepEqual(errors, [], 'No uncaught page errors or CSP errors');
   const report = { passed: true, browser: context.browser().version(), pdfjs: '6.4.299', checks, pdf: result, workers, errors };
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(report, null, 2) + '\n');

@@ -21,7 +21,7 @@ import '../shared/request-client.js';
 const popupRequests = globalThis.QingJianRequests.createScope();
 const quickRequests = globalThis.QingJianRequests.createScope();
 window.addEventListener('pagehide', () => {
-  popupRequests.cancel();
+  invalidatePopupModelRequests();
   quickRequests.cancel();
 });
 
@@ -51,6 +51,29 @@ let activeTab = null;
 let currentHost = '';
 let isActiveTabOnlinePdf = false;
 let isPageCurrentlyTranslated = false;
+let popupModelGeneration = 0;
+
+function invalidatePopupModelRequests() {
+  popupModelGeneration++;
+  popupRequests.cancel();
+}
+
+async function refreshPopupModels(expected, generation = popupModelGeneration) {
+  try {
+    const res = await popupRequests.request({ type: MESSAGE_TYPES.FETCH_MODELS, payload: expected });
+    if (!res?.ok || generation !== popupModelGeneration) return;
+    const updated = await saveSettings({
+      availableModels: res.data.models, modelId: res.data.selectedModelId
+    }, { expected });
+    if (!updated || generation !== popupModelGeneration) return;
+    currentSettings = updated;
+    populatePopupProviderSelect(updated);
+    populatePopupModelSelect(updated);
+    updatePopupStatusBadge(updated);
+  } catch {
+    // Silent discovery remains optional; settings provides explicit failure feedback.
+  }
+}
 
 function populatePopupProviderSelect(settings) {
   if (!popupProviderSelect) return;
@@ -121,19 +144,7 @@ async function initPopup() {
     currentSettings.apiKey &&
     (!currentSettings.availableModels || currentSettings.availableModels.length === 0)
   ) {
-    (async () => {
-      try {
-        const res = await popupRequests.request({ type: MESSAGE_TYPES.FETCH_MODELS });
-        if (res && res.ok) {
-          currentSettings = await getSettings();
-          populatePopupProviderSelect(currentSettings);
-          populatePopupModelSelect(currentSettings);
-          updatePopupStatusBadge(currentSettings);
-        }
-      } catch {
-        // ignore
-      }
-    })();
+    void refreshPopupModels(currentSettings);
   }
 
   targetLangSelect.innerHTML = LANGUAGES.map(
@@ -354,11 +365,13 @@ toggleTranslateBtn.addEventListener('click', async () => {
 });
 
 popupProviderSelect?.addEventListener('change', async () => {
+  invalidatePopupModelRequests();
+  const generation = popupModelGeneration;
   const nextProviderId = popupProviderSelect.value;
   const nextDef = getProviderDefinition(nextProviderId);
   const savedCfg = currentSettings?.providerConfigs?.[nextProviderId] || {};
 
-  currentSettings = await saveSettings({
+  const updated = await saveSettings({
     providerId: nextProviderId,
     apiProtocol: savedCfg.apiProtocol || nextDef.protocol,
     apiBaseUrl: savedCfg.apiBaseUrl || nextDef.defaultBaseUrl,
@@ -367,6 +380,8 @@ popupProviderSelect?.addEventListener('change', async () => {
     customModelId: savedCfg.customModelId || '',
     availableModels: Array.isArray(savedCfg.availableModels) ? savedCfg.availableModels : []
   });
+  if (generation !== popupModelGeneration) return;
+  currentSettings = updated;
 
   populatePopupProviderSelect(currentSettings);
   populatePopupModelSelect(currentSettings);
@@ -376,23 +391,17 @@ popupProviderSelect?.addEventListener('change', async () => {
     currentSettings.apiKey &&
     (!currentSettings.availableModels || currentSettings.availableModels.length === 0)
   ) {
-    try {
-      const res = await popupRequests.request({ type: MESSAGE_TYPES.FETCH_MODELS });
-      if (res && res.ok) {
-        currentSettings = await getSettings();
-        populatePopupProviderSelect(currentSettings);
-        populatePopupModelSelect(currentSettings);
-        updatePopupStatusBadge(currentSettings);
-      }
-    } catch {
-      // ignore
-    }
+    await refreshPopupModels(currentSettings, generation);
   }
 });
 
 modelSelect.addEventListener('change', async () => {
+  invalidatePopupModelRequests();
+  const generation = popupModelGeneration;
   const val = modelSelect.value;
-  currentSettings = await saveSettings({ modelId: val, customModelId: '' });
+  const updated = await saveSettings({ modelId: val, customModelId: '' });
+  if (generation !== popupModelGeneration) return;
+  currentSettings = updated;
   updatePopupStatusBadge(currentSettings);
 });
 

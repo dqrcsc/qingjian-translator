@@ -183,10 +183,10 @@ test('cold IDB hydration obeys memory cap and refreshes LRU', async () => {
   globalThis.indexedDB = { open() {
     const request = {};
     queueMicrotask(() => {
-      request.result = { transaction() { return { objectStore() { return {
+      request.result = { transaction() { const tx = { objectStore() { return {
         get(key) { const req = {}; queueMicrotask(() => { req.result = { translation: key }; req.onsuccess(); }); return req; },
-        count() { const req = {}; queueMicrotask(() => { req.result = 3000; req.onsuccess(); }); return req; }
-      }; } }; } };
+        count() { const req = {}; queueMicrotask(() => { req.result = 3000; req.onsuccess(); tx.oncomplete?.(); }); return req; }
+      }; } }; return tx; } };
       request.onsuccess();
     });
     return request;
@@ -223,7 +223,13 @@ test('YouTube response cannot write to a new video or a replacement track', asyn
   const fn = src.slice(start, src.indexOf('\n  /**', start));
   let reply;
   let videoId = 'old';
-  const context = vm.createContext({ ytInFlightBatchIds: new Set(), ytCues: [{ id: 0, text: 'old' }], ytVideoTitle: 'old', ytSidebarEl: null, ytLastRenderedSig: '', getCurrentYoutubeVideoId: () => videoId, safeRuntimeSendMessage: () => new Promise(r => { reply = r; }) });
+  const context = vm.createContext({
+    ytTranslationSession: 0, ytTranslationBusy: false, canRequestYoutubeTranslation: () => true,
+    clearYoutubeTranslationFailure() {}, recordYoutubeTranslationFailure: () => assert.fail('stale result must not change failure state'),
+    ytInFlightBatchIds: new Set(), ytCues: [{ id: 0, text: 'old' }], ytVideoTitle: 'old', ytSidebarEl: null,
+    ytLastRenderedSig: '', getCurrentYoutubeVideoId: () => videoId,
+    safeRuntimeSendMessage: () => new Promise(r => { reply = r; })
+  });
   vm.runInContext(`${fn}\nthis.pending = dispatchCueBatchTranslation(ytCues);`, context);
   videoId = 'new';
   context.ytCues = [{ id: 0, text: 'new', translation: '' }];
@@ -259,6 +265,7 @@ function studioContext() {
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     renderWorkspaceBlocks() {}, streamSearchInput: { value: '' }, lazyPageQueue: [], setTimeout() {}
   });
+  vm.runInContext(studioSource.slice(studioSource.indexOf('function allocateBlockId('), studioSource.indexOf('const blockTranslationVersions')), ctx);
   vm.runInContext(sourceFunction(studioSource, 'translateSinglePdfPage', '\nstartTranslateDocBtn.addEventListener'), ctx);
   return { ctx, requested, respond: value => reply(value) };
 }
@@ -324,6 +331,7 @@ test('ordinary document translation discards old results and leaves new run flag
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     docStatusSubtitle: { textContent: '' }, setTimeout() {}
   });
+  vm.runInContext(studioSource.slice(studioSource.indexOf('const blockTranslationVersions'), studioSource.indexOf('let isTranslating')), ctx);
   vm.runInContext(sourceFunction(studioSource, 'startDocumentTranslation', '\n// ============================================================================'), ctx);
   const pending = ctx.startDocumentTranslation(); await requested;
   ctx.documentSession++;

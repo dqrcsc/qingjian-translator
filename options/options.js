@@ -77,6 +77,19 @@ let selectedStyleId = 'clean';
 let activeProviderId = 'google';
 let cachedProviderConfigs = {};
 
+let settingsRequestGeneration = 0;
+function invalidateSettingsRequests() {
+  settingsRequestGeneration++;
+  settingsRequests.cancel();
+  fetchModelsBtn.disabled = false;
+  fetchModelsBtn.textContent = '🔄 刷新模型列表';
+  testApiBtn.disabled = false;
+}
+function providerDraftIdentity(value) {
+  return JSON.stringify(['providerId', 'apiProtocol', 'apiBaseUrl', 'apiKey', 'modelId', 'customModelId']
+    .map(key => value[key] || ''));
+}
+
 function populateStaticOptions() {
   if (providerSelect) {
     providerSelect.innerHTML = LLM_PROVIDERS.map(
@@ -277,6 +290,8 @@ function collectFormValues() {
  * then pre-fill the newly selected provider's default Base URL, protocol, saved API Key, and model list!
  */
 async function handleProviderChange() {
+  invalidateSettingsRequests();
+  const generation = settingsRequestGeneration;
   const newProviderId = providerSelect.value;
   const prevDef = getProviderDefinition(activeProviderId);
 
@@ -305,6 +320,9 @@ async function handleProviderChange() {
     ? savedForNext.availableModels
     : [];
 
+  // Show the new provider immediately so a second quick switch snapshots its own model.
+  renderModelDropdown({ ...savedForNext, providerId: newProviderId, availableModels: nextAvailableModels },
+    savedForNext.modelId || nextDef.defaultModel);
   const updated = await saveSettings({
     providerId: newProviderId,
     apiProtocol: apiProtocolSelect.value,
@@ -316,6 +334,7 @@ async function handleProviderChange() {
     providerConfigs: cachedProviderConfigs
   });
 
+  if (generation !== settingsRequestGeneration) return;
   renderModelDropdown(updated, updated.modelId);
   flashSavedMessage(`✓ 已切换至 ${nextDef.shortName} 并预填 Base URL`);
 }
@@ -332,19 +351,26 @@ async function refreshSupportedModels(showFeedback = true) {
     return;
   }
 
+  invalidateSettingsRequests();
+  const generation = settingsRequestGeneration;
+  const isCurrent = () => generation === settingsRequestGeneration &&
+    providerDraftIdentity(collectFormValues()) === providerDraftIdentity(draft);
   fetchModelsBtn.disabled = true;
   fetchModelsBtn.textContent = '⏳ 拉取中…';
   try {
-    await saveSettings(draft);
+    const expected = await saveSettings(draft);
+    if (!isCurrent()) return;
     const res = await settingsRequests.request({
       type: MESSAGE_TYPES.FETCH_MODELS,
       payload: draft
     });
+    if (!isCurrent()) return;
     if (!res || !res.ok) {
       throw new Error(res?.error || '获取模型列表失败');
     }
     const { models = [], selectedModelId } = res.data || {};
-    const updatedSettings = await getSettings();
+    const updatedSettings = await saveSettings({ availableModels: models, modelId: selectedModelId }, { expected });
+    if (!updatedSettings || generation !== settingsRequestGeneration) return;
     cachedProviderConfigs = { ...(updatedSettings.providerConfigs || {}) };
     renderModelDropdown(updatedSettings, selectedModelId);
 
@@ -354,14 +380,16 @@ async function refreshSupportedModels(showFeedback = true) {
       apiTestResult.textContent = `✓ 成功同步 ${provider.shortName} 支持的 ${models.length} 个模型！已更新至下拉菜单（当前选中: ${modelIdSelect.value}）。`;
     }
   } catch (err) {
-    if (showFeedback) {
+    if (isCurrent() && showFeedback) {
       apiTestResult.hidden = false;
       apiTestResult.className = 'test-result is-error';
       apiTestResult.textContent = `✕ 获取模型列表失败: ${err?.message || err}`;
     }
   } finally {
-    fetchModelsBtn.disabled = false;
-    fetchModelsBtn.textContent = '🔄 刷新模型列表';
+    if (generation === settingsRequestGeneration) {
+      fetchModelsBtn.disabled = false;
+      fetchModelsBtn.textContent = '🔄 刷新模型列表';
+    }
   }
 }
 
@@ -370,7 +398,10 @@ async function refreshCacheStats() {
     const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.GET_CACHE_STATS });
     if (res && res.ok && res.data) {
       const d = res.data;
-      cacheStatsTitle.textContent = `本地已缓存 ${d.indexedDbCount || 0} 条译文 · 累计翻译 ${
+      const cacheLabel = d.indexedDbAvailable === false
+        ? `磁盘缓存不可用 · 内存缓存 ${d.memoryCount || 0} 条`
+        : `本地已缓存 ${d.indexedDbCount || 0} 条译文`;
+      cacheStatsTitle.textContent = `${cacheLabel} · 累计翻译 ${
         d.totalParagraphs || 0
       } 段 · 缓存命中 ${d.cacheHits || 0} 次`;
     }
@@ -465,6 +496,13 @@ function setupSidebarNavigationHighlight() {
   }
 }
 
+// Retire results if connection/model fields change while a request is pending.
+for (const field of [apiKeyInput, apiBaseUrlInput, apiProtocolSelect, modelIdSelect, customModelIdInput]) {
+  field.addEventListener('input', invalidateSettingsRequests);
+  field.addEventListener('change', invalidateSettingsRequests);
+}
+resetBaseUrlBtn.addEventListener('click', invalidateSettingsRequests);
+
 // Event Listeners
 if (providerSelect) {
   providerSelect.addEventListener('change', handleProviderChange);
@@ -512,37 +550,41 @@ modelIdSelect.addEventListener('change', async () => {
 testApiBtn.addEventListener('click', async () => {
   const draft = collectFormValues();
   const provider = getProviderDefinition(draft.providerId);
-  await saveSettings(draft);
+  invalidateSettingsRequests();
+  const generation = settingsRequestGeneration;
+  const isCurrent = () => generation === settingsRequestGeneration &&
+    providerDraftIdentity(collectFormValues()) === providerDraftIdentity(draft);
+  testApiBtn.disabled = true;
   apiTestResult.hidden = false;
   apiTestResult.className = 'test-result';
   apiTestResult.textContent = `正在向 ${provider.shortName} (${draft.apiBaseUrl}) 发起连接与延迟测试…`;
-
   try {
-    const res = await settingsRequests.request({
-      type: MESSAGE_TYPES.TEST_API_KEY,
-      payload: draft
-    });
-    if (!res || !res.ok) {
-      throw new Error(res?.error || '连接测试失败');
-    }
+    const expected = await saveSettings(draft);
+    if (!isCurrent()) return;
+    const res = await settingsRequests.request({ type: MESSAGE_TYPES.TEST_API_KEY, payload: draft });
+    if (!isCurrent()) return;
+    if (!res || !res.ok) throw new Error(res?.error || '连接测试失败');
     const d = res.data;
-    const latestSettings = await getSettings();
+    const patch = { modelId: d.modelId };
+    if (d.availableModels?.length) patch.availableModels = d.availableModels;
+    const latestSettings = await saveSettings(patch, { expected });
+    if (!latestSettings || generation !== settingsRequestGeneration) return;
     cachedProviderConfigs = { ...(latestSettings.providerConfigs || {}) };
     renderModelDropdown(latestSettings, d.modelId);
-
-    const modelCountInfo =
-      Array.isArray(d.availableModels) && d.availableModels.length > 0
-        ? ` · 已同步 ${d.availableModels.length} 个可用模型`
-        : '';
+    const modelCountInfo = d.availableModels?.length ? ` · 已同步 ${d.availableModels.length} 个可用模型` : '';
     apiTestResult.className = 'test-result';
     apiTestResult.textContent = `✓ ${provider.shortName} 连接成功！当前生效模型: ${d.modelId}${modelCountInfo} · 响应延迟: ${d.latencyMs}ms · 测试译文: "${d.sampleReply}"`;
   } catch (err) {
+    if (!isCurrent()) return;
     apiTestResult.className = 'test-result is-error';
     apiTestResult.textContent = `✕ 连接失败: ${err?.message || err}`;
+  } finally {
+    if (generation === settingsRequestGeneration) testApiBtn.disabled = false;
   }
 });
 
 saveAllBtn.addEventListener('click', async () => {
+  invalidateSettingsRequests();
   const values = collectFormValues();
   const updated = await saveSettings(values);
   cachedProviderConfigs = { ...(updated.providerConfigs || {}) };
@@ -550,12 +592,20 @@ saveAllBtn.addEventListener('click', async () => {
 });
 
 clearCacheBtn.addEventListener('click', async () => {
-  await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.CLEAR_CACHE });
-  await refreshCacheStats();
-  flashSavedMessage('✓ 已清空本地翻译缓存');
+  clearCacheBtn.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.CLEAR_CACHE });
+    await refreshCacheStats();
+    flashSavedMessage(res?.ok && res.data?.cleared
+      ? '✓ 已清空本地翻译缓存'
+      : `⚠️ ${res?.error || '缓存清理失败，请重试'}`);
+  } catch {
+    flashSavedMessage('⚠️ 缓存清理失败，请重试');
+  } finally { clearCacheBtn.disabled = false; }
 });
 
 resetDefaultBtn.addEventListener('click', async () => {
+  invalidateSettingsRequests();
   await resetSettings();
   await fillFormFromSettings();
   flashSavedMessage('✓ 已恢复默认配置');
