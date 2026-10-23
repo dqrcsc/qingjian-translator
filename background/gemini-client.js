@@ -717,6 +717,8 @@ ${JSON.stringify(inputPayload)}`;
     if (options._isMissingSubsetRetry) {
       throw new Error(`模型遗漏了 ${missingItems.length} 条译文，请重试`);
     }
+    settings.requestSignal?.throwIfAborted();
+    await incrementUsageStats({ batchRetries: 1 });
     const retried = await translateBatchWithGemini(missingItems, settings, {
       ...options, _isMissingSubsetRetry: true
     });
@@ -727,8 +729,8 @@ ${JSON.stringify(inputPayload)}`;
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
-    paragraphs: items.length,
-    chars: totalChars
+    paragraphs: options._isMissingSubsetRetry ? 0 : items.length,
+    chars: options._isMissingSubsetRetry ? 0 : totalChars
   });
 
   return inputPayload.map(item => ({ id: item.id, translation: byId.get(item.id) }));
@@ -879,6 +881,8 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
   const missing = cues.filter(c => !mapById.has(c.id));
   if (missing.length > 0) {
     if (_isMissingSubsetRetry) throw new Error(`模型遗漏了 ${missing.length} 条字幕译文，请重试`);
+    settings.requestSignal?.throwIfAborted();
+    await incrementUsageStats({ batchRetries: 1 });
     const retried = await translateYoutubeCuesWithGemini({
       cues: missing, contextBefore, contextAfter, videoTitle, _isMissingSubsetRetry: true
     }, settings);
@@ -888,8 +892,8 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
-    paragraphs: cues.length,
-    chars: cues.reduce((s, c) => s + (c.text?.length || 0), 0)
+    paragraphs: _isMissingSubsetRetry ? 0 : cues.length,
+    chars: _isMissingSubsetRetry ? 0 : cues.reduce((s, c) => s + (c.text?.length || 0), 0)
   });
 
   return cues.map(c => ({ id: c.id, translation: mapById.get(c.id) }));

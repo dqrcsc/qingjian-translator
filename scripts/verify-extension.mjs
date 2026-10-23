@@ -128,6 +128,7 @@ const jsFiles = [
   'shared/constants.js',
   'shared/storage.js',
   'shared/utils.js',
+  'shared/protocol.js',
   'shared/request-client.js',
   'background/request-queue.js',
   'background/cache-db.js',

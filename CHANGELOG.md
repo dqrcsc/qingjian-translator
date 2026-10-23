@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.5 — 2026-10-23
+
+### Configuration and lifecycle fixes
+
+- Resolve the protocol from raw settings before applying defaults. Share the resolver across content scripts and storage read/save/change entry points; load it in manifest and fallback injection paths. Missing non-Google protocols no longer inherit Gemini and bypass the audio capture gate.
+- Retire old paragraph cleanup state before re-observing it. Deferred cleanup cannot erase a new session's observed or queued paragraphs, including multi-frame cleanup and repeated toggles.
+- Track image request ownership with a WeakMap and preserve the scope abort signal through decoding. Cancelled, replaced or detached image operations cannot append stale overlays, reset replacement loading state or show stale error/success UI.
+
+### Statistics and regression coverage
+
+- Count translated paragraphs and source characters once, only at the successful outer paragraph/subtitle batch boundary. Subset retries no longer inflate completed output; track subset retry batches separately as `batchRetries`. Historical counters are preserved because past duplicate counts cannot be reconstructed reliably. Request counters remain application estimates, not billing or exact HTTP-attempt counts.
+- Add raw-setting provider/protocol matrices, repeated rapid-toggle scheduling, image decode/replacement tests and background storage/cache accounting checks, including cancellation during subset repair.
+- Extend real Chromium tests to manifest-injected webpage content, both RAF/observer orderings, image decode cancellation and replacement, initial storage loading and YouTube audio-button protocol gating. Audio capture itself is stubbed; all model calls use local fixtures.
+
+Validation: 46 checks, 39 Node regressions, real Chromium suite and exact-content ZIP validation. See [verification record](docs/verification/v1.0.5.md). Existing PDF layout/EPUB resource and external-provider cancellation limits remain.
+
 ## 1.0.4 — 2026-10-22
 
 ### Edge-case and resilience fixes

@@ -108,6 +108,33 @@ test('subtitle IDs retry missing items and reject an empty result', async () => 
   await assert.rejects(() => client.translateYoutubeCuesWithGemini({ cues: items }, settings));
 });
 
+test('real background batch entry counts successful output once across subset retry and cache hits', async () => {
+  const { getUsageStats } = await import('../shared/storage.js');
+  for (const type of ['TRANSLATE_BATCH', 'TRANSLATE_YOUTUBE_CUES']) {
+    const entries = [{ id: 10, text: `${type} {{0}}` }, { id: 20, text: `${type} plain` }];
+    const payload = type === 'TRANSLATE_BATCH' ? { items: entries } : { cues: entries };
+    const before = await getUsageStats();
+    mockReplies([{ id: 10, translation: '损坏' }, { id: 20, translation: '正确' }],
+      [{ id: 10, translation: '保留 {{0}}' }]);
+    assert.equal((await message(type, payload)).ok, true);
+    assert.equal(calls.length, 2);
+    const after = await getUsageStats();
+    assert.equal(after.totalParagraphs - before.totalParagraphs, 2);
+    assert.equal(after.estimatedCharsTranslated - before.estimatedCharsTranslated,
+      entries.reduce((sum, entry) => sum + entry.text.length, 0));
+    assert.equal(after.totalRequests - before.totalRequests, 2);
+    assert.equal((after.batchRetries || 0) - (before.batchRetries || 0), 1);
+    assert.equal((await message(type, payload)).ok, true);
+    assert.equal(calls.length, 2, 'cache hit must not call the model again');
+    assert.equal((await getUsageStats()).totalParagraphs, after.totalParagraphs);
+    const failed = entries.map(entry => ({ ...entry, text: entry.text + ' failed' }));
+    mockReplies([{ id: 10, translation: '损坏' }, { id: 20, translation: '正确' }],
+      [{ id: 10, translation: '仍损坏' }]);
+    assert.equal((await message(type, type === 'TRANSLATE_BATCH' ? { items: failed } : { cues: failed })).ok, false);
+    assert.equal((await getUsageStats()).totalParagraphs, after.totalParagraphs);
+  }
+});
+
 test('cache identity includes endpoint, protocol, provider, prompt and context', () => {
   const sig = cache.buildStyleSignature(settings);
   for (const changed of [
@@ -344,7 +371,7 @@ function audioContext(protocol = 'gemini') {
     stop() { this.state = 'inactive'; }
   }
   const ctx = vm.createContext({ ytAudioListenActive: false, ytAudioRecorder: null, ytAudioStream: null, ytAudioSession: 0, ytAudioButton: null,
-    audioRequests: { cancel() {} }, subtitleRequests: { cancel() {} }, settings: { apiProtocol: protocol }, showPageToast: text => toasts.push(text),
+    QingJianSettings: globalThis.QingJianSettings, audioRequests: { cancel() {} }, subtitleRequests: { cancel() {} }, settings: { apiProtocol: protocol }, showPageToast: text => toasts.push(text),
     document: { querySelector: () => ({ paused: false, currentTime: 0, captureStream: () => stream }), title: 'video' },
     MediaStream: class {}, MediaRecorder: Recorder, getCurrentYoutubeVideoId: () => 'video', ytVideoTitle: 'video', ytCues: [], ytOverlayEl: null,
     ytInFlightBatchIds: new Set(), ytLiveCaptionInFlight: new Set(),
@@ -362,7 +389,8 @@ test('unsupported audio protocol fails before capture while default or upgraded 
   assert.equal(a.recorders.length, 0);
   assert.match(a.toasts.join(' '), /不支持/);
 
-  const upgraded = audioContext(undefined);
+  const upgraded = audioContext();
+  upgraded.ctx.settings = {};
   await upgraded.ctx.toggleExperimentalAudioListen(upgraded.button);
   assert.equal(upgraded.ctx.ytAudioListenActive, true);
   assert.equal(upgraded.recorders.length, 1);

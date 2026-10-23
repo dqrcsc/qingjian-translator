@@ -63,7 +63,8 @@
   };
 
   function sanitizeContentSettings(raw) {
-    const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+    const merged = { ...DEFAULT_SETTINGS, ...(raw || {}),
+      apiProtocol: globalThis.QingJianSettings.resolveProtocol(raw) };
     delete merged.apiKey;
     delete merged.providerConfigs;
     return merged;
@@ -1096,6 +1097,8 @@
     uiLeaves.reverse();
 
     for (const el of [...proseList, ...uiLeaves]) {
+      // A new observation owns the element before any old cleanup frame can run.
+      if (el.dataset.igCleanupSession) resetElementTranslationState(el);
       if (isElementTranslatable(el)) {
         el.dataset.igStatus = 'observed';
         viewportObserver.observe(el);
@@ -3392,9 +3395,7 @@
       showPageToast('已停止 AI 音频切片听译', 'info');
       return;
     }
-    const activeProtocol =
-      settings?.apiProtocol ||
-      (settings?.providerId && settings.providerId !== 'google' ? 'openai' : 'gemini');
+    const activeProtocol = globalThis.QingJianSettings.resolveProtocol(settings);
     if (activeProtocol !== 'gemini') {
       showPageToast('音频听译需要支持音频的 Gemini 原生协议模型，当前 OpenAI 兼容接口不支持。', 'warn', true);
       return;
@@ -3766,6 +3767,8 @@
     return { imageUrl: src, imageBase64: '', mimeType: 'image/jpeg' };
   }
 
+  const imageTranslationTasks = new WeakMap();
+
   async function translateImageElement(img, options = {}) {
     const { isAuto = false, fallbackSrcUrl = '' } = options;
     if (!img && !fallbackSrcUrl) return;
@@ -3774,6 +3777,13 @@
       if (img.dataset.igImgStatus === 'loading') return;
       img.dataset.igImgStatus = 'loading';
     }
+    const task = {};
+    if (img) imageTranslationTasks.set(img, task);
+    const sourceUrl = img?.currentSrc || img?.src;
+    const ownsImage = () => !img || imageTranslationTasks.get(img) === task;
+    const signal = pageRequests.signal;
+    const isCurrent = () => !signal.aborted && ownsImage() &&
+      (!img || (img.isConnected !== false && (img.currentSrc || img.src) === sourceUrl));
 
     const host = img ? ensureImageHostContainer(img) : null;
     const bar = img ? mountImageControlBar(img) : null;
@@ -3785,14 +3795,14 @@
       showPageToast('正在识别图片中的文字并翻译…', 'info');
     }
 
-    const signal = pageRequests.signal;
     const resetCancelledImageState = () => {
+      if (!ownsImage()) return;
       if (img && img.dataset.igImgStatus === 'loading') delete img.dataset.igImgStatus;
       if (triggerBtn) triggerBtn.textContent = '🖼️ AI 译图';
     };
     try {
       const payload = await extractImagePayload(img, fallbackSrcUrl);
-      if (signal.aborted) {
+      if (!isCurrent()) {
         resetCancelledImageState();
         return;
       }
@@ -3805,7 +3815,7 @@
         }
       });
 
-      if (signal.aborted || response?.cancelled) {
+      if (!isCurrent() || response?.cancelled) {
         resetCancelledImageState();
         return;
       }
@@ -3829,8 +3839,12 @@
       }
 
       if (img && host) {
+        await renderImageTranslationOverlay(host, img, data, regions, bar, triggerBtn, isCurrent);
+        if (!isCurrent()) {
+          resetCancelledImageState();
+          return;
+        }
         img.dataset.igImgStatus = 'done';
-        await renderImageTranslationOverlay(host, img, data, regions, bar, triggerBtn);
         if (!isAuto) {
           showPageToast(`已完成图片文字翻译（共识别 ${regions.length} 处文本区块）`, 'success');
         }
@@ -3843,6 +3857,10 @@
         });
       }
     } catch (err) {
+      if (!isCurrent()) {
+        resetCancelledImageState();
+        return;
+      }
       if (img) delete img.dataset.igImgStatus;
       if (triggerBtn) {
         triggerBtn.textContent = '⚠️ 译图重试';
@@ -3850,6 +3868,8 @@
       if (!isAuto) {
         showPageToast(`图片翻译失败: ${err?.message || err}`, 'warn');
       }
+    } finally {
+      if (img && ownsImage()) imageTranslationTasks.delete(img);
     }
   }
 
@@ -4010,7 +4030,8 @@
     return canvas.toDataURL('image/jpeg', 0.92);
   }
 
-  async function renderImageTranslationOverlay(host, img, data, regions, bar, triggerBtn) {
+  async function renderImageTranslationOverlay(host, img, data, regions, bar, triggerBtn, isCurrent = () => true) {
+    if (!isCurrent()) return;
     host
       .querySelectorAll(':scope > .ig-img-overlay-layer, :scope > .ig-img-bilingual-drawer')
       .forEach((el) => el.remove());
@@ -4020,6 +4041,8 @@
     overlay.setAttribute('translate', 'no');
 
     const inpaintedUrl = await inpaintWebpageImageRegions(data.imageDataUrl, regions);
+    // Decoding can outlive cancellation, a new request, or replacement of the image source.
+    if (!isCurrent()) return;
     if (inpaintedUrl) {
       const seamlessImg = document.createElement('img');
       seamlessImg.className = 'ig-img-seamless-img';

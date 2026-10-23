@@ -4,6 +4,7 @@
  */
 
 import { DEFAULT_SETTINGS, GEMINI_MODELS, LLM_PROVIDERS, LANGUAGES } from './constants.js';
+import './protocol.js';
 
 const STORAGE_KEY = 'immersive_gemini_settings_v1';
 const STATS_KEY = 'immersive_gemini_stats_v1';
@@ -13,17 +14,13 @@ export function getProviderDefinition(providerId) {
 }
 
 export function getActiveProtocol(settings) {
-  const provider = getProviderDefinition(settings?.providerId);
-  if (settings?.providerId === 'custom') {
-    return settings?.apiProtocol === 'gemini' ? 'gemini' : 'openai';
-  }
-  return settings?.apiProtocol || provider.protocol || 'gemini';
+  return globalThis.QingJianSettings.resolveProtocol(settings);
 }
 
 export async function getSettings() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const stored = result[STORAGE_KEY] || {};
-  const merged = { ...DEFAULT_SETTINGS, ...stored };
+  const merged = { ...DEFAULT_SETTINGS, ...stored, apiProtocol: getActiveProtocol(stored) };
 
   // Ensure providerConfigs has current active provider snapshot for seamless provider switching
   const pId = merged.providerId || 'google';
@@ -46,6 +43,11 @@ export async function getSettings() {
 export async function saveSettings(partialSettings) {
   const current = await getSettings();
   const updated = { ...current, ...partialSettings };
+  // A provider switch without an explicit protocol must not inherit the old provider's protocol.
+  updated.apiProtocol = getActiveProtocol(
+    partialSettings.providerId && partialSettings.providerId !== current.providerId
+      ? partialSettings : updated
+  );
 
   const pId = updated.providerId || 'google';
   const pDef = getProviderDefinition(pId);
@@ -73,7 +75,8 @@ export async function resetSettings() {
 export function onSettingsChanged(callback) {
   const listener = (changes, areaName) => {
     if (areaName === 'local' && changes[STORAGE_KEY]) {
-      const newVal = { ...DEFAULT_SETTINGS, ...(changes[STORAGE_KEY].newValue || {}) };
+      const raw = changes[STORAGE_KEY].newValue || {};
+      const newVal = { ...DEFAULT_SETTINGS, ...raw, apiProtocol: getActiveProtocol(raw) };
       callback(newVal);
     }
   };
@@ -89,14 +92,16 @@ export async function getUsageStats() {
     totalRequests: 0,
     totalParagraphs: 0,
     cacheHits: 0,
+    batchRetries: 0,
     estimatedCharsTranslated: 0
   };
 }
 
-export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0 }) {
+export function incrementUsageStats({ requests = 0, paragraphs = 0, chars = 0, cacheHits = 0, batchRetries = 0 }) {
   const runUpdate = async () => {
     const current = await getUsageStats();
     const next = {
+      batchRetries: (current.batchRetries || 0) + batchRetries,
       totalRequests: (current.totalRequests || 0) + requests,
       totalParagraphs: (current.totalParagraphs || 0) + paragraphs,
       cacheHits: (current.cacheHits || 0) + cacheHits,

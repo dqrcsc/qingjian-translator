@@ -7,6 +7,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { makePdfFixture } from '../tests/pdf-fixture.mjs';
+import { verifyContentBrowser } from './verify-content-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -166,6 +167,9 @@ try {
   await popup.close();
   await until(() => quickCall.closed, 'popup close aborts quick translation');
   checks.push('Closing popup cancels its actual quick-translation request');
+  stage = 'content lifecycle regressions';
+  console.log('Checking actual content-script settings, rapid toggles and delayed image decoding…');
+  checks.push(...await verifyContentBrowser(context, sw));
   assert.deepEqual(errors, [], 'No uncaught page errors or CSP errors');
   const report = { passed: true, browser: context.browser().version(), pdfjs: '6.4.299', checks, pdf: result, workers, errors };
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(report, null, 2) + '\n');

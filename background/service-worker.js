@@ -154,7 +154,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         });
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['shared/request-client.js', 'content/content-main.js']
+          files: ['shared/protocol.js', 'shared/request-client.js', 'content/content-main.js']
         });
         await sendMessageToTabSafely(tab.id, {
           type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION

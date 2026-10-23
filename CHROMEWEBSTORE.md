@@ -89,6 +89,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.5 | 2026-10-23 | Raw-settings protocol normalization, rapid-toggle and image decode lifecycle guards, deduplicated batch output statistics, real content-script browser regressions. | GitHub release; store submission not performed in this release workflow |
 | 1.0.4 | 2026-10-22 | Multi-item batch placeholder subset retry, upgraded Gemini audio protocol fallback, and rapid page-translation toggle cleanup guards. | Ready |
 | 1.0.3 | 2026-10-21 | Official PDF.js 6.4.299, local worker/assets, end-to-end cancellation and real Chromium regression checks. | Awaiting store review |
 | 1.0.2 | 2026-10-21 | Reliability fixes, regression tests, EPUB navigation, release licensing and corrected data-flow disclosures. See CHANGELOG.md for validation boundaries. | Awaiting browser acceptance / store review |

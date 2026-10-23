@@ -76,6 +76,8 @@ test('disconnect cancels active and queued work without cancelling another scope
 });
 
 test('port cancellation reaches response-body consumption and prevents retries', async () => {
+  const { getUsageStats } = await import('../shared/storage.js');
+  const before = await getUsageStats();
   let attempts = 0, signal;
   globalThis.fetch = async (_url, init) => {
     attempts++; signal = init.signal;
@@ -90,6 +92,7 @@ test('port cancellation reaches response-body consumption and prevents retries',
   assert.equal(signal.aborted, true);
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(attempts, 1);
+  assert.equal((await getUsageStats()).totalParagraphs, before.totalParagraphs);
 });
 
 test('cancelling during retry backoff prevents the next API request', async () => {
@@ -104,6 +107,29 @@ test('cancelling during retry backoff prevents the next API request', async () =
   globalThis.fetch = async () => { attempts++; return success('下一任务'); };
   assert.equal((await a.request(batch('after-backoff'))).ok, true);
   assert.equal(attempts, 2);
+});
+
+test('cancelling a subset repair counts no completed paragraphs or source characters', async () => {
+  const { getUsageStats } = await import('../shared/storage.js');
+  const before = await getUsageStats();
+  let attempts = 0;
+  globalThis.fetch = async (_url, init) => {
+    attempts++;
+    if (attempts === 1) return success('missing placeholder');
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort',
+      () => reject(init.signal.reason), { once: true }));
+  };
+  const a = scope();
+  const pending = a.request({ type: 'TRANSLATE_BATCH', payload: { items: [
+    { id: 1, text: 'repair cancellation {{0}}' }, { id: 2, text: 'repair cancellation plain' }
+  ] } });
+  await until(() => attempts === 2);
+  a.cancel();
+  assert.equal((await pending).cancelled, true);
+  const after = await getUsageStats();
+  assert.equal(after.totalParagraphs, before.totalParagraphs);
+  assert.equal(after.estimatedCharsTranslated, before.estimatedCharsTranslated);
+  assert.equal((after.batchRetries || 0) - (before.batchRetries || 0), 1);
 });
 
 test('image downloads share the same cancellation signal as model requests', async () => {
