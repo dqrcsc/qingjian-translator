@@ -112,18 +112,24 @@
   }
 
   function safeRuntimeSendMessage(message) {
-    if (!isExtensionContextValid()) {
-      return Promise.resolve(null);
-    }
+    const isSubtitle = message.type === 'TRANSLATE_YOUTUBE_CUES';
+    const failed = error => {
+      if (!isSubtitle) return null;
+      const detail = String(error?.message || error?.error || error || '字幕请求连接未返回响应，请重试');
+      const invalidated = !isExtensionContextValid() || /extension context invalidated/i.test(detail);
+      return invalidated
+        ? { ok: false, code: 'EXTENSION_CONTEXT_INVALIDATED', error: '扩展已更新或重新加载，请刷新此页面以恢复字幕翻译。' }
+        : { ok: false, error: detail };
+    };
+    if (!isExtensionContextValid()) return Promise.resolve(failed());
     try {
-      const p = message.type === 'TRANSLATE_YOUTUBE_CUES'
-        ? sendModelRequest(message) : chrome.runtime.sendMessage(message);
-      if (p && typeof p.catch === 'function') {
-        return p.catch(() => null);
-      }
-      return Promise.resolve(p);
-    } catch {
-      return Promise.resolve(null);
+      const request = isSubtitle ? sendModelRequest(message) : chrome.runtime.sendMessage(message);
+      return Promise.resolve(request).then(result => {
+        if (isSubtitle && (!result || (!result.ok && !result.cancelled))) return failed(result);
+        return result;
+      }, failed);
+    } catch (error) {
+      return Promise.resolve(failed(error));
     }
   }
 
@@ -2955,6 +2961,7 @@
   let ytTranslationStopped = false;
   let ytTranslationBusy = false;
   let ytErrorEl = null;
+  let ytNeedsRefresh = false;
 
   function resetYoutubeTranslationSession() {
     ytTranslationSession++;
@@ -2964,6 +2971,7 @@
     ytFailureCount = 0;
     ytRetryAt = 0;
     ytTranslationStopped = false;
+    ytNeedsRefresh = false;
     ytTranslationBusy = false;
     ytErrorEl?.remove();
     ytErrorEl = null;
@@ -2975,10 +2983,12 @@
   }
 
   function recordYoutubeTranslationFailure(error) {
-    const message = String(error?.message || error || '字幕翻译请求失败');
+    const message = String(error?.error || error?.message || error || '字幕翻译请求失败');
+    ytNeedsRefresh = error?.code === 'EXTENSION_CONTEXT_INVALIDATED' || /extension context invalidated/i.test(message);
+    ytLastRenderedSig = '';
     ytFailureCount++;
     const permanent = /\b(?:400|401|402|403|404|422)\b|未配置|不支持|invalid.*(?:key|model)|unauthorized|permission.denied/i.test(message);
-    ytTranslationStopped = permanent || ytFailureCount >= 3;
+    ytTranslationStopped = ytNeedsRefresh || permanent || ytFailureCount >= 3;
     ytRetryAt = Date.now() + 1000 * (2 ** (ytFailureCount - 1));
     if (!ytErrorEl || ytErrorEl.isConnected === false) {
       ytErrorEl = document.createElement('div');
@@ -2987,18 +2997,31 @@
       ytErrorEl.style.cssText = 'position:absolute;top:48px;left:12px;right:12px;z-index:10000;padding:10px;background:#241b16;color:#fff;font:14px sans-serif;pointer-events:auto';
       (document.querySelector('.html5-video-player') || document.body).appendChild(ytErrorEl);
     }
-    ytErrorEl.textContent = `${ytTranslationStopped ? '字幕翻译已暂停，请检查模型设置。' : '字幕翻译暂时失败，正在退避重试。'} ${message} `;
+    ytErrorEl.textContent = `${ytNeedsRefresh ? '字幕翻译连接已失效。' : ytTranslationStopped ? '字幕翻译已暂停，请查看错误后重试。' : '字幕翻译暂时失败，正在退避重试。'} ${message} `;
     const retry = document.createElement('button');
-    retry.textContent = '重新尝试';
-    retry.addEventListener('click', () => resetYoutubeTranslationSession());
+    retry.textContent = ytNeedsRefresh ? '刷新页面' : '重新尝试';
+    retry.addEventListener('click', () => {
+      if (ytNeedsRefresh) window.location.reload();
+      else resetYoutubeTranslationSession();
+    });
     ytErrorEl.appendChild(retry);
   }
 
   function clearYoutubeTranslationFailure() {
+    ytNeedsRefresh = false;
+    ytTranslationStopped = false;
+    ytLastRenderedSig = '';
     ytFailureCount = 0;
     ytRetryAt = 0;
     ytErrorEl?.remove();
     ytErrorEl = null;
+  }
+
+  function youtubePendingTranslationText() {
+    if (ytNeedsRefresh) return '扩展已更新，请刷新页面恢复字幕翻译';
+    if (ytTranslationStopped) return '字幕翻译已暂停，请点击上方重新尝试';
+    if (Date.now() < ytRetryAt) return '字幕翻译暂时失败，等待重试…';
+    return ytTranslationBusy ? '正在翻译字幕…' : '等待字幕翻译…';
   }
 
   function getCurrentYoutubeVideoId() {
@@ -3373,7 +3396,7 @@
         }
         ytLastRenderedSig = ''; // Trigger immediate overlay refresh even if paused
       } else {
-        if (!res?.cancelled) recordYoutubeTranslationFailure(res?.error || '字幕返回为空');
+        if (!res?.cancelled) recordYoutubeTranslationFailure(res?.error ? res : '模型未返回有效字幕译文，请重试');
       }
     } catch (error) {
       if (isCurrent()) recordYoutubeTranslationFailure(error);
@@ -3452,7 +3475,7 @@
         ytLiveCaptionCache.set(rawText, trans);
         ytLastRenderedSig = '';
       } else if (!res?.cancelled) {
-        recordYoutubeTranslationFailure(res?.error || '字幕返回为空');
+        recordYoutubeTranslationFailure(res?.error ? res : '模型未返回有效字幕译文，请重试');
       }
     } catch (error) {
       if (isCurrent()) recordYoutubeTranslationFailure(error);
@@ -3483,7 +3506,8 @@
       const activeCue = ytCues.find((c) => t >= c.start && t <= c.end);
 
       if (activeCue) {
-        const sig = `cue:${activeCue.id}|${activeCue.translation || ''}`;
+        const pendingText = youtubePendingTranslationText();
+        const sig = `cue:${activeCue.id}|${activeCue.translation || pendingText}`;
         if (sig !== ytLastRenderedSig) {
           ytLastRenderedSig = sig;
           if (ytOverlayEl) {
@@ -3491,7 +3515,7 @@
               <div class="ig-yt-sub-box">
                 <div class="ig-yt-line-orig">${escapeText(activeCue.text)}</div>
                 <div class="ig-yt-line-trans">${escapeText(
-                  activeCue.translation || '⚡ 正在极速翻译当前句…'
+                  activeCue.translation || pendingText
                 )}</div>
               </div>
             `;
@@ -3553,7 +3577,8 @@
           if (!cachedTrans) {
             translateLiveYoutubeCaptionText(liveText);
           }
-          const sig = `live:${liveText}|${cachedTrans}`;
+          const pendingText = youtubePendingTranslationText();
+          const sig = `live:${liveText}|${cachedTrans || pendingText}`;
           if (sig !== ytLastRenderedSig) {
             ytLastRenderedSig = sig;
             if (ytOverlayEl) {
@@ -3561,7 +3586,7 @@
                 <div class="ig-yt-sub-box">
                   <div class="ig-yt-line-orig">${escapeText(liveText)}</div>
                   <div class="ig-yt-line-trans">${escapeText(
-                    cachedTrans || '⚡ 正在极速翻译当前句…'
+                    cachedTrans || pendingText
                   )}</div>
                 </div>
               `;

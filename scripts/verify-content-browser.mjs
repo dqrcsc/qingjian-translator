@@ -382,6 +382,27 @@ export async function verifyContentBrowser(context, sw) {
         } }, '*');
       }, live);
     };
+    // A tab kept open across an extension reload has a dead runtime connection.
+    for (const live of [false, true]) {
+      await store(subtitleSettings);
+      subtitleMode = 'ok';
+      const fixture = await open(`https://www.youtube.com/watch?v=${live ? 'live' : 'cue'}-invalid-context`, routeCaptions);
+      await fixture.evaluate(`chrome.runtime.connect = () => { throw new Error('Extension context invalidated.'); };`);
+      const before = subtitleCalls.length;
+      await seedCaptions(fixture, live);
+      await fixture.page.locator('.ig-yt-line-trans').filter({ hasText: '刷新页面' }).waitFor();
+      assert.equal(subtitleCalls.length, before, 'dead connection never reaches the model');
+      assert.doesNotMatch(await fixture.page.locator('.ig-yt-translation-error').textContent(), /字幕返回为空|检查模型/);
+      const refresh = fixture.page.locator('.ig-yt-translation-error button');
+      assert.equal(await refresh.textContent(), '刷新页面');
+      await Promise.all([fixture.page.waitForEvent('load'), refresh.click()]);
+      await seedCaptions(fixture, live);
+      await fixture.page.locator('.ig-yt-line-trans').filter({ hasText: '段落译文' }).waitFor();
+      assert.equal(await fixture.page.locator('.ig-yt-translation-error').count(), 0);
+      recordCheck(`${live ? 'Live' : 'Track'} invalidated runtime shows refresh, never false model-empty/loading; actual refresh restores translation`);
+      await fixture.page.close();
+    }
+
     for (const live of [false, true]) {
       await store(subtitleSettings);
       subtitleMode = '401';
@@ -389,6 +410,8 @@ export async function verifyContentBrowser(context, sw) {
       const start = subtitleCalls.length;
       await seedCaptions(fixture, live);
       await fixture.page.locator('.ig-yt-translation-error').filter({ hasText: '已暂停' }).waitFor();
+      await fixture.page.locator('.ig-yt-line-trans').filter({ hasText: '已暂停' }).waitFor();
+      assert.doesNotMatch(await fixture.page.locator('.ig-yt-line-trans').textContent(), /正在.*翻译/);
       for (const paused of [false, true]) {
         await setPlayback(fixture, paused);
         await fixture.page.waitForTimeout(700);
