@@ -98,14 +98,13 @@ html[data-ig-style="marker"] .ig-trans-node {
   border-radius: 3px;
 }
 
-/* Style 6: Translation-Only (仅显示译文模式 — 隐藏原文文本节点，仅呈现母语译文) */
-html[data-ig-style="translation-only"] [data-ig-status="done"] .ig-orig-text,
-html[data-ig-style="translation-only"] [data-ig-status="done"] [data-ig-orig-inline="1"],
-html[data-ig-style="translation-only"] [data-ig-status="done"] br:not(.ig-trans-br) {
+/* Translation-only hides only source nodes with a successful replacement, never a whole block. */
+html[data-ig-style="translation-only"] .ig-orig-text,
+html[data-ig-style="translation-only"] [data-ig-orig-inline="1"] {
   display: none !important;
 }
 
-html[data-ig-style="translation-only"] [data-ig-status="done"] .ig-trans-node {
+html[data-ig-style="translation-only"] .ig-trans-node {
   display: inline !important;
   margin: 0 !important;
   padding: 0 !important;

@@ -710,6 +710,24 @@
       .trim();
   }
 
+  function safeOriginalLinkHref(href) {
+    if (!href) return null;
+    try {
+      const url = new URL(href, document.baseURI);
+      return ['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol) ? url.href : null;
+    } catch { return null; }
+  }
+
+  // Link labels are preserved verbatim; the model may reorder tokens, never author URLs.
+  function originalLinkPlaceholder(node, root) {
+    if (node === root || node.tagName?.toLowerCase() !== 'a') return null;
+    const href = safeOriginalLinkHref(node.getAttribute('href'));
+    const text = (node.textContent || '').trim();
+    if (!href || !text) return null;
+    return { type: 'link', text, href, title: node.getAttribute('title') || '',
+      target: node.getAttribute('target') === '_blank' ? '_blank' : '' };
+  }
+
   /**
    * Protect inline `<code>`, `<kbd>`, `<math>`, `.katex` elements with `{{0}}` tokens
    * while skipping visually-hidden and icon-font children in the live DOM.
@@ -747,6 +765,14 @@
         return;
       }
 
+      const link = originalLinkPlaceholder(node, el);
+      if (link) {
+        const idx = placeholders.length;
+        placeholders.push(link);
+        parts.push(` {{${idx}}} `);
+        return;
+      }
+
       if (
         PROTECTED_TAGS.has(tag) ||
         node.classList.contains('katex') ||
@@ -781,7 +807,7 @@
    * so that `html[data-ig-style="translation-only"]` can hide original text purely via CSS
    * without disturbing child elements, icons, or flex/grid layouts.
    */
-  function wrapOriginalTextNodes(el) {
+  function wrapOriginalTextNodes(el, sourceNodes = null) {
     if (!el) return;
     const textNodes = [];
     const protectedInlines = [];
@@ -813,6 +839,10 @@
       if (node !== el && (isIconFontElement(node) || isVisuallyHidden(node))) {
         return;
       }
+      if (originalLinkPlaceholder(node, el)) {
+        protectedInlines.push(node);
+        return;
+      }
       if (
         PROTECTED_TAGS.has(tag) ||
         node.classList.contains('katex') ||
@@ -829,7 +859,11 @@
       }
     }
 
-    collect(el);
+    if (sourceNodes) {
+      for (const node of sourceNodes) if (el.contains(node)) collect(node);
+    } else {
+      collect(el);
+    }
     for (const pNode of protectedInlines) {
       pNode.setAttribute('data-ig-orig-inline', '1');
     }
@@ -879,6 +913,23 @@
       if (m) {
         const idx = Number(m[1]);
         const codeText = placeholders[idx];
+        if (codeText && typeof codeText === 'object' && codeText.type === 'link') {
+          const href = safeOriginalLinkHref(codeText.href);
+          if (href) {
+            const link = document.createElement('a');
+            link.href = href;
+            link.textContent = codeText.text;
+            if (codeText.title) link.title = codeText.title;
+            if (codeText.target === '_blank') {
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+            }
+            fragment.appendChild(link);
+          } else {
+            fragment.appendChild(document.createTextNode(codeText.text));
+          }
+          continue;
+        }
         if (codeText !== undefined) {
           const codeEl = document.createElement('code');
           codeEl.textContent = codeText;
@@ -1201,6 +1252,7 @@
         tag === 'script' ||
         tag === 'style' ||
         tag === 'noscript' ||
+        (node !== el && originalLinkPlaceholder(node, el)) ||
         PROTECTED_TAGS.has(tag) ||
         node.classList.contains('katex') ||
         node.classList.contains('MathJax') ||
@@ -1265,6 +1317,7 @@
     let curr = {
       parts: [],
       placeholders: [],
+      sourceNodes: [],
       anchorNode: null,
       breakNode: null
     };
@@ -1279,6 +1332,7 @@
         segments.push({
           text,
           placeholders: curr.placeholders,
+          sourceNodes: curr.sourceNodes,
           anchorNode: curr.anchorNode,
           breakNode: breakNode || curr.breakNode
         });
@@ -1286,6 +1340,7 @@
       curr = {
         parts: [],
         placeholders: [],
+        sourceNodes: [],
         anchorNode: null,
         breakNode: null
       };
@@ -1299,6 +1354,7 @@
           flushSegment(node);
           return;
         }
+        curr.sourceNodes.push(node);
         if (val.trim().length > 0) {
           curr.parts.push(val);
           curr.anchorNode = node;
@@ -1330,6 +1386,16 @@
         return;
       }
 
+      const link = originalLinkPlaceholder(node, el);
+      if (link) {
+        const idx = curr.placeholders.length;
+        curr.placeholders.push(link);
+        curr.parts.push(` {{${idx}}} `);
+        curr.sourceNodes.push(node);
+        curr.anchorNode = node;
+        return;
+      }
+
       if (
         PROTECTED_TAGS.has(tag) ||
         node.classList.contains('katex') ||
@@ -1339,6 +1405,7 @@
         if (txt && txt.length <= 80) {
           const idx = curr.placeholders.length;
           curr.placeholders.push(txt);
+          curr.sourceNodes.push(node);
           curr.parts.push(` {{${idx}}} `);
           curr.anchorNode = node;
           return;
@@ -1385,21 +1452,6 @@
       targetAnchor.parentElement.classList?.contains('ig-orig-text')
     ) {
       targetAnchor = targetAnchor.parentElement;
-    }
-
-    // Collapse pre-wrap newline node right after paragraph so display:block translation box has clean spacing
-    if (
-      record.breakNode &&
-      record.breakNode.nodeType === Node.TEXT_NODE &&
-      record.breakNode.parentNode &&
-      !record.breakNode.parentNode.classList?.contains('ig-orig-newline')
-    ) {
-      const nlWrap = document.createElement('font');
-      nlWrap.className = 'notranslate ig-orig-newline';
-      nlWrap.setAttribute('translate', 'no');
-      nlWrap.style.display = 'none';
-      record.breakNode.parentNode.replaceChild(nlWrap, record.breakNode);
-      nlWrap.appendChild(record.breakNode);
     }
 
     if (targetAnchor.parentNode) {
@@ -1461,6 +1513,7 @@
         element: el,
         text: seg.text,
         placeholders: seg.placeholders,
+        sourceNodes: seg.sourceNodes,
         anchorNode: seg.anchorNode,
         breakNode: seg.breakNode,
         isMultiSeg: seg.isMultiSeg
@@ -1537,6 +1590,10 @@
    * mode can hide original text cleanly via CSS.
    */
   async function renderBatchResultsWithRAF(results, signal) {
+    const updateStatus = el => {
+      el.dataset.igStatus = el.querySelectorAll('.ig-trans-loading').length ? 'queued'
+        : el.querySelectorAll('.ig-trans-error').length ? 'error' : 'done';
+    };
     const CHUNK = 18;
     for (let i = 0; i < results.length; i += CHUNK) {
       const slice = results.slice(i, i + CHUNK);
@@ -1565,11 +1622,11 @@
               !translatedStr ||
               normalizeForComparison(translatedStr) === normalizeForComparison(record.text)
             ) {
-              el.dataset.igStatus = 'done';
+              updateStatus(el);
               continue;
             }
 
-            wrapOriginalTextNodes(el);
+            wrapOriginalTextNodes(el, record.sourceNodes);
 
             const isInline = record.isMultiSeg ? false : shouldUseInlineMode(el, record.text);
             const transNode = document.createElement('font');
@@ -1582,7 +1639,7 @@
               restorePlaceholdersToFragment(translatedStr, record.placeholders)
             );
             insertNodeAfterSegmentAnchor(el, record, transNode);
-            el.dataset.igStatus = 'done';
+            updateStatus(el);
             totalTranslatedCount++;
           }
           updateFloatingBallStatus();
@@ -1628,7 +1685,7 @@
             queueParagraphForTranslation(el);
           });
           insertNodeAfterSegmentAnchor(el, record, errBadge);
-          el.dataset.igStatus = 'error';
+          el.dataset.igStatus = el.querySelectorAll('.ig-trans-loading').length ? 'queued' : 'error';
         }
         resolve();
       })
@@ -1765,6 +1822,12 @@
   // 4. Single-Paragraph Hover + Alt Quick Translation
   // ============================================================================
 
+  let altHoverGesture = null;
+  const isEditingForHover = () => {
+    const active = document.activeElement;
+    return active?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName);
+  };
+
   document.addEventListener(
     'mousemove',
     (e) => {
@@ -1773,7 +1836,8 @@
         hoveredElement.classList.remove('ig-hover-target-highlight');
       }
       hoveredElement = target || null;
-      if (hoveredElement && e.altKey && settings.enableHoverTranslate) {
+      if (hoveredElement && e.altKey && settings.enableHoverTranslate &&
+          !altHoverGesture?.combined && !isEditingForHover()) {
         hoveredElement.classList.add('ig-hover-target-highlight');
       }
     },
@@ -1781,25 +1845,36 @@
   );
 
   document.addEventListener('keydown', (e) => {
-    if (!settings.enableHoverTranslate) return;
-    if (e.key === 'Alt' && hoveredElement) {
-      hoveredElement.classList.add('ig-hover-target-highlight');
-      if (hoveredElement.dataset.igStatus === 'done') {
-        hoveredElement
-          .querySelectorAll('.ig-trans-node, .ig-trans-block, .ig-trans-inline')
-          .forEach((n) => n.remove());
-        unwrapOriginalTextNodes(hoveredElement);
-        delete hoveredElement.dataset.igStatus;
-      } else if (!hoveredElement.dataset.igStatus) {
-        queueParagraphForTranslation(hoveredElement);
-      }
+    if (e.key !== 'Alt') {
+      if (altHoverGesture) altHoverGesture.combined = true;
+      hoveredElement?.classList.remove('ig-hover-target-highlight');
+      return;
     }
+    if (e.repeat || !settings.enableHoverTranslate || isEditingForHover()) return;
+    altHoverGesture = { combined: e.ctrlKey || e.metaKey || e.shiftKey };
+    if (!altHoverGesture.combined) hoveredElement?.classList.add('ig-hover-target-highlight');
   });
 
   document.addEventListener('keyup', (e) => {
-    if (e.key === 'Alt' && hoveredElement) {
-      hoveredElement.classList.remove('ig-hover-target-highlight');
+    if (e.key !== 'Alt') {
+      if (altHoverGesture) altHoverGesture.combined = true;
+      return;
     }
+    const gesture = altHoverGesture;
+    altHoverGesture = null;
+    hoveredElement?.classList.remove('ig-hover-target-highlight');
+    if (!gesture || gesture.combined || e.ctrlKey || e.metaKey || e.shiftKey ||
+        !settings.enableHoverTranslate || isEditingForHover() || !hoveredElement) return;
+    if (hoveredElement.dataset.igStatus === 'done') {
+      resetElementTranslationState(hoveredElement);
+    } else if (!hoveredElement.dataset.igStatus) {
+      queueParagraphForTranslation(hoveredElement);
+    }
+  });
+
+  window.addEventListener('blur', () => {
+    altHoverGesture = null;
+    hoveredElement?.classList.remove('ig-hover-target-highlight');
   });
 
   // ============================================================================
@@ -4381,6 +4456,10 @@
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return false;
+    // Chrome may consume the letter key of an extension shortcut before page keydown.
+    if (altHoverGesture && ['TOGGLE_PAGE_TRANSLATION', 'CYCLE_TRANSLATION_STYLE'].includes(message.type)) {
+      altHoverGesture.combined = true;
+    }
 
     if (message.type === 'TOGGLE_PAGE_TRANSLATION') {
       const pdfPage = isOnlinePdfPage();
