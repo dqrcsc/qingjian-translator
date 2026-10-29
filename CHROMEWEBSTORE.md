@@ -89,6 +89,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.9 | 2026-10-30 | Reading integrity, clickable translation links, Alt gesture isolation, import readiness, complete HTML exports, PDF forced refresh, EOF code preservation and full-width translation view. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.8 | 2026-10-23 | Studio single-block and full-document retranslate cache bypass, multi-segment retry cleanup, and YouTube detached error banner remounting. | Ready |
 | 1.0.7 | 2026-10-23 | Studio private entry, monotonic block IDs, YouTube failure backoff, bounded stats accounting, Web Locks settings serialization, and Gemini native output guards. | GitHub release |
 | 1.0.6 | 2026-10-23 | Per-request 90s total budget (configurable 30-300s) and detached webpage DOM/observer reclamation. | GitHub release |
