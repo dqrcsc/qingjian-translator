@@ -274,7 +274,7 @@ function sourceFunction(src, name, next) {
   return src.slice(a, src.indexOf(next, a));
 }
 function documentState() {
-  return { fileType: 'pdf', fileName: 'test', totalPages: 1, pdfDoc: null, pdfArrayBuffer: new ArrayBuffer(1), blocks: [], translatedPages: new Set(), translatingPages: new Set(), pageRenderCache: new Map() };
+  return { loadState: 'ready', fileType: 'pdf', fileName: 'test', totalPages: 1, pdfDoc: null, pdfArrayBuffer: new ArrayBuffer(1), blocks: [], translatedPages: new Set(), translatingPages: new Set(), pageRenderCache: new Map() };
 }
 function studioContext() {
   let reply;
@@ -287,6 +287,7 @@ function studioContext() {
     getSettings: async () => settings, getActiveProtocol: () => 'gemini',
     arrayBufferToBase64: () => 'AA==', MESSAGE_TYPES: { ANALYZE_PDF_MULTIMODAL: 'PDF' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
+    isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
     renderWorkspaceBlocks() {}, streamSearchInput: { value: '' }, lazyPageQueue: [], setTimeout() {}
   });
   vm.runInContext(studioSource.slice(studioSource.indexOf('function allocateBlockId('), studioSource.indexOf('const blockTranslationVersions')), ctx);
@@ -353,6 +354,7 @@ test('ordinary document translation discards old results and leaves new run flag
     isTranslating: false, stopRequested: false, startTranslateDocBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
     getSettings: async () => settings, createBatches: blocks => [blocks], MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
+    isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
     docStatusSubtitle: { textContent: '' }, setTimeout() {}
   });
   vm.runInContext(studioSource.slice(studioSource.indexOf('const blockTranslationVersions'), studioSource.indexOf('let isTranslating')), ctx);

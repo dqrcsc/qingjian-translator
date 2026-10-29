@@ -380,6 +380,22 @@ body {
   display: none !important;
 }
 
+.workspace-split.mode-translation-full-width {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-split.mode-translation-full-width > .left-pane {
+  display: none;
+}
+
+.untranslated-label {
+  display: block;
+  color: #b45309;
+  font: 12px/1.5 sans-serif;
+  margin-bottom: 5px;
+  text-indent: 0;
+}
+
 .left-pane,
 .right-pane {
   display: flex;
@@ -1744,7 +1760,7 @@ body {
   .paper-block-toolbar,
   .paper-figure-hover-bar,
   .paper-page-lazy-placeholder,
-  .is-print-excluded-page,
+  .bilingual-stream .is-print-excluded-page,
   .pdf-export-modal-backdrop {
     display: none !important;
   }

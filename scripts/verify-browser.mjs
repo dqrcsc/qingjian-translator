@@ -11,6 +11,8 @@ import { verifyContentBrowser } from './verify-content-browser.mjs';
 import { verifyStudioBrowser } from './verify-studio-browser.mjs';
 import { verifySettingsBrowser } from './verify-settings-browser.mjs';
 import { verifyGeminiBrowser } from './verify-gemini-browser.mjs';
+import { verifyReadingContentBrowser } from './verify-reading-content-browser.mjs';
+import { verifyReadingStudioBrowser } from './verify-reading-studio-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -231,6 +233,14 @@ try {
   checks.push(...await verifySettingsBrowser(context, sw));
   stage = 'native Gemini regressions';
   checks.push(...await verifyGeminiBrowser(context, sw));
+  stage = 'web reading integrity regressions';
+  const readingContent = await verifyReadingContentBrowser(context, sw);
+  checks.push(...readingContent.checks);
+  errors.push(...readingContent.errors);
+  stage = 'studio reading and export integrity regressions';
+  const readingStudio = await verifyReadingStudioBrowser(context, sw);
+  checks.push(...readingStudio.checks);
+  errors.push(...readingStudio.errors);
   assert.deepEqual(errors, [], 'No uncaught page errors or CSP errors');
   const report = { passed: true, browser: context.browser().version(), pdfjs: '6.4.299', checks, pdf: result, workers, errors };
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(report, null, 2) + '\n');

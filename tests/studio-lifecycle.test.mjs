@@ -5,19 +5,21 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../studio/studio.js', import.meta.url), 'utf8');
 const identities = source.slice(source.indexOf('function allocateBlockId('), source.indexOf('let isTranslating = false;'));
+const readiness = source.slice(source.indexOf('function isDocumentReady('), source.indexOf('const documentRequests ='));
+const reading = source.slice(source.indexOf('function getExportViewMode('), source.indexOf('function updateProgressCounterBadge('));
 const retranslate = source.slice(source.indexOf('async function retranslateBlock('), source.indexOf('// ============================================================================\n// 2B. Figure'));
 function harness() {
   const block = { id: 0, original: 'Original', translation: 'Old translation', type: 'paragraph', page: 1 };
   const element = { textContent: '', innerHTML: '' }, button = { disabled: false }, replies = [];
   let controller = new AbortController();
-  const ctx = vm.createContext({ currentDoc: { blocks: [block], bookTitle: 'Fixture' }, documentSession: 1,
+  const ctx = vm.createContext({ currentDoc: { loadState: 'ready', blocks: [block], bookTitle: 'Fixture' }, documentSession: 1,
     WeakMap, DOMException, documentRequests: { get signal() { return controller.signal; } },
     bilingualStreamContainer: { querySelectorAll: () => [button] }, document: { getElementById: () => element },
     docStatusSubtitle: { textContent: '' }, getSettings: async () => ({ targetLang: 'zh-CN' }),
     sendModelRequest: req => new Promise((resolve, reject) => replies.push({ req, resolve, reject })),
     MESSAGE_TYPES: { TRANSLATE_BATCH: 'TRANSLATE_BATCH' }, renderRichAcademicHtml: text => text
   });
-  vm.runInContext(identities + retranslate, ctx);
+  vm.runInContext(readiness + reading + identities + retranslate, ctx);
   return { ctx, block, element, button, replies, cancel() { controller.abort(); controller = new AbortController(); ctx.documentSession++; } };
 }
 const tick = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -88,8 +90,8 @@ test('studio is private while extension icon resources remain available', () => 
 test('asynchronous imports allocate fresh IDs after image uploads and reject a late attachment to a retired block', async () => {
   const section = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start) + start.length));
   let releaseText;
-  const ctx = vm.createContext({ currentDoc: { blocks: [] }, documentSession: 1, lazyPageQueue: [],
-    emptyDropzoneSection: {}, workspaceSplitMain: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {},
+  const ctx = vm.createContext({ currentDoc: { loadState: 'ready', blocks: [] }, documentSession: 1, lazyPageQueue: [], isTranslating: false, isProcessingLazyQueue: false, translateSinglePageBtn: {}, exportDropdownMenu: {},
+    emptyDropzoneSection: {}, workspaceSplitMain: { dataset: {} }, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {},
     pdfNativeEmbed: {}, sourceOutlineViewer: {}, pdfPageJumpWrap: {}, startTranslateDocBtn: {}, exportMenuBtn: {},
     docStatusSubtitle: {}, leftPaneTitle: {}, progressBarWrap: {}, progressBarFill: { style: {} },
     jumpPageInput: { value: '1' }, streamSearchInput: { value: '' }, renderWorkspaceBlocks() {},
@@ -99,33 +101,38 @@ test('asynchronous imports allocate fresh IDs after image uploads and reject a l
     MESSAGE_TYPES: { TRANSLATE_IMAGE: 'image' }, normalizeFigureLabelsToCrop: () => [],
     loadImageToCanvas: async () => null, setTimeout() {}, document: { title: 'Fixture' }, pendingFigureAttachBlockId: null
   });
-  vm.runInContext(identities + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
+  vm.runInContext(readiness + identities + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
     section('function parseMarkdownToBlocks(', '\nfunction parseHtmlDocumentToBlocks(') +
     section('async function handleFigureImageFile(', '\nif (figureImageInput)'), ctx);
   const loading = ctx.handleFileLoaded({ name: 'two-blocks.md', text: () => new Promise(resolve => { releaseText = resolve; }) }, { session: 1 });
+  await ctx.handleFigureImageFile({ name: 'blocked.png', type: 'image/png' });
+  assert.equal(ctx.currentDoc.blocks.length, 0, 'image actions are blocked while parsing');
+  assert.equal(ctx.currentDoc.loadState, 'loading');
+  releaseText('ALPHA original.\n\nBETA original.'); await loading;
+  assert.equal(ctx.currentDoc.loadState, 'ready');
   await ctx.handleFigureImageFile({ name: 'first.png', type: 'image/png' });
   const firstFigure = ctx.currentDoc.blocks[0];
   const stale = ctx.beginBlockTranslation(firstFigure);
-  assert.equal(ctx.currentDoc.nextBlockId, 1);
   let releaseAttachment;
   ctx.sendModelRequest = () => new Promise(resolve => { releaseAttachment = resolve; });
   const attaching = ctx.handleFigureImageFile({ name: 'late-attachment.png', type: 'image/png' }, firstFigure.id);
-  await tick();
-  releaseText('ALPHA original.\n\nBETA original.'); await loading;
-  assert.deepEqual(Array.from(ctx.currentDoc.blocks, block => block.id), [1, 2], 'parsed indices cannot reuse allocated figure ID 0');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof releaseAttachment, 'function');
+  ctx.adoptParsedBlocks([{ original: 'ALPHA original.', translation: '' }, { original: 'BETA original.', translation: '' }]);
+  assert.deepEqual(Array.from(ctx.currentDoc.blocks, block => block.id), [3, 4], 'replacement parser indices cannot reuse allocated figure ID 2');
   releaseAttachment({ ok: true, data: { regions: [], summaryTranslation: 'Late attachment' } });
   await attaching;
   assert.ok(ctx.currentDoc.blocks.every(block => !block.imageDataUrl && !block.translation));
   assert.match(ctx.docStatusSubtitle.textContent, /原图注已被替换/);
   ctx.sendModelRequest = async () => ({ ok: true, data: { regions: [], summaryTranslation: 'Figure translation' } });
-  assert.equal(ctx.ownsBlockTranslation(stale, ctx.currentDoc), false, 'import retired the old figure object');
+  assert.equal(ctx.ownsBlockTranslation(stale, ctx.currentDoc), false, 'replacement retired the old figure object');
   await ctx.handleFigureImageFile({ name: 'second.png', type: 'image/png' });
-  assert.deepEqual(Array.from(ctx.currentDoc.blocks, block => block.id), [3, 1, 2]);
+  assert.deepEqual(Array.from(ctx.currentDoc.blocks, block => block.id), [5, 3, 4]);
   assert.match(ctx.currentDoc.blocks[0].original, /second.png/);
   assert.equal(ctx.currentDoc.blocks[1].original, 'ALPHA original.');
   assert.equal(ctx.currentDoc.blocks[2].original, 'BETA original.');
   ctx.currentDoc.blocks = [];
-  assert.equal(ctx.allocateBlockId(), 4, 'removal or an import with fewer blocks must not move the counter backwards');
+  assert.equal(ctx.allocateBlockId(), 6, 'removal or an import with fewer blocks must not move the counter backwards');
 });
 
 test('startDocumentTranslation re-translates completed blocks with bypassCache when all blocks in scope are already translated', async () => {
@@ -140,9 +147,9 @@ test('startDocumentTranslation re-translates completed blocks with bypassCache w
     { id: 2, type: 'paragraph', original: 'Second', translation: '初译二' }
   ];
   const ctx = vm.createContext({
-    currentDoc: { fileType: 'md', fileName: 'demo.md', bookTitle: 'Demo', blocks, translatedPages: new Set() },
+    currentDoc: { loadState: 'ready', fileType: 'md', fileName: 'demo.md', bookTitle: 'Demo', blocks, translatedPages: new Set() },
     documentSession: 1, isTranslating: false, stopRequested: false,
-    startTranslateDocBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
+    startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, isProcessingLazyQueue: false, progressBarWrap: {}, progressBarFill: { style: {} },
     docStatusSubtitle: { textContent: '' }, epubChapterSelect: { value: 'all' },
     getSettings: async () => ({ targetLang: 'zh-CN', batchMaxItems: 10, batchMaxChars: 2200 }),
     createBatches: list => (list.length ? [list] : []),
@@ -157,7 +164,7 @@ test('startDocumentTranslation re-translates completed blocks with bypassCache w
     setTimeout() {},
     WeakMap
   });
-  vm.runInContext(identities + startSection, ctx);
+  vm.runInContext(readiness + identities + startSection, ctx);
   await ctx.startDocumentTranslation();
   assert.equal(sentPayloads.length, 1);
   assert.equal(sentPayloads[0].bypassCache, true);

@@ -44,9 +44,10 @@
           <option value="card-stream">样式: ✦ 卡片流</option>
         </select>
 
-        <select id="viewModeSelect" class="toolbar-select" title="右侧译文显示模式">
+        <select id="viewModeSelect" class="toolbar-select" title="阅读视图；未译内容保留原文并标明状态">
           <option value="bilingual">视图: 双语对照</option>
-          <option value="translation-only">视图: 仅看译文</option>
+          <option value="translation-only">视图: 仅译文（保留左栏）</option>
+          <option value="translation-full-width">视图: 全宽仅译文</option>
         </select>
       </div>
 
@@ -108,7 +109,7 @@
     </section>
 
     <!-- Split Workspace View (Left: Original PDF or Chapter/Outline View, Right: Paper Layout / Bilingual Stream) -->
-    <main id="workspaceSplitMain" class="workspace-split" hidden>
+    <main id="workspaceSplitMain" class="workspace-split" data-document-state="idle" hidden>
       <!-- Left Pane: Original PDF Native Viewer OR Document Source / EPUB Chapter Navigator -->
       <section class="left-pane">
         <div class="pane-header">
