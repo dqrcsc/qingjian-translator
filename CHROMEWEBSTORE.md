@@ -91,6 +91,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.15 | 2026-10-30 | Semantic paper tables, readable table/equation colors and exports, per-line marker highlighting and session-wide site auto-translation pause. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.14 | 2026-10-30 | Serialized content settings, configuration invalidation, validated multimodal results, live translated links, code-safe Markdown roundtrips and empty subtitle feedback. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.13 | 2026-10-30 | Correct PDF page ownership and failure recovery, input draft protection, dynamic source invalidation, complete HTML text and consistent export layout, figure label retranslation and capability wording. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.12 | 2026-10-30 | Document configuration snapshots, bounded PDF pixels and cancellation, media-time audio slices, manual timeline reading, 100-item document windows and corrected capability wording. | GitHub release; Chrome Web Store submission not performed |

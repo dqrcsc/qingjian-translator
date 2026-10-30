@@ -16,26 +16,30 @@
 
 Files: studio/math-renderer.js, studio/studio.css, studio/studio.js, background/gemini-client.js, tests/academic-table.test.mjs, scripts/verify-academic-table-browser.mjs。
 
-- [ ] 先以 `renderRichAcademicHtml('A | B\n1 | 2',{blockType:'table'})` 检查得到真实 table；目前失败为只有 br。
-- [ ] 实现规则表格解析，含可选外侧竖线、Markdown 对齐行、转义/公式内竖线；不规则输入保留文本。递归复用安全单元格文字/数学渲染，不接受原始 HTML。
-- [ ] 白纸表格原文 #475569，译文/公式 #335f65，浅灰表头；深色视图适配浅青灰。同步 HTML 及打印输出。
-- [ ] PDF 实际上传、原生协议返回六列表格+公式，验证列坐标/颜色/单元格数、纯译文、实际 HTML 下载及打印模式。
-- [ ] `node --test tests/academic-table.test.mjs` 与定向浏览器通过后汇报修改和证据。
+- [x] 先以 `renderRichAcademicHtml('A | B\n1 | 2',{blockType:'table'})` 检查得到真实 table；目前失败为只有 br。
+- [x] 实现规则表格解析，含可选外侧竖线、Markdown 对齐行、转义/公式内竖线；不规则输入保留文本。递归复用安全单元格文字/数学渲染，不接受原始 HTML。
+- [x] 白纸表格原文 #475569，译文/公式 #335f65，浅灰表头；深色视图适配浅青灰。同步 HTML 及打印输出。
+- [x] PDF 实际上传、原生协议返回六列表格+公式，验证列坐标/颜色/单元格数、纯译文、实际 HTML 下载及打印模式。
+- [x] `node --test tests/academic-table.test.mjs` 与定向浏览器通过后汇报修改和证据。
 
 ## 2. 会话站点暂停
 
 Files: background/site-pause.js, background/service-worker.js, content/content-main.js, shared/constants.js, popup/popup.js, tests/site-pause.test.mjs, scripts/verify-site-pause-browser.mjs。
 
-- [ ] 先测：关闭自动翻译后下一同站点页面/新标签仍自动翻译；临时暂停不能修改 alwaysTranslateDomains。
-- [ ] 后台按实际 sender URL 及命中规则生成站点键，chrome.storage.session 串行保存暂停集合；新增读/写消息，校验输入、保存失败返回错误。
-- [ ] 自动翻译检查先读暂停；手动切换同步状态；配置失效内部关闭不等同用户暂停；自动 PDF入口遵守状态，显式入口仍工作。
-- [ ] UI显示暂停和恢复方式；按站点广播更新状态但不撤回其他页已有译文。
-- [ ] 真实入口测试同站点新页/刷新/新标签暂停、无关站点继续、手动恢复、服务worker重建/会话清除语义、快速切换及失败反馈。
+- [x] 先测：关闭自动翻译后下一同站点页面/新标签仍自动翻译；临时暂停不能修改 alwaysTranslateDomains。
+- [x] 后台按实际 sender URL 及命中规则生成站点键，chrome.storage.session 串行保存暂停集合；新增读/写消息，校验输入、保存失败返回错误。
+- [x] 自动翻译检查先读暂停；手动切换同步状态；配置失效内部关闭不等同用户暂停；自动 PDF入口遵守状态，显式入口仍工作。
+- [x] UI显示暂停和恢复方式；按站点广播更新状态但不撤回其他页已有译文。
+- [x] 真实入口测试同站点新页/刷新/新标签暂停、无关站点继续、手动恢复、服务worker重建/会话清除语义、快速切换及失败反馈。
 
 ## 3. 集成
 
 Files: scripts/verify-browser.mjs, README.md, docs/verification/paper-reading-2026-10-30.md。
 
-- [ ] 注册两个真实入口模块，审查功能宣称与边界。
-- [ ] `npm run verify`、`npm run test:browser`，检查前轮 marker 三项及既有回归。
-- [ ] 留存表格/公式截图和实际导出，记录确实通过的数量、使用边界和未发布状态。
+- [x] 注册两个真实入口模块，审查功能宣称与边界。
+- [x] `npm run verify`、`npm run test:browser`，检查前轮 marker 三项及既有回归。
+- [x] 留存表格/公式截图和实际导出，记录确实通过的数量、使用边界和未发布状态。
+
+## 后续发布授权
+
+用户于 2026-10-30 明确要求推送发布；以上实现按 v1.0.15 发布，覆盖本计划原先仅本地实施的范围限制。发布记录见 `docs/verification/v1.0.15.md`。
