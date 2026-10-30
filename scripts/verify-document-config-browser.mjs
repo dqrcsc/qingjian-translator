@@ -6,7 +6,7 @@ import { makeThreePageReadingPdf } from '../tests/reading-pdf-fixture.mjs';
 export async function verifyDocumentConfigBrowser(context, sw) {
   const checks = [], errors = [], calls = [];
   const check = label => { checks.push(label); console.log(`  ✓ ${label}`); };
-  let holdAfter = 1;
+  let holdAfter = 1, pdfReplies = false;
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }); res.end(); return; }
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -14,7 +14,7 @@ export async function verifyDocumentConfigBrowser(context, sw) {
     const prompt = body.messages.map(m => m.content).join('\n');
     const ids = [...body.messages.at(-1).content.matchAll(/"id"\s*:\s*(\d+)/g)].map(m => Number(m[1]));
     const english = prompt.includes('Target Language: English.');
-    const reply = JSON.stringify({ choices: [{ message: { content: JSON.stringify(ids.map(id => ({ id, translation: `${english ? 'English translation' : '中文译文'} ${id} ${body.model}` }))) } }] });
+    const reply = JSON.stringify({ choices: [{ message: { content: JSON.stringify(ids.map(id => ({ id, translation: `${english ? 'English translation' : '中文译文'} ${id} ${body.model} `.repeat(pdfReplies ? 60 : 1) }))) } }] });
     calls.push({ prompt, model: body.model, res, reply });
     if (calls.length > holdAfter) return;
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(reply);
@@ -76,6 +76,9 @@ export async function verifyDocumentConfigBrowser(context, sw) {
     check('Explicit new-config retranslation produces coherent new export, retains a restorable old version, and restored single-block retranslation uses its original snapshot');
 
     await configure(original);
+    // Give each PDF page real reading height: page 3 must start offscreen so
+    // the initial two-page checkpoint cannot be skipped by eager intersections.
+    pdfReplies = true;
     await page.locator('#fileInput').setInputFiles({ name: 'config.pdf', mimeType: 'application/pdf', buffer: makeThreePageReadingPdf() });
     await page.waitForFunction(() => document.querySelector('#workspaceSplitMain').dataset.documentState === 'ready' && document.querySelector('#leftPaneTitle').textContent.includes('config.pdf'));
     await page.locator('#startTranslateDocBtn').click();
@@ -94,7 +97,13 @@ export async function verifyDocumentConfigBrowser(context, sw) {
     await page.locator('[data-config-new]').waitFor({ state: 'visible' });
     await page.locator('[data-config-new]').click();
     await page.waitForFunction(() => /[23] \/ 3 页/.test(document.querySelector('#progressCounterBadge').textContent));
-    await page.locator('[data-paper-page="3"]').scrollIntoViewIfNeeded();
+    // Completed translations replace page sheets. Resolve the current sheet
+    // inside the stable container in the same browser task as the scroll.
+    await page.locator('#bilingualStreamContainer').evaluate(container => {
+      const sheet = container.querySelector('[data-paper-page="3"]');
+      if (!sheet) throw new Error('Expected third PDF page after new-config retranslation');
+      sheet.scrollIntoView({ block: 'start' });
+    });
     await page.waitForFunction(() => /3 \/ 3 页/.test(document.querySelector('#progressCounterBadge').textContent)).catch(async error => {
       console.error(await page.evaluate(() => ({ status: document.querySelector('#docStatusSubtitle').textContent, progress: document.querySelector('#progressCounterBadge').textContent, pages: [...document.querySelectorAll('[data-paper-page]')].map(e => ({ page: e.dataset.paperPage, lazy: e.dataset.lazyPage, rect: e.getBoundingClientRect().toJSON() })) })));
       throw error;
