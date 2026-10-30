@@ -418,11 +418,16 @@ html[data-ig-style="translation-only"] .ig-trans-node {
 }
 
 .ig-yt-timeline-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
 }
 
 .ig-yt-timeline-search input {
+  min-width: 0;
+  flex: 1;
   width: 100%;
   box-sizing: border-box;
   padding: 6px 10px;

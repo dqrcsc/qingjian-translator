@@ -16,7 +16,7 @@ function harness() {
   const ctx = vm.createContext({ currentDoc: { loadState: 'ready', blocks: [block], bookTitle: 'Fixture' }, documentSession: 1,
     WeakMap, DOMException, documentRequests: { get signal() { return controller.signal; } },
     bilingualStreamContainer: { querySelectorAll: () => [button] }, document: { getElementById: () => element },
-    docStatusSubtitle: { textContent: '' }, getSettings: async () => ({ targetLang: 'zh-CN' }),
+    docStatusSubtitle: { textContent: '' }, getDocumentTranslationSettings: async () => ({ targetLang: 'zh-CN' }),
     sendModelRequest: req => new Promise((resolve, reject) => replies.push({ req, resolve, reject })),
     MESSAGE_TYPES: { TRANSLATE_BATCH: 'TRANSLATE_BATCH' }, renderRichAcademicHtml: text => text
   });
@@ -64,7 +64,7 @@ test('single-block cancellation and settings failures restore UI, while reentran
   h.cancel(); h.replies.shift().resolve({ ok: false, cancelled: true }); await pending;
   assert.equal(h.element.innerHTML, 'Old translation'); assert.equal(h.button.disabled, false);
   assert.match(h.ctx.docStatusSubtitle.textContent, /取消/);
-  h.ctx.getSettings = async () => { throw new Error('settings unavailable'); };
+  h.ctx.getDocumentTranslationSettings = async () => { throw new Error('settings unavailable'); };
   await h.ctx.retranslateBlock(h.block);
   assert.equal(h.element.innerHTML, 'Old translation'); assert.equal(h.button.disabled, false);
   assert.match(h.ctx.docStatusSubtitle.textContent, /settings unavailable/);
@@ -98,11 +98,11 @@ test('asynchronous imports allocate fresh IDs after image uploads and reject a l
     jumpPageInput: { value: '1' }, streamSearchInput: { value: '' }, renderWorkspaceBlocks() {},
     createDocumentBudget, TextDecoder, documentRequests: { signal: new AbortController().signal, cancel() {} }, disposePdfPreviewResources() {},
     readBoundedFile: async file => new TextEncoder().encode(await file.text()).buffer,
-    getSettings: async () => ({ targetLang: 'zh-CN' }),
+    getDocumentTranslationSettings: async () => ({ targetLang: 'zh-CN' }),
     FileReader: class { readAsDataURL() { this.result = 'data:image/png;base64,AA=='; this.onloadend(); } },
     sendModelRequest: async () => ({ ok: true, data: { regions: [], summaryTranslation: 'Figure translation' } }),
     MESSAGE_TYPES: { TRANSLATE_IMAGE: 'image' }, normalizeFigureLabelsToCrop: () => [],
-    loadImageToCanvas: async () => null, setTimeout() {}, document: { title: 'Fixture' }, pendingFigureAttachBlockId: null
+    loadImageToCanvas: async () => null, setTimeout() {}, document: { title: 'Fixture', getElementById: () => null }, pendingFigureAttachBlockId: null
   });
   vm.runInContext(readiness + identities + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
     section('function parseMarkdownToBlocks(', '\nfunction parseHtmlDocumentToBlocks(') +
@@ -154,7 +154,7 @@ test('startDocumentTranslation re-translates completed blocks with bypassCache w
     documentSession: 1, isTranslating: false, stopRequested: false,
     startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, isProcessingLazyQueue: false, progressBarWrap: {}, progressBarFill: { style: {} },
     docStatusSubtitle: { textContent: '' }, epubChapterSelect: { value: 'all' },
-    getSettings: async () => ({ targetLang: 'zh-CN', batchMaxItems: 10, batchMaxChars: 2200 }),
+    getDocumentTranslationSettings: async () => ({ targetLang: 'zh-CN', batchMaxItems: 10, batchMaxChars: 2200 }),
     createBatches: list => (list.length ? [list] : []),
     MESSAGE_TYPES: { TRANSLATE_BATCH: 'TRANSLATE_BATCH' },
     sendModelRequest: async req => {

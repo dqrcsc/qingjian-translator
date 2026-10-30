@@ -318,72 +318,114 @@ export async function openPdfDocument(arrayBuffer, { signal } = {}) {
  * Renders a single PDF page (1-indexed) onto an HTML <canvas> using bundled PDFJS,
  * and simultaneously extracts exact vector text coordinates from `page.getTextContent()`.
  */
+export const PDF_RENDER_LIMITS = Object.freeze({ maxPixels: 4 * 1024 * 1024, maxEdge: 4096, maxPendingPages: 2 });
+const pendingPdfPages = new WeakMap();
+
+function waitForPdfWork(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason || new DOMException('PDF 渲染已取消', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    if (signal.aborted) abort();
+  });
+}
+
 export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { signal } = {}) {
   signal?.throwIfAborted();
   if (!pdfDoc || typeof document === 'undefined') return null;
-  const page = await pdfDoc.getPage(pageNumber);
-  signal?.throwIfAborted();
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(viewport.width);
-  canvas.height = Math.round(viewport.height);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const renderTask = page.render({ canvasContext: ctx, viewport, intent: 'print' });
-  const onAbort = () => renderTask.cancel();
+  // PDF.js getPage has no cancellation API. Keep unfinished acquisitions bounded
+  // even after their callers have aborted; late page objects are cleaned below.
+  let pending = pendingPdfPages.get(pdfDoc);
+  if (!pending) pendingPdfPages.set(pdfDoc, pending = new Set());
+  if (pending.size >= PDF_RENDER_LIMITS.maxPendingPages) throw new Error('PDF 取页任务仍在结束，请稍后重试');
+  const acquisition = Promise.resolve().then(() => pdfDoc.getPage(pageNumber));
+  pending.add(acquisition);
+  void acquisition.then(page => { if (signal?.aborted) page.cleanup?.(); }, () => {}).finally(() => pending.delete(acquisition));
+  let page, canvas, renderTask, reader, textCancellation, completed = false;
+  const cancelText = () => reader ? (textCancellation ||= Promise.resolve(reader.cancel(signal?.reason)).catch(() => {})) : Promise.resolve();
+  const onAbort = () => {
+    renderTask?.cancel();
+    // Keep a lease until underlying cancelled work actually settles. New work
+    // is rejected rather than accumulating detached worker jobs indefinitely.
+    const draining = Promise.allSettled([renderTask?.promise, cancelText()]);
+    pending.add(draining);
+    void draining.finally(() => pending.delete(draining));
+  };
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    await renderTask.promise;
+    page = await waitForPdfWork(acquisition, signal);
     signal?.throwIfAborted();
+    const requestedScale = Number.isFinite(scale) && scale > 0 ? scale : 2;
+    const requested = page.getViewport({ scale: requestedScale });
+    if (![requested.width, requested.height].every(n => Number.isFinite(n) && n > 0)) throw new Error('PDF 页面尺寸无效');
+    const factor = Math.min(1, PDF_RENDER_LIMITS.maxEdge / requested.width,
+      PDF_RENDER_LIMITS.maxEdge / requested.height,
+      Math.sqrt(PDF_RENDER_LIMITS.maxPixels / requested.width / requested.height));
+    const viewport = page.getViewport({ scale: requestedScale * factor });
+    if (![viewport.width, viewport.height].every(n => Number.isFinite(n) && n > 0)) throw new Error('PDF 缩放后尺寸无效');
+    canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('PDF 页面画布无法分配');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    renderTask = page.render({ canvasContext: ctx, viewport, intent: 'print' });
+    await waitForPdfWork(renderTask.promise, signal);
+    signal?.throwIfAborted();
+    const textItems = [];
+    try {
+      // Cancelling the stream asks the worker to stop text extraction as well.
+      reader = page.streamTextContent().getReader();
+      const utilTransform = (await loadPdfjs()).Util.transform;
+      while (true) {
+        const { done, value: tc } = await waitForPdfWork(reader.read(), signal);
+        signal?.throwIfAborted();
+        if (done) break;
+        for (const item of tc?.items || []) {
+          const rawStr = String(item.str || '');
+          if (!rawStr.trim()) continue;
+          const tx = utilTransform
+            ? utilTransform(viewport.transform, item.transform)
+            : [scale * 10, 0, 0, -scale * 10, 0, 0];
+          const fontPx = Math.max(6, Math.hypot(tx[2], tx[3]));
+          const x = tx[4];
+          const yBaseline = tx[5];
+          const width = Math.max(fontPx * 0.45, (item.width || 0) * viewport.scale);
+          const top = yBaseline - fontPx * 0.84;
+          const bottom = yBaseline + fontPx * 0.2;
+          textItems.push({
+            str: rawStr,
+            x,
+            top,
+            right: x + width,
+            bottom,
+            width,
+            height: bottom - top,
+            yBaseline,
+            fontPx
+          });
+        }
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      // Text extraction is optional for scanned pages; rendering remains usable.
+    }
+    signal?.throwIfAborted();
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+    if (!dataUrl.startsWith('data:image/')) throw new Error('PDF 页面图像编码失败');
+    completed = true;
+    return { canvas, width: canvas.width, height: canvas.height,
+      jpegDataUrl: dataUrl, jpegBase64: dataUrl.split(',')[1] || '', textItems };
   } finally {
     signal?.removeEventListener('abort', onAbort);
+    if (reader) { void cancelText(); reader.releaseLock(); }
+    if (!completed && canvas) { canvas.width = 0; canvas.height = 0; }
+    // On cancellation renderTask may settle on its next microtask. PDF.js defers
+    // cleanup while rendering and completes it once its own task is finished.
+    page?.cleanup?.();
   }
-
-  const textItems = [];
-  try {
-    const tc = await page.getTextContent();
-    const utilTransform = (await loadPdfjs()).Util.transform;
-    for (const item of tc?.items || []) {
-      const rawStr = String(item.str || '');
-      if (!rawStr.trim()) continue;
-      const tx = utilTransform
-        ? utilTransform(viewport.transform, item.transform)
-        : [scale * 10, 0, 0, -scale * 10, 0, 0];
-      const fontPx = Math.max(6, Math.hypot(tx[2], tx[3]));
-      const x = tx[4];
-      const yBaseline = tx[5];
-      const width = Math.max(fontPx * 0.45, (item.width || 0) * viewport.scale);
-      const top = yBaseline - fontPx * 0.84;
-      const bottom = yBaseline + fontPx * 0.2;
-      textItems.push({
-        str: rawStr,
-        x,
-        top,
-        right: x + width,
-        bottom,
-        width,
-        height: bottom - top,
-        yBaseline,
-        fontPx
-      });
-    }
-  } catch {
-    // Ignore optional textContent extraction issues
-  }
-
-  signal?.throwIfAborted();
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-  const jpegBase64 = dataUrl.split(',')[1] || '';
-  return {
-    canvas,
-    width: canvas.width,
-    height: canvas.height,
-    jpegDataUrl: dataUrl,
-    jpegBase64,
-    textItems
-  };
 }
 
 /**

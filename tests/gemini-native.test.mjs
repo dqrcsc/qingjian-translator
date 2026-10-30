@@ -48,6 +48,18 @@ test('native Gemini text uses generateContent and joins only non-thought answer 
   assert.equal(calls[0].body.messages, undefined);
 });
 
+test('Studio-bound Gemini model never silently switches on a 404 replacement suggestion', async () => {
+  mockReplies({ status: 404, body: { error: { message: 'Use models/replacement-model instead' } } });
+  const result = await new Promise(resolve => listener({ type: 'TRANSLATE_BATCH',
+    documentConfig: { ...settings, modelId: 'document-model' },
+    payload: { items: [{ id: 901, text: 'document locked model' }], bypassCache: true }
+  }, { url: 'studio/studio.html' }, resolve));
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /models\/document-model:generateContent/);
+  assert.match(result.error, /404/);
+});
+
 test('native Gemini batch retains valid IDs and repairs only the missing subset', async () => {
   mockReplies(answer([{ id: 20, translation: '普通句子' }]), answer([{ id: 10, translation: '保留 {{0}}' }]));
   const before = await getUsageStats();

@@ -2968,6 +2968,7 @@
   let ytAudioSession = 0;
   let ytAudioStream = null;
   let ytAudioButton = null;
+  let ytAudioCleanup = null;
   const ytLiveCaptionCache = new Map();
   const ytLiveCaptionInFlight = new Set();
 
@@ -3362,7 +3363,7 @@
       <div class="ig-yt-timeline-header">
         <div class="ig-yt-timeline-title">✦ 双语字幕时间轴</div>
         <div class="ig-yt-timeline-actions">
-          <button class="ig-yt-mini-btn" data-act="audio-listen" title="使用多模态音频实时听译视频原声">🎙️ 音频听译</button>
+          <button class="ig-yt-mini-btn" data-act="audio-listen" title="实验性音频切片听译：每 7 秒一片，另需模型响应时间；需要支持音频的 Gemini 原生模型">🎙️ 切片听译</button>
           <button class="ig-yt-mini-btn" data-act="export-srt" title="导出双语字幕（支持 Mac 直接打开的 .txt、一键复制或播放器 .srt）">导出字幕</button>
           <button class="ig-yt-mini-btn" data-act="close" title="关闭时间轴">✕</button>
         </div>
@@ -3375,8 +3376,9 @@
       <div data-yt-coverage="1" style="padding:8px 14px;color:#94a3b8;font-size:12px"></div>
       <div class="ig-yt-timeline-search">
         <input type="text" placeholder="搜索原文字幕或译文关键词…" data-yt-search="1" />
+        <button class="ig-yt-mini-btn" data-act="follow-current" title="清除搜索并恢复跟随当前字幕">跟随播放中</button>
       </div>
-      <div class="ig-yt-timeline-list" data-yt-list="1"></div>
+      <div class="ig-yt-timeline-list" data-yt-list="1" tabindex="0" aria-label="字幕时间轴"></div>
     `;
     document.body.appendChild(ytSidebarEl);
 
@@ -3409,6 +3411,11 @@
     searchInput?.addEventListener('input', () => {
       renderYoutubeTimelineList(false, searchInput.value.trim().toLowerCase());
     });
+    ytSidebarEl.querySelector('[data-act="follow-current"]')?.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
+      renderYoutubeTimelineList(false, '');
+      ytTimelineWindow?.followCurrent(ytTimelineCurrentCueId);
+    });
   }
 
   function youtubeTimelineRange(offsets, scrollTop, viewportHeight) {
@@ -3432,6 +3439,19 @@
   function createYoutubeTimelineWindow(list) {
     let cues = [], offsets = [0], activeId = null, frame = 0, disposed = false;
     let rangeStart = -1, rangeEnd = -1, width = list.clientWidth;
+    let followPlayback = true, searching = false;
+    const followButton = list.parentElement?.querySelector('[data-act="follow-current"]');
+    const updateFollowButton = () => {
+      if (!followButton) return;
+      const following = followPlayback && !searching;
+      followButton.textContent = following ? '跟随播放中' : '返回当前句';
+      followButton.disabled = following;
+      followButton.setAttribute('aria-pressed', String(following));
+    };
+    const suspendFollow = () => { followPlayback = false; updateFollowButton(); };
+    const onKeyDown = event => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) suspendFollow();
+    };
     const heights = new Map();
     const rebuildOffsets = () => {
       offsets = [0];
@@ -3493,12 +3513,24 @@
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
     const onClick = event => {
       const row = event.target.closest('.ig-yt-cue-item');
-      if (row && list.contains(row)) window.postMessage({ source: 'IG_YT_CONTENT_SCRIPT', type: 'SEEK_VIDEO_TO', seconds: Number(row.dataset.start) }, '*');
+      if (row && list.contains(row)) {
+        followPlayback = true;
+        updateFollowButton();
+        window.postMessage({ source: 'IG_YT_CONTENT_SCRIPT', type: 'SEEK_VIDEO_TO', seconds: Number(row.dataset.start) }, '*');
+      }
     };
     list.addEventListener('scroll', schedule, { passive: true });
     list.addEventListener('click', onClick);
+    // Actual input suspends following; programmatic scrolls/anchor correction do not.
+    list.addEventListener('wheel', suspendFollow, { passive: true });
+    list.addEventListener('touchstart', suspendFollow, { passive: true });
+    list.addEventListener('pointerdown', suspendFollow, { passive: true });
+    list.addEventListener('keydown', onKeyDown);
+    updateFollowButton();
     return {
-      setCues(next, resetScroll = false) {
+      setCues(next, resetScroll = false, isSearching = false) {
+        searching = isSearching;
+        updateFollowButton();
         const saved = anchor();
         cues = next;
         const valid = new Set(cues.map(cue => String(cue.id)));
@@ -3516,13 +3548,20 @@
         activeId = id;
         const index = cues.findIndex(cue => cue.id === id);
         if (index < 0) return;
-        if (offsets[index] < list.scrollTop || offsets[index + 1] > list.scrollTop + list.clientHeight) list.scrollTop = offsets[index];
+        if (followPlayback && !searching && (offsets[index] < list.scrollTop || offsets[index + 1] > list.scrollTop + list.clientHeight)) list.scrollTop = offsets[index];
         draw();
         for (const row of list.querySelectorAll('.ig-yt-cue-item')) row.classList.toggle('is-current', row.dataset.cueId === String(id));
+      },
+      followCurrent(id) {
+        followPlayback = true;
+        updateFollowButton();
+        if (id !== null) this.highlight(id);
       },
       dispose() {
         disposed = true; cancelAnimationFrame(frame); observer?.disconnect();
         list.removeEventListener('scroll', schedule); list.removeEventListener('click', onClick);
+        list.removeEventListener('wheel', suspendFollow); list.removeEventListener('touchstart', suspendFollow);
+        list.removeEventListener('pointerdown', suspendFollow); list.removeEventListener('keydown', onKeyDown);
         list.replaceChildren(); cues = []; offsets = [0]; heights.clear();
       }
     };
@@ -3542,7 +3581,7 @@
       listEl.innerHTML = `
         <div style="padding:18px;text-align:center;color:#94a3b8;font-size:12.5px;line-height:1.6;">
           当前视频未检测到原生/自动字幕轨道。<br/>
-          您可以点击上方 <b>🎙️ 音频听译</b> 按钮，启用多模态音频能力实时听译视频语音！
+          您可以点击上方 <b>🎙️ 切片听译</b>，尝试实验性 Gemini 音频切片听译（每 7 秒一片，另需模型响应时间）。
         </div>
       `;
       return;
@@ -3558,7 +3597,7 @@
 
     const opening = !ytTimelineWindow;
     ytTimelineWindow ||= createYoutubeTimelineWindow(listEl);
-    ytTimelineWindow.setCues(filtered, ytTimelineFilter !== filterKeyword);
+    ytTimelineWindow.setCues(filtered, ytTimelineFilter !== filterKeyword, Boolean(filterKeyword));
     ytTimelineFilter = filterKeyword;
     if (opening && !filterKeyword && ytTimelineCurrentCueId !== null) ytTimelineWindow.highlight(ytTimelineCurrentCueId);
   }
@@ -3816,19 +3855,20 @@
   }
 
   /**
-   * Experimental Gemini Multimodal Live Audio Listen-and-Translate for videos without native captions.
+   * Experimental Gemini audio-slice translation for videos without native captions.
    */
   function stopYoutubeAudioListen() {
     audioRequests.cancel();
     ytAudioListenActive = false;
     ytAudioSession++;
-    if (ytAudioRecorder && ytAudioRecorder.state !== 'inactive') ytAudioRecorder.stop();
+    ytAudioCleanup?.();
+    ytAudioCleanup = null;
     ytAudioStream?.getTracks().forEach(track => track.stop());
     ytAudioStream = null;
     ytAudioRecorder = null;
     if (ytAudioButton) {
       ytAudioButton.classList.remove('is-active');
-      ytAudioButton.textContent = '🎙️ 音频听译';
+      ytAudioButton.textContent = '🎙️ 切片听译';
     }
   }
 
@@ -3870,8 +3910,10 @@
       const session = ++ytAudioSession;
       const videoId = getCurrentYoutubeVideoId();
       const isCurrent = () => ytAudioListenActive && session === ytAudioSession && videoId === getCurrentYoutubeVideoId();
-      let pendingSlices = 0;
+      const pendingSlices = new Set();
       let latestSliceStart = -1;
+      let segmentGeneration = 0;
+      let activeSlice = null;
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
@@ -3879,37 +3921,67 @@
       ytAudioListenActive = true;
       btnEl.classList.add('is-active');
       btnEl.textContent = '⏹ 停止听译';
-      showPageToast('🎙️ 已开启 AI 音频切片听译（每 7 秒上传，另需模型响应时间）', 'success');
+      showPageToast('🎙️ 已开启实验性音频切片听译（每 7 秒上传，另需模型响应时间）', 'success');
 
       let previousSpoken = '';
 
-      const recordSlice = () => {
-        if (!isCurrent()) return;
-        if (video.paused) {
-          setTimeout(recordSlice, 1500);
-          return;
+      const finishSlice = (discard = false) => {
+        const slice = activeSlice;
+        if (!slice) return;
+        activeSlice = null;
+        clearTimeout(slice.timer);
+        slice.discard = discard;
+        // Capture media time BEFORE awaiting data delivery or a model response.
+        slice.end = video.currentTime;
+        if (slice.recorder.state !== 'inactive') {
+          try { slice.recorder.stop(); } catch { slice.discard = true; }
         }
+      };
+
+      const recordSlice = () => {
+        if (!isCurrent() || activeSlice || video.paused || video.seeking || video.ended) return;
         const sliceStart = video.currentTime;
         const chunks = [];
-        const recorder = new MediaRecorder(audioStream, { mimeType });
+        let recorder;
+        try { recorder = new MediaRecorder(audioStream, { mimeType }); }
+        catch (error) {
+          stopYoutubeAudioListen();
+          showPageToast(`音频录制失败: ${error?.message || error}`, 'warn');
+          return;
+        }
         ytAudioRecorder = recorder;
+        const slice = { recorder, start: sliceStart, end: null, generation: segmentGeneration, discard: false, timer: null };
+        activeSlice = slice;
+        const ownsSlice = () => isCurrent() && !slice.discard && slice.generation === segmentGeneration;
 
         recorder.ondataavailable = (ev) => {
           if (ev.data && ev.data.size > 0) chunks.push(ev.data);
         };
+        recorder.onerror = () => {
+          if (isCurrent()) {
+            stopYoutubeAudioListen();
+            showPageToast('音频录制失败，已停止听译，请重新尝试。', 'warn');
+          }
+        };
 
         recorder.onstop = async () => {
-          if (!isCurrent() || chunks.length === 0) return;
-          if (pendingSlices >= 2) {
+          // An unexpected recorder stop must not leave the session holding a dead slice.
+          if (activeSlice === slice) {
+            activeSlice = null;
+            clearTimeout(slice.timer);
+            slice.end = video.currentTime;
+          }
+          if (!ownsSlice() || chunks.length === 0 || !Number.isFinite(slice.start) || !Number.isFinite(slice.end) || slice.end <= slice.start) return;
+          if (pendingSlices.size >= 2) {
             stopYoutubeAudioListen();
             showPageToast('模型响应过慢，已停止听译以避免请求积压，请稍后重试。', 'warn');
             return;
           }
-          pendingSlices++;
+          pendingSlices.add(slice);
           const blob = new Blob(chunks, { type: mimeType });
           try {
             const base64 = await blobToBase64(blob);
-            if (!isCurrent()) return;
+            if (!ownsSlice()) return;
             const res = await sendModelRequest({
               type: 'TRANSLATE_YOUTUBE_AUDIO',
               payload: {
@@ -3919,7 +3991,7 @@
                 videoTitle: ytVideoTitle || document.title
               }
             });
-            if (!isCurrent()) return;
+            if (!ownsSlice()) return;
             if (!res?.ok) throw new Error(res?.error || '音频翻译失败');
             if (res.data?.original) {
               if (sliceStart >= latestSliceStart) {
@@ -3929,7 +4001,7 @@
               const newCue = {
                 id: ytCues.length,
                 start: sliceStart,
-                end: sliceStart + 7.5,
+                end: slice.end,
                 text: res.data.original,
                 translation: res.data.translation || ''
               };
@@ -3951,25 +4023,47 @@
               renderYoutubeTimelineList(false);
             }
           } catch (err) {
-            if (isCurrent()) {
+            if (ownsSlice()) {
               stopYoutubeAudioListen();
               showPageToast(`音频听译已停止: ${err?.message || err}`, 'warn');
             }
           } finally {
-            pendingSlices--;
+            pendingSlices.delete(slice);
           }
         };
 
-        recorder.start();
-        setTimeout(() => {
-          if (!isCurrent()) return;
-          if (recorder.state === 'recording') recorder.stop();
-          if (isCurrent()) {
-            recordSlice();
-          }
+        try { recorder.start(); }
+        catch (error) {
+          stopYoutubeAudioListen();
+          showPageToast(`音频录制失败: ${error?.message || error}`, 'warn');
+          return;
+        }
+        slice.timer = setTimeout(() => {
+          if (!isCurrent() || activeSlice !== slice) return;
+          finishSlice();
+          recordSlice();
         }, 7000);
       };
 
+      const onPause = () => finishSlice();
+      const onSeeking = () => {
+        // A seek is a discontinuity: queued audio/context from the previous position is stale.
+        segmentGeneration++;
+        finishSlice(true);
+        audioRequests.cancel();
+        pendingSlices.clear();
+        previousSpoken = '';
+        latestSliceStart = -1;
+      };
+      const onRateChange = () => { finishSlice(); recordSlice(); };
+      const listeners = [['pause', onPause], ['ended', onPause], ['seeking', onSeeking],
+        ['seeked', recordSlice], ['playing', recordSlice], ['ratechange', onRateChange]];
+      for (const [event, listener] of listeners) video.addEventListener(event, listener);
+      ytAudioCleanup = () => {
+        finishSlice(true);
+        for (const [event, listener] of listeners) video.removeEventListener(event, listener);
+        pendingSlices.clear();
+      };
       recordSlice();
     } catch (err) {
       stopYoutubeAudioListen();

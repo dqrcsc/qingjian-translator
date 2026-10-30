@@ -78,12 +78,42 @@ export async function verifyYoutubeTimelineBrowser(context, sw) {
     assert.ok(await rows.count() <= 40);
     check('Playback locates an offscreen current cue; very long source and growing translation remain unclipped with measured heights after resize');
 
+    // User wheel/drag input must suspend following, while programmatic anchor correction must not.
+    await list.dispatchEvent('wheel', { deltaY: 400 });
+    await list.evaluate(el => { el.scrollTop = el.scrollHeight * 0.85; });
+    await page.waitForTimeout(200);
+    const manualTop = await list.evaluate(el => el.scrollTop);
+    await page.evaluate(() => { document.querySelector('video').currentTime = 2.1; });
+    await page.waitForTimeout(450);
+    assert.ok(Math.abs(await list.evaluate(el => el.scrollTop) - manualTop) < 200, 'next cue must not steal manual scroll');
+    assert.equal(await page.locator('[data-act="follow-current"]').textContent(), '返回当前句');
+    await page.locator('[data-act="follow-current"]').click();
+    await page.waitForFunction(() => document.querySelector('.ig-yt-cue-item[data-cue-id="1"]')?.classList.contains('is-current'));
+    assert.ok(await list.evaluate(el => el.scrollTop) < 1000);
+    assert.equal(await page.locator('[data-act="follow-current"]').isDisabled(), true);
+    await page.locator('[data-yt-search]').fill('Unique cue 4321.');
+    await page.evaluate(() => { document.querySelector('video').currentTime = 4.1; });
+    await page.waitForTimeout(350);
+    assert.equal(await rows.count(), 1);
+    assert.equal(await rows.first().getAttribute('data-cue-id'), '4321');
+    await page.locator('[data-act="follow-current"]').click();
+    assert.equal(await page.locator('[data-yt-search]').inputValue(), '');
+    await page.waitForFunction(() => document.querySelector('.ig-yt-cue-item[data-cue-id="2"]')?.classList.contains('is-current'));
+    for (const [event, init] of [['pointerdown', { pointerType: 'mouse' }], ['touchstart', {}], ['keydown', { key: 'PageDown' }]]) {
+      await list.dispatchEvent(event, init);
+      assert.equal(await page.locator('[data-act="follow-current"]').isDisabled(), false, `${event} suspends follow`);
+      await page.locator('[data-act="follow-current"]').click();
+      assert.equal(await page.locator('[data-act="follow-current"]').isDisabled(), true);
+    }
+    check('Manual timeline reading survives playback updates; return-current restores following and clears search without losing source cues');
+
     await page.locator('[data-act="close"]').click(); assert.equal(await rows.count(), 0);
     // The deliberately enormous caption can cover controls in this minimal player fixture.
     await page.locator('.ig-yt-ctrl-btn').dispatchEvent('click');
     await page.locator('[data-open-list]').click();
     await page.waitForFunction(() => document.querySelectorAll('.ig-yt-cue-item').length > 0);
     assert.ok(await rows.count() <= 40);
+    assert.equal(await page.locator('[data-act="follow-current"]').isDisabled(), true, 'reopening starts a fresh follow window');
     await page.evaluate(() => {
       window.dispatchEvent(new Event('yt-navigate-start')); history.pushState({}, '', '/watch?v=replacement-timeline'); window.dispatchEvent(new Event('yt-navigate-finish'));
     });

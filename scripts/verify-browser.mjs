@@ -20,6 +20,11 @@ import { verifyDocumentBudgetBrowser } from './verify-document-budget-browser.mj
 import { verifyPdfResourcesBrowser } from './verify-pdf-resources-browser.mjs';
 import { verifyYoutubeTimelineBrowser } from './verify-youtube-timeline-browser.mjs';
 
+import { verifyYoutubeAudioBrowser } from './verify-youtube-audio-browser.mjs';
+import { verifyDocumentConfigBrowser } from './verify-document-config-browser.mjs';
+import { verifyPdfRenderBudgetBrowser } from './verify-pdf-render-budget-browser.mjs';
+import { verifyDocumentWindowBrowser } from './verify-document-window-browser.mjs';
+
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -253,7 +258,11 @@ try {
     ['EPUB source and export integrity', verifyEpubIntegrityBrowser],
     ['Document import budgets', verifyDocumentBudgetBrowser],
     ['PDF preview reclamation', verifyPdfResourcesBrowser],
-    ['YouTube timeline virtualization', verifyYoutubeTimelineBrowser]
+    ['YouTube timeline virtualization', verifyYoutubeTimelineBrowser],
+    ['Document translation configuration', verifyDocumentConfigBrowser],
+    ['PDF render pixel budget and cancellation', verifyPdfRenderBudgetBrowser],
+    ['Long document reading windows', verifyDocumentWindowBrowser],
+    ['YouTube media-time audio slices', verifyYoutubeAudioBrowser]
   ]) {
     stage = label;
     const result = await verify(context, sw);

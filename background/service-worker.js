@@ -31,14 +31,17 @@ import {
   testGeminiConnection
 } from './gemini-client.js';
 
+import { requestDocumentConfig } from '../shared/document-config.js';
+
 import { withConcurrencyLimit, abortRequestScope } from './request-queue.js';
 import { createRequestBudget, normalizeRequestBudgetSeconds } from '../shared/request-budget.js';
 
-async function getRequestSettings(signal) {
+async function getRequestSettings(signal, documentConfig) {
   signal?.throwIfAborted();
   const settings = await getSettings();
   signal?.throwIfAborted();
-  return { ...settings, requestSignal: signal };
+  return { ...settings, ...documentConfig, ...(documentConfig ? { availableModels: [] } : {}),
+    documentModelLocked: Boolean(documentConfig), requestSignal: signal };
 }
 
 async function sendMessageToTabSafely(tabId, message) {
@@ -197,8 +200,8 @@ chrome.commands.onCommand.addListener(async (command) => {
 /**
  * Handle batch paragraph translation with two-tier cache lookup.
  */
-async function handleTranslateBatch(payload, signal) {
-  const settings = await getRequestSettings(signal);
+async function handleTranslateBatch(payload, signal, documentConfig) {
+  const settings = await getRequestSettings(signal, documentConfig);
   const items = Array.isArray(payload?.items) ? payload.items : [];
   if (items.length === 0) return { translations: [] };
 
@@ -350,10 +353,11 @@ async function handleTranslateYoutubeCues(payload, signal) {
 // Central runtime message dispatcher
 async function dispatchRequest(message, sender, sendResponse, signal) {
     try {
+      const documentConfig = requestDocumentConfig(message, sender, chrome.runtime.getURL('studio/studio.html'));
       signal?.throwIfAborted();
       switch (message.type) {
         case MESSAGE_TYPES.TRANSLATE_BATCH: {
-          const data = await handleTranslateBatch(message.payload, signal);
+          const data = await handleTranslateBatch(message.payload, signal, documentConfig);
           sendResponse({ ok: true, data });
           break;
         }
@@ -370,7 +374,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
           break;
         }
         case MESSAGE_TYPES.TRANSLATE_IMAGE: {
-          const settings = await getRequestSettings(signal);
+          const settings = await getRequestSettings(signal, documentConfig);
           const data = await withConcurrencyLimit(settings.maxConcurrency, () =>
             translateImageWithGemini(message.payload || {}, settings), signal
           );
@@ -389,7 +393,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
           break;
         }
         case MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL: {
-          const settings = await getRequestSettings(signal);
+          const settings = await getRequestSettings(signal, documentConfig);
           const blocks = await withConcurrencyLimit(settings.maxConcurrency, () => analyzePdfWithGemini(message.payload || {}, settings), signal);
           sendResponse({ ok: true, data: { blocks } });
           break;

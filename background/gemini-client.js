@@ -528,7 +528,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
     const errDetail = await readApiError(response);
 
     // Auto-heal if the selected model is deprecated/404 and the API suggests a replacement or user has fetched models
-    if (response.status === 404 && !isRetry) {
+    if (response.status === 404 && !isRetry && !settings.documentModelLocked) {
       const suggestedMatch = errDetail.match(/models\/([a-zA-Z0-9._-]+)/);
       const firstAvailable =
         Array.isArray(settings?.availableModels) && settings.availableModels[0]?.id

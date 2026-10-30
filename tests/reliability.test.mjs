@@ -284,7 +284,7 @@ function studioContext() {
     currentDoc: documentState(), documentSession: 1, stopRequested: false, documentRequests: { signal: new AbortController().signal },
     bilingualStreamContainer: { querySelector: () => null },
     docStatusSubtitle: { textContent: '' }, progressBarWrap: {}, progressBarFill: { style: {} },
-    getSettings: async () => settings, getActiveProtocol: () => 'gemini',
+    getDocumentTranslationSettings: async () => settings, getActiveProtocol: () => 'gemini',
     arrayBufferToBase64: () => 'AA==', MESSAGE_TYPES: { ANALYZE_PDF_MULTIMODAL: 'PDF' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
@@ -354,7 +354,7 @@ test('ordinary document translation discards old results and leaves new run flag
   const requested = new Promise(r => { sent = r; });
   const ctx = vm.createContext({ currentDoc: { ...documentState(), fileType: 'md', blocks: [{ id: 1, original: 'old' }] }, documentSession: 1,
     isTranslating: false, stopRequested: false, startTranslateDocBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
-    getSettings: async () => settings, createBatches: blocks => [blocks], MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch' },
+    getDocumentTranslationSettings: async () => settings, createBatches: blocks => [blocks], MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
     evictPdfPageRender() {}, trimPdfPageRenderCache() {},
@@ -400,6 +400,7 @@ function audioContext(protocol = 'gemini') {
   const toasts = [], timers = [], recorders = [];
   let stopped = 0;
   const stream = { getAudioTracks: () => [{}], getTracks: () => [{ stop() { stopped++; } }] };
+  const video = { paused: false, currentTime: 0, captureStream: () => stream, addEventListener() {}, removeEventListener() {} };
   const button = { classList: { add() {}, remove() {} }, textContent: '' };
   class Recorder {
     static isTypeSupported() { return true; }
@@ -407,17 +408,17 @@ function audioContext(protocol = 'gemini') {
     start() { this.state = 'recording'; }
     stop() { this.state = 'inactive'; }
   }
-  const ctx = vm.createContext({ ytAudioListenActive: false, ytAudioRecorder: null, ytAudioStream: null, ytAudioSession: 0, ytAudioButton: null,
+  const ctx = vm.createContext({ ytAudioListenActive: false, ytAudioRecorder: null, ytAudioStream: null, ytAudioSession: 0, ytAudioButton: null, ytAudioCleanup: null,
     QingJianSettings: globalThis.QingJianSettings, audioRequests: { cancel() {} }, subtitleRequests: { cancel() {} }, settings: { apiProtocol: protocol }, showPageToast: text => toasts.push(text),
-    document: { querySelector: () => ({ paused: false, currentTime: 0, captureStream: () => stream }), title: 'video' },
+    document: { querySelector: () => video, title: 'video' },
     MediaStream: class {}, MediaRecorder: Recorder, getCurrentYoutubeVideoId: () => 'video', ytVideoTitle: 'video', ytCues: [], ytOverlayEl: null,
     ytInFlightBatchIds: new Set(), ytLiveCaptionInFlight: new Set(),
     Blob, blobToBase64: async () => 'AA==', sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
-    setTimeout: fn => { timers.push(fn); }, renderYoutubeTimelineList() {}
+    setTimeout: fn => { timers.push(fn); }, clearTimeout() {}, renderYoutubeTimelineList() {}
   });
   const a = contentSource.indexOf('  function stopYoutubeAudioListen(');
   vm.runInContext(contentSource.slice(a, contentSource.indexOf('\n  function blobToBase64', a)), ctx);
-  return { ctx, toasts, button, recorders, requested, stopped: () => stopped, respond: value => reply(value) };
+  return { ctx, toasts, button, recorders, requested, video, stopped: () => stopped, respond: value => reply(value) };
 }
 
 test('unsupported audio protocol fails before capture while default or upgraded Gemini settings succeed', async () => {
@@ -504,6 +505,7 @@ test('audio errors stop capture and stopping discards pending results', async ()
   for (const cancel of [false, true]) {
     const a = audioContext(); await a.ctx.toggleExperimentalAudioListen(a.button);
     const recorder = a.recorders[0]; recorder.ondataavailable({ data: new Blob(['audio']) });
+    a.video.currentTime = 7;
     const pending = recorder.onstop();
     await a.requested;
     if (cancel) a.ctx.stopYoutubeAudioListen();
@@ -523,6 +525,7 @@ test('new audio cues invalidate older caption IDs before reindexing', async () =
   a.ctx.ytInFlightBatchIds.add(0);
   await a.ctx.toggleExperimentalAudioListen(a.button);
   const recorder = a.recorders[0]; recorder.ondataavailable({ data: new Blob(['audio']) });
+  a.video.currentTime = 7;
   const pending = recorder.onstop();
   await a.requested;
   a.respond({ ok: true, data: { original: 'earlier audio', translation: '音频译文' } });

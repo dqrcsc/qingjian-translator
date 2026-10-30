@@ -52,7 +52,7 @@
       </div>
 
       <div class="topbar-right">
-        <label class="ghost-btn" for="figureImageInput" title="上传或直接 Ctrl+V 粘贴论文插图/网页截图，精准识别并原位翻译图中文字">
+        <label class="ghost-btn" for="figureImageInput" title="上传或直接 Ctrl+V 粘贴论文插图/网页截图，识别并原位翻译图中文字">
           <span>🖼️ 译图</span>
           <input type="file" id="figureImageInput" accept="image/*" hidden />
         </label>
@@ -170,6 +170,12 @@
           </div>
         </div>
 
+        <nav id="documentReadingPager" class="document-reading-pager" aria-label="文档段落分页" hidden>
+          <button class="ghost-btn mini-btn" type="button" data-reading-step="-1">上一组</button>
+          <span data-reading-status aria-live="polite"></span>
+          <label>跳至 <input class="page-num-input" type="number" min="1" value="1" data-reading-page aria-label="阅读组号" /> 组</label>
+          <button class="ghost-btn mini-btn" type="button" data-reading-step="1">下一组</button>
+        </nav>
         <div class="right-pane-body-split">
           <!-- Collapsible Left TOC Outline Sidebar inside Right Reader Pane -->
           <aside id="pdfTocSidebar" class="pdf-toc-sidebar">
@@ -177,6 +183,11 @@
               <span>📑 章节与图表</span>
               <span id="pdfTocCountBadge" class="pdf-toc-count">0</span>
             </div>
+            <nav id="documentTocPager" class="document-toc-pager" aria-label="目录分页" hidden>
+              <button class="ghost-btn mini-btn" type="button" data-toc-window-step="-1" aria-label="上一组目录">‹</button>
+              <span data-toc-window-status></span>
+              <button class="ghost-btn mini-btn" type="button" data-toc-window-step="1" aria-label="下一组目录">›</button>
+            </nav>
             <div id="pdfTocList" class="pdf-toc-list"></div>
           </aside>
 

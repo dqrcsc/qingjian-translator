@@ -53,7 +53,7 @@ const start = section('async function startDocumentTranslation(', '\n// ========
 
 test('loading and failed imports block actual translation/export handlers, then successful parsing enables controls', async () => {
   let read, requests = 0, downloads = 0;
-  const ctx = vm.createContext({ currentDoc: { blocks: [] }, documentSession: 1,
+  const ctx = vm.createContext({ document: { getElementById: () => null }, currentDoc: { blocks: [] }, documentSession: 1,
     isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [],
     workspaceSplitMain: { dataset: {} }, startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, exportDropdownMenu: {},
     emptyDropzoneSection: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {}, pdfNativeEmbed: { removeAttribute() {} }, sourceOutlineViewer: {}, pdfPageJumpWrap: {},
@@ -61,7 +61,7 @@ test('loading and failed imports block actual translation/export handlers, then 
     renderWorkspaceBlocks() {}, TextDecoder, createDocumentBudget,
     documentRequests: { signal: new AbortController().signal, cancel() {} }, disposePdfPreviewResources() {},
     readBoundedFile: async file => file.arrayBuffer ? file.arrayBuffer() : new TextEncoder().encode(await file.text()).buffer,
-    getSettings: async () => { requests++; return {}; }, downloadBlob: () => downloads++
+    getDocumentTranslationSettings: async () => { requests++; return {}; }, downloadBlob: () => downloads++
   });
   vm.runInContext(readiness + identities + start + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
     section('function parseMarkdownToBlocks(', '\nfunction parseHtmlDocumentToBlocks(') +
@@ -93,7 +93,7 @@ for (const protocol of ['openai', 'gemini']) {
       startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {},
       bilingualStreamContainer: { querySelector: () => null }, progressBarWrap: {}, progressBarFill: { style: {} }, docStatusSubtitle: {},
       streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setTimeout() {},
-      getSettings: async () => ({}), getActiveProtocol: () => protocol,
+      getDocumentTranslationSettings: async () => ({}), getActiveProtocol: () => protocol,
       evictPdfPageRender() {}, trimPdfPageRenderCache() {},
       getOrRenderPdfPage: async () => ({ canvas: {}, textItems: [{}], jpegBase64: 'AA==', width: 100, height: 100 }), ensureLeftPdfPageRendered() {},
       extractStructuredPdfPageBlocks: () => rawBlocks.map(block => ({ ...block })),
@@ -128,7 +128,7 @@ test('completed PDF retranslation retains force intent for pages beyond the firs
   const ctx = vm.createContext({ currentDoc: { loadState: 'ready', fileType: 'pdf', pdfArrayBuffer: new ArrayBuffer(1), blocks: [],
     totalPages: 3, translatedPages: new Set([1, 2, 3]) }, isTranslating: false, isProcessingLazyQueue: false, documentSession: 1, stopRequested: false,
     startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
-    getSettings: async () => ({}), pdfModeSelect: null, INITIAL_EAGER_PDF_PAGES: 2, streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setTimeout() {}
+    getDocumentTranslationSettings: async () => ({}), pdfModeSelect: null, INITIAL_EAGER_PDF_PAGES: 2, streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setTimeout() {}
   });
   ctx.translateSinglePdfPage = async page => {
     seen.push({ page, forced: ctx.currentDoc.forceRetranslatePages.has(page) });
@@ -175,7 +175,7 @@ test('PDF printing limits both translated sheets and untranslated placeholders; 
 test('PDF opening that completes after the import deadline destroys its retired worker result', async () => {
   let resolveOpen, destroyed = 0;
   const budget = createDocumentBudget({ timeoutMs: 25 });
-  const ctx = vm.createContext({ currentDoc: { blocks: [] }, documentSession: 1,
+  const ctx = vm.createContext({ document: { getElementById: () => null }, currentDoc: { blocks: [] }, documentSession: 1,
     isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [],
     workspaceSplitMain: { dataset: {} }, startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, exportDropdownMenu: {},
     emptyDropzoneSection: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {}, pdfNativeEmbed: { removeAttribute() {} }, sourceOutlineViewer: {}, pdfPageJumpWrap: {},

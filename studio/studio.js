@@ -7,6 +7,7 @@ import '../shared/request-client.js';
 
 import { MESSAGE_TYPES } from '../shared/constants.js';
 import { getSettings, getActiveProtocol } from '../shared/storage.js';
+import { snapshotDocumentConfig, documentConfigSignature } from '../shared/document-config.js';
 import {
   escapeHtml,
   parseSubtitles,
@@ -179,13 +180,150 @@ function updateDocumentActions() {
 
 function setDocumentLoadState(state) {
   currentDoc.loadState = state;
+  if (state !== 'ready' || currentDoc.fileType === 'pdf') {
+    for (const id of ['documentReadingPager', 'documentTocPager']) {
+      const pager = document.getElementById(id);
+      if (pager) pager.hidden = true;
+    }
+  }
   workspaceSplitMain.dataset.documentState = state;
   if (state !== 'ready') exportDropdownMenu.hidden = true;
   updateDocumentActions();
 }
 
 const documentRequests = globalThis.QingJianRequests.createScope();
-const sendModelRequest = message => documentRequests.request(message);
+const sendModelRequest = async message => {
+  const doc = currentDoc, session = documentSession;
+  await getDocumentTranslationSettings();
+  if (currentDoc !== doc || session !== documentSession) throw new DOMException('文档翻译已取消', 'AbortError');
+  return documentRequests.request({ ...message, documentConfig: doc.translationConfig });
+};
+
+const configNotice = document.createElement('div');
+configNotice.id = 'documentConfigNotice';
+configNotice.hidden = true;
+configNotice.setAttribute('role', 'status');
+configNotice.style.cssText = 'padding:10px 20px;background:#422f16;color:#fff;line-height:1.8';
+configNotice.innerHTML = '<span data-config-message></span> <button type="button" data-config-keep>继续原配置</button> <button type="button" data-config-new>按新配置重译（保留上一版）</button> <button type="button" data-config-restore hidden>恢复上一版译文</button>';
+progressBarWrap.before(configNotice);
+
+function stopDocumentTranslations() {
+  documentRequests.cancel();
+  documentSession++;
+  clearTimeout(programmaticScrollTimer);
+  programmaticScrollTimer = null;
+  isProgrammaticRightScroll = false;
+  currentDoc.translatingPages?.clear();
+  currentDoc.lazyScrollEnabled = false;
+  lazyPageQueue.length = 0;
+  lazyPageObserver?.disconnect();
+  isTranslating = false;
+  isProcessingLazyQueue = false;
+  isExportBatchRunning = false;
+  stopRequested = true;
+  if (pdfExportConfirmModal) pdfExportConfirmModal.hidden = true;
+  updateDocumentActions();
+}
+
+function updateDocumentConfigNotice() {
+  const conflict = Boolean(currentDoc.configConflict);
+  configNotice.hidden = !conflict && !currentDoc.previousTranslation;
+  configNotice.querySelector('[data-config-message]').textContent = conflict
+    ? '翻译设置已变化，已暂停以避免混用译文。已有内容可继续阅读和导出。'
+    : '正在使用新配置；上一版译文保留至关闭或替换文档。';
+  configNotice.querySelector('[data-config-keep]').hidden = !conflict;
+  configNotice.querySelector('[data-config-new]').hidden = !conflict;
+  configNotice.querySelector('[data-config-restore]').hidden = !currentDoc.previousTranslation;
+}
+
+function checkDocumentConfig(latest) {
+  const doc = currentDoc;
+  if (!doc.translationConfig) return;
+  const signature = documentConfigSignature(latest);
+  const matches = signature === documentConfigSignature(doc.translationConfig) || signature === doc.acceptedGlobalConfig;
+  if (!matches && !doc.configConflict) stopDocumentTranslations();
+  doc.configConflict = !matches;
+  updateDocumentConfigNotice();
+}
+
+async function getDocumentTranslationSettings() {
+  const doc = currentDoc, session = documentSession;
+  const latest = await getSettings();
+  if (currentDoc !== doc || session !== documentSession) throw new DOMException('文档翻译已取消', 'AbortError');
+  checkDocumentConfig(latest);
+  if (doc.configConflict) throw new Error('翻译设置已变化，请选择继续原配置或按新配置重译。');
+  doc.translationConfig ||= snapshotDocumentConfig(latest);
+  return { ...latest, ...doc.translationConfig };
+}
+
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local' || !changes.immersive_gemini_settings_v1 || !currentDoc.translationConfig) return;
+  const doc = currentDoc;
+  const latest = await getSettings();
+  if (currentDoc === doc) checkDocumentConfig(latest);
+});
+
+let documentConfigChoicePending = false;
+async function withDocumentConfigChoice(apply) {
+  if (documentConfigChoicePending) return;
+  documentConfigChoicePending = true;
+  const doc = currentDoc, session = documentSession;
+  configNotice.querySelectorAll('button').forEach(button => { button.disabled = true; });
+  try {
+    const latest = await getSettings();
+    if (doc === currentDoc && session === documentSession) apply(doc, latest);
+  } catch (error) {
+    if (doc === currentDoc) docStatusSubtitle.textContent = `配置选择失败：${error?.message || error}，已保留已有译文。`;
+  } finally {
+    documentConfigChoicePending = false;
+    configNotice.querySelectorAll('button').forEach(button => { button.disabled = false; });
+  }
+}
+
+configNotice.querySelector('[data-config-keep]').addEventListener('click', () => withDocumentConfigChoice((doc, latest) => {
+  doc.acceptedGlobalConfig = documentConfigSignature(latest);
+  doc.configConflict = false;
+  updateDocumentConfigNotice();
+  void startDocumentTranslation();
+}));
+
+configNotice.querySelector('[data-config-new]').addEventListener('click', () => withDocumentConfigChoice((doc, latest) => {
+  stopDocumentTranslations();
+  doc.previousTranslation = {
+    blocks: structuredClone(doc.blocks), translatedPages: new Set(doc.translatedPages),
+    forceRetranslatePages: new Set(doc.forceRetranslatePages || []),
+    translationConfig: doc.translationConfig, targetLang: doc.targetLang
+  };
+  doc.translationConfig = snapshotDocumentConfig(latest);
+  doc.acceptedGlobalConfig = null;
+  doc.configConflict = false;
+  doc.translatedPages.clear();
+  doc.forceRetranslatePages = new Set(doc.fileType === 'pdf'
+    ? Array.from({ length: doc.totalPages }, (_, index) => index + 1) : []);
+  for (const block of doc.blocks) {
+    block.translation = block.type === 'code' ? block.original : '';
+    if (block.originalImageDataUrl) block.imageDataUrl = block.originalImageDataUrl;
+    block.isCanvasInpainted = false;
+    block.figureLabels = (block.figureLabels || []).map(label => ({ ...label, translation: '' }));
+  }
+  updateDocumentConfigNotice();
+  renderWorkspaceBlocks(streamSearchInput.value.trim());
+  void startDocumentTranslation();
+}));
+
+configNotice.querySelector('[data-config-restore]').addEventListener('click', () => withDocumentConfigChoice((doc, latest) => {
+  const previous = doc.previousTranslation;
+  if (!previous) return;
+  stopDocumentTranslations();
+  Object.assign(doc, previous);
+  doc.previousTranslation = null;
+  doc.acceptedGlobalConfig = documentConfigSignature(latest);
+  doc.configConflict = false;
+  updateDocumentConfigNotice();
+  renderWorkspaceBlocks(streamSearchInput.value.trim());
+  updateDocumentActions();
+  docStatusSubtitle.textContent = '已恢复上一版译文；继续翻译将使用该版原配置。';
+}));
 window.addEventListener('pagehide', () => {
   documentRequests.cancel();
   disposePdfPreviewResources();
@@ -195,6 +333,10 @@ window.addEventListener('pagehide', () => {
 // Invalidates callbacks from a replaced document, including online downloads.
 let documentSession = 0;
 function beginDocumentSession() {
+  configNotice.hidden = true;
+  clearTimeout(programmaticScrollTimer);
+  programmaticScrollTimer = null;
+  isProgrammaticRightScroll = false;
   documentRequests.cancel();
   disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
@@ -721,6 +863,7 @@ function evictPdfPageRender(doc, page) {
     state.queue = state.queue.filter(item => item !== entry);
     entry.resolve(null);
   }
+  void Promise.resolve().then(() => drainPdfRenderQueue(doc));
 }
 
 function trimPdfPageRenderCache(doc) {
@@ -771,13 +914,20 @@ function disposePdfPreviewResources(doc = currentDoc) {
 function drainPdfRenderQueue(doc) {
   const state = getPdfRenderState(doc);
   while (!state.disposed && state.active < MAX_CONCURRENT_PDF_RENDERS && state.queue.length) {
+    // Pins may defer eviction, but must never allow another large canvas beyond
+    // the eight resident/rendering slots. Wait for a translator to release one.
+    if ([...state.records.values()].filter(record => record.started).length >= MAX_CACHED_PAGE_RENDERS) {
+      const victim = [...doc.pageRenderCache.keys()].find(page => {
+        const record = state.records.get(page);
+        return record?.started && !doc.leftPreviewWanted?.has(page) && !doc.translatingPages?.has(page);
+      });
+      if (victim === undefined) break;
+      evictPdfPageRender(doc, victim);
+    }
     const entry = state.queue.shift();
     if (state.records.get(entry.page) !== entry) continue;
     entry.started = true;
     state.active++;
-    const cancel = () => entry.controller.abort();
-    entry.signal.addEventListener('abort', cancel, { once: true });
-    if (entry.signal.aborted) cancel();
     Promise.resolve().then(() => {
       entry.controller.signal.throwIfAborted();
       return renderPdfPageToCanvas(doc.pdfDoc, entry.page, 2.0, { signal: entry.controller.signal });
@@ -789,11 +939,11 @@ function drainPdfRenderQueue(doc) {
       entry.result = rendered;
       if (!rendered) { state.records.delete(entry.page); doc.pageRenderCache.delete(entry.page); }
       return rendered;
-    }, () => {
+    }, error => {
       if (state.records.get(entry.page) === entry) { state.records.delete(entry.page); doc.pageRenderCache.delete(entry.page); }
+      if (!entry.controller.signal.aborted) throw error;
       return null;
-    }).then(entry.resolve).finally(() => {
-      entry.signal.removeEventListener('abort', cancel);
+    }).then(entry.resolve, entry.reject).finally(() => {
       state.active--;
       trimPdfPageRenderCache(doc);
       drainPdfRenderQueue(doc);
@@ -815,10 +965,24 @@ async function getOrRenderPdfPage(pageNum) {
     return cached;
   }
   const entry = { page: p, controller: new AbortController(), signal: documentRequests.signal, started: false, result: null };
-  entry.promise = new Promise(resolve => { entry.resolve = resolve; });
+  entry.cancel = () => {
+    entry.controller.abort();
+    if (!entry.started) {
+      state.records.delete(p);
+      doc.pageRenderCache.delete(p);
+      state.queue = state.queue.filter(item => item !== entry);
+      entry.resolve(null);
+    }
+  };
+  entry.promise = new Promise((resolve, reject) => {
+    entry.resolve = value => { entry.signal.removeEventListener('abort', entry.cancel); resolve(value); };
+    entry.reject = error => { entry.signal.removeEventListener('abort', entry.cancel); reject(error); };
+  });
   state.records.set(p, entry);
   doc.pageRenderCache.set(p, entry.promise);
   state.queue.push(entry);
+  entry.signal.addEventListener('abort', entry.cancel, { once: true });
+  if (entry.signal.aborted) entry.cancel();
   trimPdfPageRenderCache(doc);
   drainPdfRenderQueue(doc);
   return entry.promise;
@@ -849,7 +1013,16 @@ async function ensureLeftPdfPageRendered(pageNum) {
   if (slot.pdfPreviewPromise) return slot.pdfPreviewPromise;
   slot.dataset.rendering = '1';
   const pending = (async () => {
-    const rendered = await getOrRenderPdfPage(p);
+    let rendered;
+    try { rendered = await getOrRenderPdfPage(p); }
+    catch (error) {
+      if (currentDoc === doc && slot.isConnected && doc.leftPreviewWanted?.has(p)) {
+        const placeholder = slot.querySelector('.left-pdf-page-placeholder');
+        if (placeholder) placeholder.textContent = `预览暂不可用：${error?.message || error}。请稍后返回此页重试。`;
+        docStatusSubtitle.textContent = `⚠️ 第 ${p} 页预览失败：${error?.message || error}`;
+      }
+      return false;
+    }
     if (currentDoc !== doc || !doc.leftPreviewWanted?.has(p) || !slot.isConnected || getPdfRenderState(doc).disposed) return false;
     const imgSrc = rendered?.jpegDataUrl || (rendered?.jpegBase64 ? `data:image/jpeg;base64,${rendered.jpegBase64}` : '');
     if (!imgSrc) return false;
@@ -965,13 +1138,26 @@ function renderTocSidebar() {
     (b) => b.type === 'heading' || b.type === 'figure'
   );
   pdfTocCountBadge.textContent = String(tocItems.length);
+  const tocPager = document.getElementById('documentTocPager');
 
   if (tocItems.length === 0) {
+    if (tocPager) tocPager.hidden = true;
     pdfTocList.innerHTML = `<div style="padding:10px;font-size:11.5px;color:#64748b;">暂无章节或图表索引</div>`;
     return;
   }
 
-  pdfTocList.innerHTML = tocItems
+  const tocPageCount = Math.max(1, Math.ceil(tocItems.length / DOCUMENT_READING_PAGE_SIZE));
+  currentDoc.tocWindowPage = Math.min(Math.max(0, currentDoc.tocWindowPage || 0), tocPageCount - 1);
+  if (tocPager) {
+    tocPager.hidden = currentDoc.fileType === 'pdf' || tocPageCount <= 1;
+    tocPager.querySelector('[data-toc-window-status]').textContent = `${currentDoc.tocWindowPage + 1} / ${tocPageCount}`;
+    tocPager.querySelector('[data-toc-window-step="-1"]').disabled = currentDoc.tocWindowPage === 0;
+    tocPager.querySelector('[data-toc-window-step="1"]').disabled = currentDoc.tocWindowPage + 1 >= tocPageCount;
+  }
+  const shownTocItems = currentDoc.fileType === 'pdf' ? tocItems
+    : tocItems.slice(currentDoc.tocWindowPage * DOCUMENT_READING_PAGE_SIZE, (currentDoc.tocWindowPage + 1) * DOCUMENT_READING_PAGE_SIZE);
+
+  pdfTocList.innerHTML = shownTocItems
     .map((b) => {
       const label = (b.translation || b.original || '')
         .replace(/^#{1,6}\s*/, '')
@@ -991,6 +1177,10 @@ function renderTocSidebar() {
     item.addEventListener('click', () => {
       const blockId = item.dataset.tocBlock;
       const pageNum = Number(item.dataset.tocPage) || 1;
+      if (currentDoc.fileType !== 'pdf') {
+        revealDocumentBlock(Number(blockId));
+        return;
+      }
       scrollLeftPdfToPage(pageNum);
       suppressLazyObserverBriefly(800);
       const targetEl = bilingualStreamContainer.querySelector(
@@ -1123,16 +1313,60 @@ function updateProgressCounterBadge() {
   }
 }
 
+const DOCUMENT_READING_PAGE_SIZE = 100;
+
+function documentReadingRange(total, requestedPage = 0) {
+  const pages = Math.max(1, Math.ceil(total / DOCUMENT_READING_PAGE_SIZE));
+  const page = Math.max(0, Math.min(pages - 1, Math.floor(Number(requestedPage) || 0)));
+  return { page, pages, start: page * DOCUMENT_READING_PAGE_SIZE, end: Math.min(total, (page + 1) * DOCUMENT_READING_PAGE_SIZE) };
+}
+
+function selectDocumentReadingWindow(blocks, filterKeyword, selectedChapter) {
+  const key = JSON.stringify([filterKeyword.toLowerCase(), selectedChapter]);
+  if (currentDoc.readingWindowKey !== key) {
+    currentDoc.readingWindowKey = key;
+    currentDoc.readingWindowPage = 0;
+    bilingualStreamContainer.scrollTop = 0;
+    sourceOutlineViewer.scrollTop = 0;
+  }
+  const range = documentReadingRange(blocks.length, currentDoc.readingWindowPage);
+  currentDoc.readingWindowPage = range.page;
+  const pager = document.getElementById('documentReadingPager');
+  if (pager) {
+    pager.hidden = false;
+    pager.querySelector('[data-reading-status]').textContent = `第 ${range.page + 1} / ${range.pages} 组 · ${blocks.length ? range.start + 1 : 0}–${range.end} / ${blocks.length} 段`;
+    const input = pager.querySelector('[data-reading-page]');
+    input.value = String(range.page + 1);
+    input.max = String(range.pages);
+    pager.querySelector('[data-reading-step="-1"]').disabled = range.page === 0;
+    pager.querySelector('[data-reading-step="1"]').disabled = range.page + 1 >= range.pages;
+  }
+  return blocks.slice(range.start, range.end);
+}
+
+function revealDocumentBlock(blockId) {
+  const block = currentDoc.blocks.find(item => item.id === blockId);
+  if (!block) return;
+  streamSearchInput.value = '';
+  if (currentDoc.fileType === 'epub' && epubChapterSelect.value !== 'all' && Number(epubChapterSelect.value) !== block.chapterIndex) epubChapterSelect.value = 'all';
+  const chapter = currentDoc.fileType === 'epub' && epubChapterSelect.value !== 'all' ? Number(epubChapterSelect.value) : null;
+  const scoped = chapter === null ? currentDoc.blocks : currentDoc.blocks.filter(item => item.chapterIndex === chapter);
+  currentDoc.readingWindowKey = JSON.stringify(['', chapter]);
+  currentDoc.readingWindowPage = Math.floor(scoped.indexOf(block) / DOCUMENT_READING_PAGE_SIZE);
+  renderWorkspaceBlocks();
+  bilingualStreamContainer.querySelector(`[data-block-id="${blockId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forcePaperLayout = false, forExport = false } = {}) {
   applyDocumentViewMode();
-  const prevScrollTop = bilingualStreamContainer.scrollTop;
+  let prevScrollTop = bilingualStreamContainer.scrollTop;
 
   const selectedChapter =
     !allChapters && currentDoc.fileType === 'epub' && epubChapterSelect.value !== 'all'
       ? Number(epubChapterSelect.value)
       : null;
 
-  const visibleBlocks = currentDoc.blocks.filter((b) => {
+  let visibleBlocks = currentDoc.blocks.filter((b) => {
     if (selectedChapter !== null && b.chapterIndex !== selectedChapter) return false;
     if (!filterKeyword) return true;
     const kw = filterKeyword.toLowerCase();
@@ -1150,11 +1384,21 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
     );
   });
 
-  updateProgressCounterBadge();
-  renderTocSidebar();
+  if (!forExport) {
+    if (currentDoc.fileType !== 'pdf') {
+      const oldWindowKey = currentDoc.readingWindowKey;
+      visibleBlocks = selectDocumentReadingWindow(visibleBlocks, filterKeyword, selectedChapter);
+      if (oldWindowKey !== currentDoc.readingWindowKey) prevScrollTop = 0;
+    } else {
+      const pager = document.getElementById('documentReadingPager');
+      if (pager) pager.hidden = true;
+    }
+    updateProgressCounterBadge();
+    renderTocSidebar();
+  }
 
   // Render Left Outline if not PDF
-  if (currentDoc.fileType !== 'pdf') {
+  if (!forExport && currentDoc.fileType !== 'pdf') {
     sourceOutlineViewer.innerHTML = visibleBlocks
       .map(
         (b) => `
@@ -1384,6 +1628,9 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
       .join('');
   }
 
+  // Export serializes the complete model, without installing reading-only controls/listeners.
+  if (forExport) return;
+
   // Restore scroll position so lazy page insertions don't jump the reader
   if (prevScrollTop > 0) {
     bilingualStreamContainer.scrollTop = prevScrollTop;
@@ -1455,7 +1702,7 @@ async function retranslateBlock(block) {
   if (transEl) transEl.textContent = 'AI 正在重译…';
   const isCurrent = () => session === documentSession && !signal.aborted && ownsBlockTranslation(request, doc);
   try {
-    const settings = await getSettings();
+    const settings = await getDocumentTranslationSettings();
     if (!isCurrent()) throw new DOMException('重译已取消', 'AbortError');
     const response = await sendModelRequest({
       type: MESSAGE_TYPES.TRANSLATE_BATCH,
@@ -1525,12 +1772,12 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
   const base64 = dataUrl.split(',')[1] || '';
   if (!base64) return;
 
-  docStatusSubtitle.textContent = `🖼️ 正在识别图表文字并生成无痕原位译文 (${file.name})…`;
+  docStatusSubtitle.textContent = `🖼️ 正在识别图表文字并生成图片文字覆盖译文 (${file.name})…`;
   progressBarWrap.hidden = false;
   progressBarFill.style.width = '40%';
 
   try {
-    const settings = await getSettings();
+    const settings = await getDocumentTranslationSettings();
     if (session !== documentSession) return;
     const res = await sendModelRequest({
       type: MESSAGE_TYPES.TRANSLATE_IMAGE,
@@ -1777,17 +2024,17 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false } = {}) {
     placeholderEl.classList.add('is-loading-page');
     const titleEl = placeholderEl.querySelector('.paper-lazy-title');
     if (titleEl) {
-      titleEl.textContent = `⏳ 正在按需翻译第 ${pageNum} / ${totalPages} 页（原位无痕译图 + 原文排版）…`;
+      titleEl.textContent = `⏳ 正在按需翻译第 ${pageNum} / ${totalPages} 页（图片文字覆盖 + 原文排版）…`;
     }
   }
 
-  docStatusSubtitle.textContent = `正在翻译第 ${pageNum} / ${totalPages} 页（原位无痕译图 + 论文排版）…`;
+  docStatusSubtitle.textContent = `正在翻译第 ${pageNum} / ${totalPages} 页（图片文字覆盖 + 论文排版）…`;
   progressBarWrap.hidden = false;
   const doneBefore = currentDoc.translatedPages.size;
   progressBarFill.style.width = `${Math.min(95, Math.max(12, Math.round(((doneBefore + 0.5) / totalPages) * 100)))}%`;
 
   try {
-    const settings = await getSettings();
+    const settings = await getDocumentTranslationSettings();
     if (!isCurrent()) return;
     let pageRender = null;
     if (currentDoc.pdfDoc) {
@@ -2087,7 +2334,7 @@ async function startDocumentTranslation(targetPageRange = null) {
   progressBarFill.style.width = '10%';
 
   try {
-    const settings = await getSettings();
+    const settings = await getDocumentTranslationSettings();
     if (!isCurrent()) return;
     currentDoc.targetLang = settings.targetLang;
     const usesLazyPdfPipeline =
@@ -2992,8 +3239,44 @@ epubChapterSelect.addEventListener('change', () => {
   renderWorkspaceBlocks(streamSearchInput.value.trim());
 });
 
+let documentSearchTimer = null;
 streamSearchInput.addEventListener('input', () => {
+  clearTimeout(documentSearchTimer);
+  const doc = currentDoc;
+  documentSearchTimer = setTimeout(() => {
+    documentSearchTimer = null;
+    if (currentDoc === doc) renderWorkspaceBlocks(streamSearchInput.value.trim());
+  }, 180);
+});
+window.addEventListener('pagehide', () => clearTimeout(documentSearchTimer));
+
+document.getElementById('documentReadingPager')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-reading-step]');
+  if (!button || !isDocumentReady()) return;
+  currentDoc.readingWindowPage = (currentDoc.readingWindowPage || 0) + Number(button.dataset.readingStep);
+  bilingualStreamContainer.scrollTop = 0;
+  sourceOutlineViewer.scrollTop = 0;
   renderWorkspaceBlocks(streamSearchInput.value.trim());
+});
+document.querySelector('[data-reading-page]')?.addEventListener('change', event => {
+  if (!isDocumentReady()) return;
+  currentDoc.readingWindowPage = Math.max(0, (Number(event.target.value) || 1) - 1);
+  bilingualStreamContainer.scrollTop = 0;
+  sourceOutlineViewer.scrollTop = 0;
+  renderWorkspaceBlocks(streamSearchInput.value.trim());
+});
+document.querySelector('[data-reading-page]')?.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    event.currentTarget.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+});
+document.getElementById('documentTocPager')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-toc-window-step]');
+  if (!button || !isDocumentReady()) return;
+  currentDoc.tocWindowPage = (currentDoc.tocWindowPage || 0) + Number(button.dataset.tocWindowStep);
+  renderTocSidebar();
+  pdfTocList.scrollTop = 0;
 });
 
 studioSettingsBtn.addEventListener('click', () => {

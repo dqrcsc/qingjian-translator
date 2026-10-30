@@ -121,6 +121,7 @@ export async function verifyReadingStudioBrowser(context, sw) {
       await translateText(page);
       await page.locator('#layoutStyleSelect').selectOption('card-stream');
       await page.locator('#streamSearchInput').fill('Alpha');
+      await page.waitForFunction(() => document.querySelectorAll('#bilingualStreamContainer [data-block-id]').length === 1);
       assert.equal(await page.locator('#bilingualStreamContainer [data-block-id]').count(), 1);
       const before = await page.locator('#bilingualStreamContainer').innerHTML();
       const exported = await htmlContents(await download(page, 'html'));
@@ -399,6 +400,7 @@ export async function verifyReadingStudioBrowser(context, sw) {
       await fs.mkdir(screenshotDir, { recursive: true });
       await page.screenshot({ path: new URL('studio-full-width.png', screenshotDir).pathname, fullPage: true });
       await page.locator('#streamSearchInput').fill('Alpha original');
+      await page.waitForFunction(() => document.querySelectorAll('#bilingualStreamContainer [data-block-id]').length === 1);
       assert.equal(await page.locator('#bilingualStreamContainer [data-block-id]').count(), 1);
       assert.doesNotMatch(await page.locator('#bilingualStreamContainer').innerText(), /Alpha original/);
       assert.match(await page.locator('#bilingualStreamContainer').innerText(), /中文译文/);
