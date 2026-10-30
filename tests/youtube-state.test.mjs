@@ -10,7 +10,7 @@ for (const failure of ['invalid-context', 'reject', 'empty']) {
     const ctx=vm.createContext({ isExtensionContextValid:()=>failure!=='invalid-context',
       sendModelRequest:()=>failure==='reject'?Promise.reject(Error('Extension context invalidated.')):Promise.resolve(null),
       chrome:{runtime:{sendMessage(){throw Error('not subtitle transport');}}} });
-    vm.runInContext(section('  function safeRuntimeSendMessage(', '\n  function safeUpdateStorage('),ctx);
+    vm.runInContext(section('  function safeRuntimeSendMessage(', '\n  async function safeUpdateStorage('),ctx);
     const result=await ctx.safeRuntimeSendMessage({type:'TRANSLATE_YOUTUBE_CUES'});
     assert.equal(result?.ok,false);
     assert.ok(result.error);

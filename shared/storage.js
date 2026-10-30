@@ -3,7 +3,7 @@
  * Ensures service workers and UI pages always read/write consistent state.
  */
 
-import { DEFAULT_SETTINGS, GEMINI_MODELS, LLM_PROVIDERS, LANGUAGES } from './constants.js';
+import { DEFAULT_SETTINGS, GEMINI_MODELS, LLM_PROVIDERS, LANGUAGES, TRANSLATION_STYLES } from './constants.js';
 import './protocol.js';
 
 const STORAGE_KEY = 'immersive_gemini_settings_v1';
@@ -50,6 +50,24 @@ export function saveSettings(partialSettings, { expected } = {}) {
   const update = () => withSettingsLock(() => writeSettings(partialSettings, expected));
   settingsUpdateChain = settingsUpdateChain.then(update, update);
   return settingsUpdateChain;
+}
+
+// Content scripts send only these UI preferences to the extension origin.
+// Merging here uses the same lock as popup/options, never a webpage's stale snapshot.
+export async function saveContentSettings(patch) {
+  const validators = {
+    translationStyle: value => TRANSLATION_STYLES.some(style => style.id === value),
+    floatingBallPositionY: value => Number.isFinite(value) && value >= 10 && value <= 90,
+    alwaysTranslateDomains: value => typeof value === 'string',
+    autoTranslateAllPages: value => typeof value === 'boolean',
+    autoTranslateOnlinePdf: value => typeof value === 'boolean'
+  };
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length ||
+    Object.entries(patch).some(([key, value]) => !Object.hasOwn(validators, key) || !validators[key](value))) {
+    throw new Error('网页设置更新包含不允许的字段或无效值');
+  }
+  await saveSettings(patch);
+  // Do not return the merged settings: they contain credentials.
 }
 
 async function writeSettings(partialSettings, expected) {

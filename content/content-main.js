@@ -136,20 +136,13 @@
     }
   }
 
-  function safeUpdateStorage(partial) {
-    if (!isExtensionContextValid()) return;
+  async function safeUpdateStorage(partial) {
     try {
-      chrome.storage.local
-        .get(STORAGE_KEY)
-        .then((res) => {
-          if (!isExtensionContextValid()) return;
-          return chrome.storage.local.set({
-            [STORAGE_KEY]: { ...(res?.[STORAGE_KEY] || {}), ...partial }
-          });
-        })
-        .catch(() => {});
-    } catch {
-      // ignore invalidated context
+      if (!isExtensionContextValid()) throw new Error('扩展已更新，请刷新页面');
+      const response = await chrome.runtime.sendMessage({ type: 'UPDATE_CONTENT_SETTINGS', payload: partial });
+      if (!response?.ok) throw new Error(response?.error || '设置未保存');
+    } catch (error) {
+      showPageToast(`设置保存失败：${error?.message || error}`, 'warn');
     }
   }
 
@@ -170,16 +163,33 @@
     }
   }
 
+  function translationConfigSignature(raw = {}) {
+    const protocol = globalThis.QingJianSettings.resolveProtocol(raw);
+    const model = String(raw.customModelId || '').trim() || String(raw.modelId || '').trim() || String(raw.availableModels?.[0]?.id || '').trim();
+    return JSON.stringify([raw.providerId ?? 'google', protocol,
+      raw.apiBaseUrl ?? 'https://generativelanguage.googleapis.com/v1beta', raw.apiKey ?? '',
+      protocol === 'gemini' ? model.replace(/^models\//i, '') : model,
+      raw.targetLang ?? 'zh-CN', raw.tonePreset ?? 'standard', raw.temperature ?? 0.2,
+      raw.customSystemPrompt ?? '', raw.glossaryText ?? 'LLM = 大语言模型\nTransformer = Transformer 架构\nAgent = 智能体\nToken = 词元 (Token)']);
+  }
+
   if (isExtensionContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes[STORAGE_KEY]) {
         const change = changes[STORAGE_KEY];
         settingsRevision++;
         const previous = settings;
-        const requestFields = ['providerId', 'apiProtocol', 'apiBaseUrl', 'apiKey', 'modelId', 'customModelId', 'targetLang', 'glossaryText', 'customSystemPrompt'];
-        if (requestFields.some(key => change.oldValue?.[key] !== change.newValue?.[key])) {
+        if (translationConfigSignature(change.oldValue) !== translationConfigSignature(change.newValue)) {
           invalidateYoutubeTranslations();
+          const hadPageOutput = isPageTranslated || document.querySelector('.ig-trans-node, .ig-img-overlay-layer');
+          disablePageTranslation();
+          selectionRequests.cancel();
+          if (selectionCardEl) selectionCardEl.style.display = 'none';
+          invalidateInputTranslation();
+          inputRequests.cancel();
+          if (hadPageOutput) showPageToast('翻译设置已变化，已恢复原文。请重新开启网页翻译以使用新配置。', 'info');
         }
+        if ((change.oldValue?.inputTargetLang ?? 'en') !== (change.newValue?.inputTargetLang ?? 'en')) { invalidateInputTranslation(); inputRequests.cancel(); }
         settings = sanitizeContentSettings(change.newValue);
         syncYoutubePreferences(previous);
         applyStyleAttribute(settings.translationStyle);
@@ -732,13 +742,36 @@
     } catch { return null; }
   }
 
+  const translatedLinkSources = new WeakMap();
+  function sourceLinks(root) {
+    return Array.from(root.querySelectorAll('a')).filter(link => !link.closest('.ig-trans-node, .ig-trans-block, .ig-trans-inline'));
+  }
+  function syncTranslatedLinks(root) {
+    const originals = sourceLinks(root);
+    for (const link of root.querySelectorAll('.ig-trans-node a, .ig-trans-block a, .ig-trans-inline a')) {
+      const record = translatedLinkSources.get(link);
+      if (!record || record.root !== root) continue;
+      const original = originals[record.index];
+      if (original && (original.textContent || '').trim() === record.text) original.setAttribute('data-ig-orig-inline', '1');
+      const href = original && (original.textContent || '').trim() === record.text
+        ? safeOriginalLinkHref(original.getAttribute('href')) : null;
+      const attributes = { href, title: original?.getAttribute('title') || null,
+        target: href && original?.getAttribute('target') === '_blank' ? '_blank' : null,
+        rel: href && original?.getAttribute('target') === '_blank' ? 'noopener noreferrer' : null };
+      for (const [name, value] of Object.entries(attributes)) {
+        if (link.getAttribute(name) === value) continue;
+        if (value === null) link.removeAttribute(name); else link.setAttribute(name, value);
+      }
+    }
+  }
+
   // Link labels are preserved verbatim; the model may reorder tokens, never author URLs.
   function originalLinkPlaceholder(node, root) {
     if (node === root || node.tagName?.toLowerCase() !== 'a') return null;
     const href = safeOriginalLinkHref(node.getAttribute('href'));
     const text = (node.textContent || '').trim();
     if (!href || !text) return null;
-    return { type: 'link', text, href, title: node.getAttribute('title') || '',
+    return { type: 'link', text, href, root, index: sourceLinks(root).indexOf(node), title: node.getAttribute('title') || '',
       target: node.getAttribute('target') === '_blank' ? '_blank' : '' };
   }
 
@@ -931,6 +964,11 @@
           const href = safeOriginalLinkHref(codeText.href);
           if (href) {
             const link = document.createElement('a');
+            translatedLinkSources.set(link, codeText);
+            if (codeText.root && !isPageTranslated) {
+              ensureObservers();
+              domMutationObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['href', 'target', 'title'] });
+            }
             link.href = href;
             link.textContent = codeText.text;
             if (codeText.title) link.title = codeText.title;
@@ -1197,7 +1235,12 @@
 
     if (!domMutationObserver) {
       domMutationObserver = new MutationObserver((mutations) => {
-        if (!isPageTranslated) return;
+        if (!isPageTranslated) {
+          // Manual Alt translations need link updates, without enabling page scanning.
+          const roots = new Set(mutations.map(m => m.target.closest?.('[data-ig-status]')).filter(Boolean));
+          for (const root of roots) syncTranslatedLinks(root);
+          return;
+        }
         const addedRoots = [];
         const changedParagraphs = new Set();
         let removed = false;
@@ -1205,13 +1248,13 @@
           const target = m.target.nodeType === Node.ELEMENT_NODE ? m.target : m.target.parentElement;
           const owner = target?.closest('[data-ig-status]');
           if (owner) changedParagraphs.add(owner);
-          for (const node of m.removedNodes) {
+          for (const node of m.removedNodes || []) {
             if (node.nodeType === Node.ELEMENT_NODE && node.isConnected === false) {
               releaseDetachedContent(node);
               removed = true;
             }
           }
-          for (const node of m.addedNodes) {
+          for (const node of m.addedNodes || []) {
             if (
               node.nodeType === Node.ELEMENT_NODE &&
               !node.classList?.contains('ig-trans-node') &&
@@ -1228,7 +1271,9 @@
             }
           }
         }
-        for (const el of changedParagraphs) invalidateChangedParagraph(el);
+        for (const el of changedParagraphs) {
+          if (!invalidateChangedParagraph(el)) syncTranslatedLinks(el);
+        }
         if (removed) pruneDetachedParagraphs();
         scheduleMutationScan(addedRoots);
       });
@@ -1790,7 +1835,7 @@
     isPageTranslated = true;
     ensureObservers();
     scanAndObserveContainer(document.body);
-    domMutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
+    domMutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['href', 'target', 'title'] });
     window.addEventListener('scroll', handleScrollRescan, { passive: true });
     postEnableTimers.forEach((t) => clearTimeout(t));
     postEnableTimers = [
@@ -2616,14 +2661,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         if (dragMoved) {
-          chrome.storage.local.get(STORAGE_KEY, (res) => {
-            chrome.storage.local.set({
-              [STORAGE_KEY]: {
-                ...(res[STORAGE_KEY] || {}),
-                floatingBallPositionY: settings.floatingBallPositionY
-              }
-            });
-          });
+          void safeUpdateStorage({ floatingBallPositionY: settings.floatingBallPositionY });
         } else {
           togglePageTranslation();
         }

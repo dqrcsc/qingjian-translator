@@ -6,6 +6,7 @@
 import { MESSAGE_TYPES } from '../shared/constants.js';
 import {
   getSettings,
+  saveContentSettings,
   getActiveModelId,
   getUsageStats,
   incrementUsageStats
@@ -356,6 +357,11 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
       const documentConfig = requestDocumentConfig(message, sender, chrome.runtime.getURL('studio/studio.html'));
       signal?.throwIfAborted();
       switch (message.type) {
+        case MESSAGE_TYPES.UPDATE_CONTENT_SETTINGS: {
+          await saveContentSettings(message.payload);
+          sendResponse({ ok: true });
+          break;
+        }
         case MESSAGE_TYPES.TRANSLATE_BATCH: {
           const data = await handleTranslateBatch(message.payload, signal, documentConfig);
           sendResponse({ ok: true, data });
