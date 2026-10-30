@@ -56,6 +56,8 @@
 
 ---
 
+**v1.0.14 配置与结果完整性修复**：统一网页设置保存，完善配置变化后的旧结果处理、多模态业务校验、动态链接同步、代码 Markdown 往返和空字幕反馈。修改翻译配置后网页恢复原文，需重新开启翻译；YouTube 字幕按新配置重新请求。见 [中文说明](./docs/releases/v1.0.14.zh-CN.md) 与 [发布验收](./docs/verification/v1.0.14.md)。
+
 **v1.0.13 内容与交互修复**：修复 PDF 页归属及失败重试循环、三击空格草稿保护、动态网页旧译文、HTML 正文完整性及导出版式、附图配置重译，并统一能力说明。见 [中文更新说明](./docs/releases/v1.0.13.zh-CN.md) 与 [发布验收](./docs/verification/v1.0.13.md)。
 
 **v1.0.12 正确性与阅读优化**：文档绑定翻译配置并保留重译前备份；PDF 增加单页像素预算及完整取消；修复音频媒体时间和字幕手动阅读；长文档按每组 100 段阅读并保留全文导出。见 [中文更新说明](./docs/releases/v1.0.12.zh-CN.md) 与 [发布验收](./docs/verification/v1.0.12.md)。
@@ -420,7 +422,7 @@ npm run icons
 # 2. 运行 结构/功能检查与 Node 故障回归（模拟接口）
 npm run verify
 
-# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.13.zip)
+# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.14.zip)
 npm run pack
 
 # 4. 真实 Chromium 扩展验收（本地模拟 API，不使用真实密钥）
