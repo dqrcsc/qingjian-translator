@@ -434,7 +434,7 @@ check('Unit Test: Webpage Image OCR, X.com Multi-Paragraph Post Splitting & Seam
   assert.ok(studioJsSrc.includes('extractFigureVectorTextGroups'));
   assert.ok(studioJsSrc.includes('renderSeamlessFigureTranslation'));
   assert.ok(studioJsSrc.includes('scrollLeftPdfToPage'));
-  assert.ok(studioJsSrc.includes('await initLeftPdfScrollViewer()'));
+  assert.ok(studioJsSrc.includes('await budget.wait(initLeftPdfScrollViewer())'));
   assert.ok(studioJsSrc.includes('showNativePdfEmbed'));
 
   const studioCssSrc = fs.readFileSync(path.join(ROOT, 'studio/studio.css'), 'utf-8');

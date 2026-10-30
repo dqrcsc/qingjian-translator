@@ -16,6 +16,9 @@ import { verifyReadingStudioBrowser } from './verify-reading-studio-browser.mjs'
 import { verifyYoutubeStateBrowser } from './verify-youtube-state-browser.mjs';
 import { verifyYoutubeBridgeBrowser } from './verify-youtube-bridge-browser.mjs';
 import { verifyEpubIntegrityBrowser } from './verify-epub-integrity-browser.mjs';
+import { verifyDocumentBudgetBrowser } from './verify-document-budget-browser.mjs';
+import { verifyPdfResourcesBrowser } from './verify-pdf-resources-browser.mjs';
+import { verifyYoutubeTimelineBrowser } from './verify-youtube-timeline-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -247,7 +250,10 @@ try {
   for (const [label, verify] of [
     ['YouTube saved settings and observed subtitles', verifyYoutubeStateBrowser],
     ['YouTube bridge session and track identity', verifyYoutubeBridgeBrowser],
-    ['EPUB source and export integrity', verifyEpubIntegrityBrowser]
+    ['EPUB source and export integrity', verifyEpubIntegrityBrowser],
+    ['Document import budgets', verifyDocumentBudgetBrowser],
+    ['PDF preview reclamation', verifyPdfResourcesBrowser],
+    ['YouTube timeline virtualization', verifyYoutubeTimelineBrowser]
   ]) {
     stage = label;
     const result = await verify(context, sw);

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createDocumentBudget } from '../studio/document-budget.js';
 
 const source = fs.readFileSync(new URL('../studio/studio.js', import.meta.url), 'utf8');
 const identities = source.slice(source.indexOf('function allocateBlockId('), source.indexOf('let isTranslating = false;'));
@@ -92,9 +93,11 @@ test('asynchronous imports allocate fresh IDs after image uploads and reject a l
   let releaseText;
   const ctx = vm.createContext({ currentDoc: { loadState: 'ready', blocks: [] }, documentSession: 1, lazyPageQueue: [], isTranslating: false, isProcessingLazyQueue: false, translateSinglePageBtn: {}, exportDropdownMenu: {},
     emptyDropzoneSection: {}, workspaceSplitMain: { dataset: {} }, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {},
-    pdfNativeEmbed: {}, sourceOutlineViewer: {}, pdfPageJumpWrap: {}, startTranslateDocBtn: {}, exportMenuBtn: {},
+    pdfNativeEmbed: { removeAttribute() {} }, sourceOutlineViewer: {}, pdfPageJumpWrap: {}, startTranslateDocBtn: {}, exportMenuBtn: {},
     docStatusSubtitle: {}, leftPaneTitle: {}, progressBarWrap: {}, progressBarFill: { style: {} },
     jumpPageInput: { value: '1' }, streamSearchInput: { value: '' }, renderWorkspaceBlocks() {},
+    createDocumentBudget, TextDecoder, documentRequests: { signal: new AbortController().signal, cancel() {} }, disposePdfPreviewResources() {},
+    readBoundedFile: async file => new TextEncoder().encode(await file.text()).buffer,
     getSettings: async () => ({ targetLang: 'zh-CN' }),
     FileReader: class { readAsDataURL() { this.result = 'data:image/png;base64,AA=='; this.onloadend(); } },
     sendModelRequest: async () => ({ ok: true, data: { regions: [], summaryTranslation: 'Figure translation' } }),

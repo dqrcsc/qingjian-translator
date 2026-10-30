@@ -5,30 +5,31 @@
  * 2. Local Fast PDF Stream Decompression & Text Block Parser (using browser DecompressionStream('deflate'))
  */
 
-async function decompressFlateStream(rawBytes) {
-  // Trim trailing CR/LF bytes before endstream that cause "Junk found after end of compressed data"
-  let end = rawBytes.length;
-  while (end > 0 && (rawBytes[end - 1] === 0x0a || rawBytes[end - 1] === 0x0d || rawBytes[end - 1] === 0x20)) {
-    end--;
-  }
-  const cleanBytes = rawBytes.subarray(0, end);
-  if (cleanBytes.length < 2) return null;
+import { createDocumentBudget, readBoundedStream } from './document-budget.js';
 
-  for (const format of ['deflate', 'deflate-raw']) {
-    try {
-      const ds = new DecompressionStream(format);
-      const writer = ds.writable.getWriter();
-      const writePromise = writer.write(cleanBytes).catch(() => {});
-      const closePromise = writer.close().catch(() => {});
-      const resp = new Response(ds.readable);
-      const ab = await resp.arrayBuffer();
-      await Promise.all([writePromise, closePromise]);
-      return new Uint8Array(ab);
-    } catch {
-      // Try next format silently without unhandled promise rejections
+async function decompressFlateStream(rawBytes, sharedBudget) {
+  const budget = sharedBudget || createDocumentBudget();
+  try {
+    let end = rawBytes.length;
+    while (end > 0 && (rawBytes[end - 1] === 0x0a || rawBytes[end - 1] === 0x0d || rawBytes[end - 1] === 0x20)) end--;
+    const cleanBytes = rawBytes.subarray(0, end);
+    if (cleanBytes.length < 2) return null;
+    for (const format of ['deflate', 'deflate-raw']) {
+      try {
+        budget.check();
+        const stream = new Blob([cleanBytes]).stream().pipeThrough(new DecompressionStream(format), { signal: budget.signal });
+        const ab = await readBoundedStream(stream, budget,
+          (count, total) => budget.addExpandedBytes(count, total, cleanBytes.length));
+        return new Uint8Array(ab);
+      } catch {
+        // Only malformed encoding may fall back; exhausted budgets must escape.
+        budget.check();
+      }
     }
+    return null;
+  } finally {
+    if (!sharedBudget) budget.dispose();
   }
-  return null;
 }
 
 function decodePdfLiteralString(raw) {
@@ -122,7 +123,10 @@ function extractTextFromPdfStreamContent(streamText) {
 /**
  * Local fast extraction of text paragraphs from uncompressed & FlateDecode PDF streams.
  */
-export async function extractPdfBlocksLocally(arrayBuffer) {
+export async function extractPdfBlocksLocally(arrayBuffer, { budget: sharedBudget } = {}) {
+  const budget = sharedBudget || createDocumentBudget();
+  try {
+  budget.checkInputBytes(arrayBuffer.byteLength);
   const bytes = new Uint8Array(arrayBuffer);
   const latin1Decoder = new TextDecoder('latin1');
   const rawPdfStr = latin1Decoder.decode(bytes);
@@ -132,6 +136,7 @@ export async function extractPdfBlocksLocally(arrayBuffer) {
   let match;
 
   while ((match = streamRegex.exec(rawPdfStr)) !== null) {
+    budget.check();
     const startOffset = match.index + match[0].indexOf('\n') + 1;
     const endOffset = match.index + match[0].lastIndexOf('endstream');
     const slice = bytes.subarray(startOffset, endOffset);
@@ -140,7 +145,7 @@ export async function extractPdfBlocksLocally(arrayBuffer) {
     const headerContext = rawPdfStr.slice(Math.max(0, match.index - 260), match.index);
     let contentText = '';
     if (headerContext.includes('/FlateDecode')) {
-      const decompressed = await decompressFlateStream(slice);
+      const decompressed = await decompressFlateStream(slice, budget);
       if (decompressed) {
         contentText = latin1Decoder.decode(decompressed);
       }
@@ -172,6 +177,7 @@ export async function extractPdfBlocksLocally(arrayBuffer) {
   }
   if (buffer) paragraphs.push(buffer);
 
+  budget.check();
   return paragraphs
     .filter((p) => p.length >= 4)
     .map((p, idx) => ({
@@ -181,6 +187,9 @@ export async function extractPdfBlocksLocally(arrayBuffer) {
       original: p,
       translation: ''
     }));
+  } finally {
+    if (!sharedBudget) budget.dispose();
+  }
 }
 
 export function arrayBufferToBase64(arrayBuffer) {

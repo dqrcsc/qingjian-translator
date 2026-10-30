@@ -288,6 +288,7 @@ function studioContext() {
     arrayBufferToBase64: () => 'AA==', MESSAGE_TYPES: { ANALYZE_PDF_MULTIMODAL: 'PDF' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
+    evictPdfPageRender() {}, trimPdfPageRenderCache() {},
     renderWorkspaceBlocks() {}, streamSearchInput: { value: '' }, lazyPageQueue: [], setTimeout() {}
   });
   vm.runInContext(studioSource.slice(studioSource.indexOf('function allocateBlockId('), studioSource.indexOf('const blockTranslationVersions')), ctx);
@@ -337,9 +338,10 @@ test('pausing a PDF before its response prevents marking the page complete', asy
 test('old page-render failures cannot delete the new document render cache', async () => {
   let finish;
   const old = documentState(); old.pdfDoc = {};
-  const ctx = vm.createContext({ documentRequests: { signal: new AbortController().signal }, currentDoc: old, MAX_CACHED_PAGE_RENDERS: 8, renderPdfPageToCanvas: () => new Promise(r => { finish = r; }) });
-  vm.runInContext(sourceFunction(studioSource, 'getOrRenderPdfPage', '\nasync function ensureLeftPdfPageRendered'), ctx);
+  const ctx = vm.createContext({ documentRequests: { signal: new AbortController().signal }, currentDoc: old, AbortController, renderPdfPageToCanvas: () => new Promise(r => { finish = r; }) });
+  vm.runInContext(studioSource.slice(studioSource.indexOf('const MAX_CACHED_PAGE_RENDERS ='), studioSource.indexOf('function setLeftPdfPreviewWindow(')), ctx);
   const pending = ctx.getOrRenderPdfPage(1);
+  await Promise.resolve();
   const fresh = documentState(); fresh.pageRenderCache.set(1, 'new page');
   ctx.currentDoc = fresh;
   finish(null);
@@ -355,6 +357,7 @@ test('ordinary document translation discards old results and leaves new run flag
     getSettings: async () => settings, createBatches: blocks => [blocks], MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch' },
     sendModelRequest: () => { sent(); return new Promise(r => { reply = r; }); },
     isDocumentReady: () => ctx.currentDoc.loadState === 'ready', updateDocumentActions() {},
+    evictPdfPageRender() {}, trimPdfPageRenderCache() {},
     docStatusSubtitle: { textContent: '' }, setTimeout() {}
   });
   vm.runInContext(studioSource.slice(studioSource.indexOf('const blockTranslationVersions'), studioSource.indexOf('let isTranslating')), ctx);

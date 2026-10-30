@@ -15,6 +15,7 @@ import {
   normalizeOnlinePdfUrl
 } from '../shared/utils.js';
 import { parseEpubFile, buildBilingualEpubBlob } from './epub-engine.js';
+import { createDocumentBudget, readBoundedResponse, readBoundedFile } from './document-budget.js';
 import {
   extractPdfBlocksLocally,
   extractStructuredPdfPageBlocks,
@@ -187,6 +188,7 @@ const documentRequests = globalThis.QingJianRequests.createScope();
 const sendModelRequest = message => documentRequests.request(message);
 window.addEventListener('pagehide', () => {
   documentRequests.cancel();
+  disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
 });
 
@@ -194,6 +196,7 @@ window.addEventListener('pagehide', () => {
 let documentSession = 0;
 function beginDocumentSession() {
   documentRequests.cancel();
+  disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
   if (currentDoc.pdfBlobUrl) URL.revokeObjectURL(currentDoc.pdfBlobUrl);
   documentSession++;
@@ -262,7 +265,8 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
   if (!pdfUrl) return;
   const session = beginDocumentSession();
   setDocumentLoadState('loading');
-  const signal = documentRequests.signal;
+  const budget = createDocumentBudget({ signal: documentRequests.signal });
+  const signal = budget.signal;
 
   if (onlinePdfUrlInput) {
     onlinePdfUrlInput.value = pdfUrl;
@@ -301,16 +305,19 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
   `;
 
   try {
-    const response = await fetch(pdfUrl, {
+    const response = await budget.wait(fetch(pdfUrl, {
       signal,
       method: 'GET',
       credentials: 'omit',
       headers: {
         Accept: 'application/pdf,*/*;q=0.8'
       }
-    });
-
-    const ab = await response.arrayBuffer();
+    }));
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      throw new Error(`在线 PDF 下载失败 (HTTP ${response.status})`);
+    }
+    const ab = await readBoundedResponse(response, budget);
     if (session !== documentSession) return;
     const headerBytes = new Uint8Array(ab.slice(0, 8));
     const headerAscii = new TextDecoder('ascii').decode(headerBytes);
@@ -318,7 +325,9 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
 
     if (!response.ok || !isPdfBinary) {
       setDocumentLoadState('error');
-      showNativePdfEmbed(pdfUrl);
+      // Do not restart an unbounded native download after a failed import.
+      pdfNativeEmbed.hidden = true;
+      pdfNativeEmbed.removeAttribute('src');
       progressBarWrap.hidden = true;
       docStatusSubtitle.textContent = `⚠️ 在线 PDF 地址未返回有效 PDF 文件 (HTTP ${response.status})`;
       bilingualStreamContainer.innerHTML = `
@@ -349,9 +358,11 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
       return;
     }
 
-    const file = new File([ab], inferredName, { type: 'application/pdf' });
+    const file = { name: inferredName, size: ab.byteLength };
     await handleFileLoaded(file, {
       session,
+      budget,
+      buffer: ab,
       sourceUrl: pdfUrl,
       autoStartTranslate
     });
@@ -366,12 +377,16 @@ async function loadOnlinePdfFromUrl(rawUrl, autoStartTranslate = true) {
         <div class="stream-trans">请检查网络连接或该 PDF 链接是否可公开访问。</div>
       </div>
     `;
+  } finally {
+    budget.dispose();
   }
 }
 
 async function handleFileLoaded(file, options = {}) {
   const session = options.session ?? beginDocumentSession();
   if (session !== documentSession) return;
+  const budget = options.budget || createDocumentBudget({ signal: documentRequests.signal });
+  let pendingPdfOpen = null;
   try {
     const name = file.name;
     const ext = name.split('.').pop().toLowerCase();
@@ -414,18 +429,26 @@ async function handleFileLoaded(file, options = {}) {
       ? `正在解析在线 PDF：${name}`
       : `正在解析文档：${name}`;
 
+    const ab = options.buffer || await readBoundedFile(file, budget);
+    budget.check();
+    if (session !== documentSession) return;
+
     if (ext === 'pdf') {
       currentDoc.fileType = 'pdf';
-      const ab = await file.arrayBuffer();
       if (session !== documentSession) return;
       if (!new TextDecoder('ascii').decode(ab.slice(0, 8)).startsWith('%PDF-')) {
         throw new Error('文件不是有效的 PDF 文档');
       }
       currentDoc.pdfArrayBuffer = ab;
-      const opened = await openPdfDocument(ab, { signal: documentRequests.signal });
-      if (session !== documentSession) return;
+      pendingPdfOpen = openPdfDocument(ab, { signal: budget.signal });
+      const opened = await budget.wait(pendingPdfOpen);
+      if (session !== documentSession) {
+        void opened.pdfDoc?.destroy().catch(() => {});
+        return;
+      }
       if (!opened.pdfDoc) throw new Error('PDF 无法解析，请检查文件是否损坏、加密或不受支持');
       currentDoc.pdfDoc = opened.pdfDoc;
+      pendingPdfOpen = null;
       currentDoc.totalPages = Math.max(1, opened.numPages || estimatePdfPageCount(ab));
       currentDoc.pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: 'application/pdf' }));
 
@@ -436,7 +459,7 @@ async function handleFileLoaded(file, options = {}) {
       if (currentDoc.pdfDoc && pdfCanvasScrollViewer) {
         pdfNativeEmbed.hidden = true;
         pdfCanvasScrollViewer.hidden = false;
-        const ok = await initLeftPdfScrollViewer();
+        const ok = await budget.wait(initLeftPdfScrollViewer());
         if (session !== documentSession) return;
         if (!ok) {
           showNativePdfEmbed(currentDoc.pdfBlobUrl);
@@ -458,7 +481,7 @@ async function handleFileLoaded(file, options = {}) {
       progressCounterBadge.textContent = `0 / ${currentDoc.totalPages} 页`;
 
       if (pdfModeSelect && pdfModeSelect.value === 'local-stream') {
-        const localBlocks = await extractPdfBlocksLocally(ab);
+        const localBlocks = await extractPdfBlocksLocally(ab, { budget });
         if (session !== documentSession) return;
         if (localBlocks.length > 0) {
           adoptParsedBlocks(localBlocks);
@@ -477,9 +500,7 @@ async function handleFileLoaded(file, options = {}) {
 
     } else if (ext === 'epub') {
       currentDoc.fileType = 'epub';
-      const ab = await file.arrayBuffer();
-      if (session !== documentSession) return;
-      const parsed = await parseEpubFile(ab);
+      const parsed = await parseEpubFile(ab, { budget });
       if (session !== documentSession) return;
       currentDoc.bookTitle = parsed.bookTitle;
       currentDoc.bookAuthor = parsed.bookAuthor;
@@ -498,7 +519,7 @@ async function handleFileLoaded(file, options = {}) {
       renderWorkspaceBlocks();
     } else if (ext === 'srt' || ext === 'vtt') {
       currentDoc.fileType = 'srt';
-      const text = await file.text();
+      const text = new TextDecoder().decode(ab);
       if (session !== documentSession) return;
       const cues = parseSubtitles(text);
       adoptParsedBlocks(cues.map((c) => ({
@@ -513,28 +534,43 @@ async function handleFileLoaded(file, options = {}) {
       renderWorkspaceBlocks();
     } else if (ext === 'html' || ext === 'htm') {
       currentDoc.fileType = 'html';
-      const text = await file.text();
+      const text = new TextDecoder().decode(ab);
       if (session !== documentSession) return;
       adoptParsedBlocks(parseHtmlDocumentToBlocks(text));
       leftPaneTitle.textContent = `📙 HTML 文档 (${name})`;
       renderWorkspaceBlocks();
     } else {
       currentDoc.fileType = 'md';
-      const text = await file.text();
+      const text = new TextDecoder().decode(ab);
       if (session !== documentSession) return;
       adoptParsedBlocks(parseMarkdownToBlocks(text));
       leftPaneTitle.textContent = `📘 Markdown / 文本 (${name})`;
       renderWorkspaceBlocks();
     }
+    budget.check();
     setDocumentLoadState('ready');
     docStatusSubtitle.textContent = `已加载文档：${name}`;
     if (options.autoStartTranslate) void startDocumentTranslation();
   } catch (err) {
+    // A timed-out open may resolve just after cancellation; it still owns a worker.
+    if (pendingPdfOpen) void pendingPdfOpen.then(opened => opened.pdfDoc?.destroy()).catch(() => {});
     if (session !== documentSession) return;
+    documentRequests.cancel();
+    disposePdfPreviewResources(currentDoc);
+    void currentDoc.pdfDoc?.destroy().catch(() => {});
+    currentDoc.pdfDoc = null;
+    currentDoc.pdfArrayBuffer = null;
+    currentDoc.blocks = [];
+    if (currentDoc.pdfBlobUrl) URL.revokeObjectURL(currentDoc.pdfBlobUrl);
+    currentDoc.pdfBlobUrl = '';
+    pdfNativeEmbed.hidden = true;
+    pdfNativeEmbed.removeAttribute('src');
     setDocumentLoadState('error');
     progressBarWrap.hidden = true;
     docStatusSubtitle.textContent = `⚠️ 文档加载失败: ${err?.message || err}`;
     startTranslateDocBtn.disabled = true;
+  } finally {
+    if (!options.budget) budget.dispose();
   }
 
 }
@@ -656,160 +692,220 @@ function showNativePdfEmbed(url) {
 }
 
 const MAX_CACHED_PAGE_RENDERS = 8;
+const MAX_LEFT_PDF_PREVIEWS = 6;
+const MAX_CONCURRENT_PDF_RENDERS = 2;
+
+function releasePdfRender(rendered) {
+  if (!rendered) return;
+  if (rendered.canvas) { rendered.canvas.width = 0; rendered.canvas.height = 0; }
+  rendered.canvas = null;
+  rendered.jpegDataUrl = '';
+  rendered.jpegBase64 = '';
+  rendered.textItems = [];
+}
+
+function getPdfRenderState(doc) {
+  return doc.pdfRenderState ||= { active: 0, queue: [], records: new Map(), disposed: false };
+}
+
+function evictPdfPageRender(doc, page) {
+  if (doc.translatingPages?.has(page)) return;
+  const state = getPdfRenderState(doc);
+  const entry = state.records.get(page);
+  if (!entry) return;
+  state.records.delete(page);
+  doc.pageRenderCache?.delete(page);
+  entry.controller.abort();
+  releasePdfRender(entry.result);
+  if (!entry.started) {
+    state.queue = state.queue.filter(item => item !== entry);
+    entry.resolve(null);
+  }
+}
+
+function trimPdfPageRenderCache(doc) {
+  for (const page of doc.pageRenderCache?.keys() || []) {
+    if (doc.pageRenderCache.size <= MAX_CACHED_PAGE_RENDERS) break;
+    if (!doc.leftPreviewWanted?.has(page)) evictPdfPageRender(doc, page);
+  }
+}
+
+function releaseLeftPdfSlot(slot) {
+  if (slot.dataset.pageRatio) {
+    slot.style.minHeight = '0';
+    slot.style.aspectRatio = String(1 / Number(slot.dataset.pageRatio));
+  }
+  slot.querySelector('img')?.removeAttribute('src');
+  slot.innerHTML = `<span class="left-pdf-page-badge">Page ${Number(slot.dataset.leftPdfPage)}</span>
+    <div class="left-pdf-page-placeholder" style="position:absolute;inset:0;padding:0;display:grid;place-items:center">滚动到此页时恢复原文预览</div>`;
+  slot.classList.remove('is-rendered');
+  delete slot.dataset.rendered;
+  delete slot.dataset.rendering;
+  delete slot.pdfPreviewPromise;
+}
+
+function disposePdfPreviewResources(doc = currentDoc) {
+  const state = getPdfRenderState(doc);
+  state.disposed = true;
+  doc.leftPreviewWanted?.clear();
+  doc.leftVisiblePages?.clear();
+  // The old document is no longer readable by translators after its session ends.
+  for (const entry of state.records.values()) {
+    entry.controller.abort();
+    releasePdfRender(entry.result);
+    if (!entry.started) entry.resolve(null);
+  }
+  state.queue.length = 0;
+  state.records.clear();
+  doc.pageRenderCache?.clear();
+  doc.pdfArrayBuffer = null;
+  if (doc.pdfBlobUrl) URL.revokeObjectURL(doc.pdfBlobUrl);
+  doc.pdfBlobUrl = '';
+  if (doc === currentDoc) {
+    pdfNativeEmbed?.removeAttribute('src');
+    leftPdfPageObserver?.disconnect();
+    pdfCanvasScrollViewer?.querySelectorAll('.left-pdf-page-slot').forEach(releaseLeftPdfSlot);
+  }
+}
+
+function drainPdfRenderQueue(doc) {
+  const state = getPdfRenderState(doc);
+  while (!state.disposed && state.active < MAX_CONCURRENT_PDF_RENDERS && state.queue.length) {
+    const entry = state.queue.shift();
+    if (state.records.get(entry.page) !== entry) continue;
+    entry.started = true;
+    state.active++;
+    const cancel = () => entry.controller.abort();
+    entry.signal.addEventListener('abort', cancel, { once: true });
+    if (entry.signal.aborted) cancel();
+    Promise.resolve().then(() => {
+      entry.controller.signal.throwIfAborted();
+      return renderPdfPageToCanvas(doc.pdfDoc, entry.page, 2.0, { signal: entry.controller.signal });
+    }).then(rendered => {
+      if (state.disposed || entry.controller.signal.aborted || state.records.get(entry.page) !== entry) {
+        releasePdfRender(rendered);
+        return null;
+      }
+      entry.result = rendered;
+      if (!rendered) { state.records.delete(entry.page); doc.pageRenderCache.delete(entry.page); }
+      return rendered;
+    }, () => {
+      if (state.records.get(entry.page) === entry) { state.records.delete(entry.page); doc.pageRenderCache.delete(entry.page); }
+      return null;
+    }).then(entry.resolve).finally(() => {
+      entry.signal.removeEventListener('abort', cancel);
+      state.active--;
+      trimPdfPageRenderCache(doc);
+      drainPdfRenderQueue(doc);
+    });
+  }
+}
 
 async function getOrRenderPdfPage(pageNum) {
   const doc = currentDoc;
   if (!doc.pdfDoc) return null;
+  const state = getPdfRenderState(doc);
+  if (state.disposed) return null;
   const p = Math.max(1, Math.min(doc.totalPages || 1, Number(pageNum) || 1));
-  if (!doc.pageRenderCache) {
-    doc.pageRenderCache = new Map();
-  }
+  doc.pageRenderCache ||= new Map();
   if (doc.pageRenderCache.has(p)) {
     const cached = doc.pageRenderCache.get(p);
-    // Refresh LRU order
     doc.pageRenderCache.delete(p);
     doc.pageRenderCache.set(p, cached);
     return cached;
   }
+  const entry = { page: p, controller: new AbortController(), signal: documentRequests.signal, started: false, result: null };
+  entry.promise = new Promise(resolve => { entry.resolve = resolve; });
+  state.records.set(p, entry);
+  doc.pageRenderCache.set(p, entry.promise);
+  state.queue.push(entry);
+  trimPdfPageRenderCache(doc);
+  drainPdfRenderQueue(doc);
+  return entry.promise;
+}
 
-  // Evict oldest high-DPI canvas render when exceeding MAX_CACHED_PAGE_RENDERS
-  if (doc.pageRenderCache.size >= MAX_CACHED_PAGE_RENDERS) {
-    for (const candidatePage of doc.pageRenderCache.keys()) {
-      if (doc.translatingPages && doc.translatingPages.has(candidatePage)) {
-        continue;
-      }
-      const evictedPromise = doc.pageRenderCache.get(candidatePage);
-      doc.pageRenderCache.delete(candidatePage);
-      Promise.resolve(evictedPromise)
-        .then((rendered) => {
-          if (
-            rendered &&
-            rendered.canvas &&
-            !(doc.translatingPages && doc.translatingPages.has(candidatePage))
-          ) {
-            rendered.canvas.width = 0;
-            rendered.canvas.height = 0;
-            rendered.canvas = null;
-          }
-        })
-        .catch(() => {});
-      if (doc.pageRenderCache.size < MAX_CACHED_PAGE_RENDERS) {
-        break;
-      }
+function setLeftPdfPreviewWindow(pages) {
+  const doc = currentDoc;
+  const wanted = new Set(pages.slice(0, MAX_LEFT_PDF_PREVIEWS));
+  doc.leftPreviewWanted = wanted;
+  for (const slot of pdfCanvasScrollViewer.querySelectorAll('.left-pdf-page-slot')) {
+    const page = Number(slot.dataset.leftPdfPage);
+    if (!wanted.has(page)) {
+      if (slot.dataset.rendered || slot.dataset.rendering) releaseLeftPdfSlot(slot);
+      evictPdfPageRender(doc, page);
     }
   }
-
-  const renderPromise = renderPdfPageToCanvas(doc.pdfDoc, p, 2.0, { signal: documentRequests.signal })
-    .then((res) => {
-      if (!res && doc.pageRenderCache?.get(p) === renderPromise) {
-        doc.pageRenderCache?.delete(p);
-      }
-      return res;
-    })
-    .catch(() => {
-      if (doc.pageRenderCache?.get(p) === renderPromise) doc.pageRenderCache.delete(p);
-      return null;
-    });
-  doc.pageRenderCache.set(p, renderPromise);
-  return renderPromise;
+  for (const page of wanted) void ensureLeftPdfPageRendered(page);
 }
 
 async function ensureLeftPdfPageRendered(pageNum) {
-  const session = documentSession;
-  if (!pdfCanvasScrollViewer || !currentDoc.pdfDoc) return false;
-  const p = Math.max(1, Math.min(currentDoc.totalPages || 1, Number(pageNum) || 1));
+  const doc = currentDoc;
+  if (!pdfCanvasScrollViewer || !doc.pdfDoc || getPdfRenderState(doc).disposed) return false;
+  const p = Math.max(1, Math.min(doc.totalPages || 1, Number(pageNum) || 1));
+  if (!doc.leftPreviewWanted?.has(p)) return false;
   const slot = pdfCanvasScrollViewer.querySelector(`.left-pdf-page-slot[data-left-pdf-page="${p}"]`);
   if (!slot) return false;
   if (slot.dataset.rendered === '1') return true;
-  if (slot.dataset.rendering === '1') {
-    await getOrRenderPdfPage(p);
-    return slot.dataset.rendered === '1';
-  }
-
+  if (slot.pdfPreviewPromise) return slot.pdfPreviewPromise;
   slot.dataset.rendering = '1';
-  try {
+  const pending = (async () => {
     const rendered = await getOrRenderPdfPage(p);
-    if (session !== documentSession) return false;
-    const imgSrc =
-      rendered &&
-      (rendered.jpegDataUrl ||
-        (rendered.jpegBase64 ? `data:image/jpeg;base64,${rendered.jpegBase64}` : ''));
-    if (imgSrc) {
-      slot.innerHTML = `
-        <span class="left-pdf-page-badge">Page ${p} / ${currentDoc.totalPages || 1}</span>
-        <img class="left-pdf-page-img" src="${imgSrc}" alt="Original PDF Page ${p}" />
-      `;
-      slot.classList.add('is-rendered');
-      slot.style.removeProperty('min-height');
-      slot.dataset.rendered = '1';
-      return true;
-    }
-    if (p === 1 && currentDoc.pdfBlobUrl) {
-      showNativePdfEmbed(currentDoc.pdfBlobUrl);
-    }
-  } catch {
-    if (session !== documentSession) return false;
-    if (p === 1 && currentDoc.pdfBlobUrl) {
-      showNativePdfEmbed(currentDoc.pdfBlobUrl);
-    }
-  } finally {
-    delete slot.dataset.rendering;
+    if (currentDoc !== doc || !doc.leftPreviewWanted?.has(p) || !slot.isConnected || getPdfRenderState(doc).disposed) return false;
+    const imgSrc = rendered?.jpegDataUrl || (rendered?.jpegBase64 ? `data:image/jpeg;base64,${rendered.jpegBase64}` : '');
+    if (!imgSrc) return false;
+    slot.dataset.pageRatio = String(rendered.height / rendered.width);
+    slot.style.minHeight = '0';
+    slot.style.aspectRatio = `${rendered.width} / ${rendered.height}`;
+    slot.innerHTML = `<span class="left-pdf-page-badge">Page ${p} / ${doc.totalPages || 1}</span>
+      <img class="left-pdf-page-img" src="${imgSrc}" alt="Original PDF Page ${p}" />`;
+    slot.classList.add('is-rendered');
+    slot.dataset.rendered = '1';
+    return true;
+  })();
+  slot.pdfPreviewPromise = pending;
+  try { return await pending; }
+  finally {
+    if (slot.pdfPreviewPromise === pending) { delete slot.pdfPreviewPromise; delete slot.dataset.rendering; }
   }
-  return false;
 }
 
 async function initLeftPdfScrollViewer() {
-  const session = documentSession;
-  if (!pdfCanvasScrollViewer || !currentDoc.pdfDoc) return false;
-  if (leftPdfPageObserver) {
-    leftPdfPageObserver.disconnect();
-    leftPdfPageObserver = null;
-  }
-
-  const total = Math.max(1, currentDoc.totalPages || 1);
+  const doc = currentDoc;
+  if (!pdfCanvasScrollViewer || !doc.pdfDoc) return false;
+  leftPdfPageObserver?.disconnect();
+  const total = Math.max(1, doc.totalPages || 1);
+  doc.leftVisiblePages = new Set();
+  doc.leftPreviewWanted = new Set(total >= 2 ? [1, 2] : [1]);
   pdfCanvasScrollViewer.innerHTML = Array.from({ length: total }, (_, idx) => {
     const p = idx + 1;
-    return `
-      <div class="left-pdf-page-slot" data-left-pdf-page="${p}">
-        <span class="left-pdf-page-badge">Page ${p} / ${total}</span>
-        <div class="left-pdf-page-placeholder">正在加载原文档第 ${p} / ${total} 页…</div>
-      </div>
-    `;
+    return `<div class="left-pdf-page-slot" data-left-pdf-page="${p}">
+      <span class="left-pdf-page-badge">Page ${p} / ${total}</span>
+      <div class="left-pdf-page-placeholder">正在加载原文档第 ${p} / ${total} 页…</div>
+    </div>`;
   }).join('');
-
   if (typeof IntersectionObserver !== 'undefined') {
-    leftPdfPageObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const p = Number(entry.target.getAttribute('data-left-pdf-page'));
-          if (p >= 1) {
-            ensureLeftPdfPageRendered(p);
-          }
-        }
-      },
-      {
-        root: pdfCanvasScrollViewer,
-        rootMargin: '240px 0px',
-        threshold: 0.01
+    leftPdfPageObserver = new IntersectionObserver(entries => {
+      if (currentDoc !== doc || getPdfRenderState(doc).disposed) return;
+      for (const entry of entries) {
+        const page = Number(entry.target.dataset.leftPdfPage);
+        if (entry.isIntersecting) doc.leftVisiblePages.add(page); else doc.leftVisiblePages.delete(page);
       }
-    );
-
-    pdfCanvasScrollViewer
-      .querySelectorAll('.left-pdf-page-slot[data-left-pdf-page]')
-      .forEach((el) => leftPdfPageObserver.observe(el));
+      const center = pdfCanvasScrollViewer.getBoundingClientRect().top + pdfCanvasScrollViewer.clientHeight / 2;
+      const near = [...doc.leftVisiblePages].sort((a, b) => {
+        const distance = page => {
+          const rect = pdfCanvasScrollViewer.querySelector(`[data-left-pdf-page="${page}"]`).getBoundingClientRect();
+          return Math.abs((rect.top + rect.bottom) / 2 - center);
+        };
+        return distance(a) - distance(b);
+      });
+      if (near.length) setLeftPdfPreviewWindow(near);
+    }, { root: pdfCanvasScrollViewer, rootMargin: '240px 0px', threshold: 0.01 });
+    pdfCanvasScrollViewer.querySelectorAll('.left-pdf-page-slot').forEach(el => leftPdfPageObserver.observe(el));
   }
-
-  // Eagerly render first 2 original pages on the left before starting translation
   const page1Ok = await ensureLeftPdfPageRendered(1);
-  if (session !== documentSession) return false;
-  if (!page1Ok) {
-    return false;
-  }
-  if (total >= 2) {
-    ensureLeftPdfPageRendered(2);
-  }
-  return true;
+  if (currentDoc !== doc) return false;
+  if (total >= 2 && doc.leftPreviewWanted.has(2)) void ensureLeftPdfPageRendered(2);
+  return page1Ok;
 }
 
 function suppressLazyObserverBriefly(durationMs = 750) {
@@ -840,10 +936,7 @@ function scrollLeftPdfToPage(pageNum) {
       `.left-pdf-page-slot[data-left-pdf-page="${clamped}"]`
     );
     if (slot) {
-      ensureLeftPdfPageRendered(clamped);
-      if (clamped + 1 <= (currentDoc.totalPages || 1)) {
-        ensureLeftPdfPageRendered(clamped + 1);
-      }
+      setLeftPdfPreviewWindow([clamped, clamped + 1, clamped - 1].filter(page => page >= 1 && page <= currentDoc.totalPages));
       slot.scrollIntoView({ behavior: 'smooth', block: 'start' });
       pdfCanvasScrollViewer
         .querySelectorAll('.left-pdf-page-slot.is-target-pulse')
@@ -1903,6 +1996,8 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false } = {}) {
   } finally {
     if (session !== documentSession) return;
     currentDoc.translatingPages.delete(pageNum);
+    if (!currentDoc.leftPreviewWanted?.has(pageNum)) evictPdfPageRender(currentDoc, pageNum);
+    trimPdfPageRenderCache(currentDoc);
     updateDocumentActions();
     if (currentDoc.translatingPages.size === 0 && lazyPageQueue.length === 0) {
       setTimeout(() => {

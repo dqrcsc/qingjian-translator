@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createDocumentBudget } from '../studio/document-budget.js';
 const source = fs.readFileSync(new URL('../studio/studio.js', import.meta.url), 'utf8');
 const section = (a, b) => source.slice(source.indexOf(a), source.indexOf(b, source.indexOf(a) + a.length));
 
@@ -55,9 +56,11 @@ test('loading and failed imports block actual translation/export handlers, then 
   const ctx = vm.createContext({ currentDoc: { blocks: [] }, documentSession: 1,
     isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [],
     workspaceSplitMain: { dataset: {} }, startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, exportDropdownMenu: {},
-    emptyDropzoneSection: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {}, pdfNativeEmbed: {}, sourceOutlineViewer: {}, pdfPageJumpWrap: {},
+    emptyDropzoneSection: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {}, pdfNativeEmbed: { removeAttribute() {} }, sourceOutlineViewer: {}, pdfPageJumpWrap: {},
     docStatusSubtitle: {}, leftPaneTitle: {}, progressBarWrap: {}, progressBarFill: { style: {} },
-    renderWorkspaceBlocks() {}, TextDecoder,
+    renderWorkspaceBlocks() {}, TextDecoder, createDocumentBudget,
+    documentRequests: { signal: new AbortController().signal, cancel() {} }, disposePdfPreviewResources() {},
+    readBoundedFile: async file => file.arrayBuffer ? file.arrayBuffer() : new TextEncoder().encode(await file.text()).buffer,
     getSettings: async () => { requests++; return {}; }, downloadBlob: () => downloads++
   });
   vm.runInContext(readiness + identities + start + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
@@ -91,6 +94,7 @@ for (const protocol of ['openai', 'gemini']) {
       bilingualStreamContainer: { querySelector: () => null }, progressBarWrap: {}, progressBarFill: { style: {} }, docStatusSubtitle: {},
       streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setTimeout() {},
       getSettings: async () => ({}), getActiveProtocol: () => protocol,
+      evictPdfPageRender() {}, trimPdfPageRenderCache() {},
       getOrRenderPdfPage: async () => ({ canvas: {}, textItems: [{}], jpegBase64: 'AA==', width: 100, height: 100 }), ensureLeftPdfPageRendered() {},
       extractStructuredPdfPageBlocks: () => rawBlocks.map(block => ({ ...block })),
       createBatches: list => [list], normalizeFigureLabelsToCrop: () => [],
@@ -166,4 +170,27 @@ test('PDF printing limits both translated sheets and untranslated placeholders; 
     await ctx.executeLayoutPreservingPdfExport('translation-only', null);
     assert.deepEqual(printed[1], [1, 2], 'null retains the explicit all-pages default');
   }
+});
+
+test('PDF opening that completes after the import deadline destroys its retired worker result', async () => {
+  let resolveOpen, destroyed = 0;
+  const budget = createDocumentBudget({ timeoutMs: 25 });
+  const ctx = vm.createContext({ currentDoc: { blocks: [] }, documentSession: 1,
+    isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [],
+    workspaceSplitMain: { dataset: {} }, startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, exportDropdownMenu: {},
+    emptyDropzoneSection: {}, epubChapterSelectWrap: {}, pdfCanvasScrollViewer: {}, pdfNativeEmbed: { removeAttribute() {} }, sourceOutlineViewer: {}, pdfPageJumpWrap: {},
+    docStatusSubtitle: {}, leftPaneTitle: {}, progressBarWrap: {}, progressBarFill: { style: {} },
+    TextDecoder, createDocumentBudget, documentRequests: { signal: new AbortController().signal, cancel() {} }, disposePdfPreviewResources() {},
+    readBoundedFile: async () => new TextEncoder().encode('%PDF-1.7').buffer,
+    openPdfDocument: () => new Promise(resolve => { resolveOpen = resolve; })
+  });
+  vm.runInContext(readiness + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks('), ctx);
+  try {
+    await ctx.handleFileLoaded({ name: 'late-worker.pdf' }, { session: 1, budget });
+    assert.equal(ctx.currentDoc.loadState, 'error');
+    assert.match(ctx.docStatusSubtitle.textContent, /总时间预算/);
+    resolveOpen({ pdfDoc: { destroy: async () => { destroyed++; } }, numPages: 2 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(destroyed, 1, 'a late successful open owns a worker that must be destroyed');
+  } finally { budget.dispose(); }
 });

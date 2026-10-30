@@ -22,6 +22,7 @@
   window.addEventListener('pagehide', () => {
     requestScopes.forEach(scope => scope.cancel());
     if (ytAudioListenActive) stopYoutubeAudioListen();
+    disposeYoutubeTimeline();
   });
   function sendModelRequest(message) {
     const scope = message.type === 'TRANSLATE_YOUTUBE_CUES' ? subtitleRequests
@@ -2955,6 +2956,9 @@
   let ytSidebarOpen = false;
   let ytOverlayEl = null;
   let ytSidebarEl = null;
+  let ytTimelineWindow = null;
+  let ytTimelineFilter = null;
+  let ytTimelineCurrentCueId = null;
   let ytCtrlBtnEl = null;
   let ytInFlightBatchIds = new Set();
   let ytLastRenderedSig = '';
@@ -2999,7 +3003,15 @@
     renderYoutubeTimelineList();
   }
 
+  function disposeYoutubeTimeline() {
+    ytTimelineWindow?.dispose();
+    ytTimelineWindow = null;
+    ytTimelineFilter = null;
+  }
+
   function clearYoutubeSourceCues() {
+    disposeYoutubeTimeline();
+    ytTimelineCurrentCueId = null;
     ytCues = [];
     ytVideoTitle = '';
     ytCaptionSource = 'none';
@@ -3065,7 +3077,7 @@
     }
     if (previous.youtubeShowSidebar !== settings.youtubeShowSidebar) {
       ytSidebarOpen = Boolean(settings.youtubeShowSidebar);
-      if (!ytSidebarOpen && ytSidebarEl) ytSidebarEl.style.display = 'none';
+      if (!ytSidebarOpen && ytSidebarEl) { ytSidebarEl.style.display = 'none'; disposeYoutubeTimeline(); }
     }
     mountYoutubePlayerUI();
   }
@@ -3330,6 +3342,7 @@
     ytSidebarOpen = !ytSidebarOpen;
     if (!ytSidebarOpen) {
       if (ytSidebarEl) ytSidebarEl.style.display = 'none';
+      disposeYoutubeTimeline();
       return;
     }
     ensureYoutubeTimelineSidebar();
@@ -3342,6 +3355,7 @@
       return;
     }
 
+    disposeYoutubeTimeline();
     ytSidebarEl = document.createElement('div');
     ytSidebarEl.className = 'ig-yt-timeline-panel';
     ytSidebarEl.innerHTML = `
@@ -3369,6 +3383,7 @@
     ytSidebarEl.querySelector('[data-act="close"]')?.addEventListener('click', () => {
       ytSidebarOpen = false;
       ytSidebarEl.style.display = 'none';
+      disposeYoutubeTimeline();
     });
 
     const exportBar = ytSidebarEl.querySelector('[data-yt-export-bar]');
@@ -3396,6 +3411,123 @@
     });
   }
 
+  function youtubeTimelineRange(offsets, scrollTop, viewportHeight) {
+    const count = offsets.length - 1;
+    if (!count) return { start: 0, end: 0 };
+    const locate = value => {
+      let lo = 0, hi = count;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (offsets[mid + 1] <= value) lo = mid + 1;
+        else hi = mid;
+      }
+      return Math.min(lo, count - 1);
+    };
+    const first = locate(Math.max(0, scrollTop));
+    const last = locate(Math.max(0, scrollTop) + Math.max(0, viewportHeight));
+    const start = Math.max(0, first - 6);
+    return { start, end: Math.min(count, Math.max(first + 1, last + 7), start + 40) };
+  }
+
+  function createYoutubeTimelineWindow(list) {
+    let cues = [], offsets = [0], activeId = null, frame = 0, disposed = false;
+    let rangeStart = -1, rangeEnd = -1, width = list.clientWidth;
+    const heights = new Map();
+    const rebuildOffsets = () => {
+      offsets = [0];
+      for (const cue of cues) offsets.push(offsets.at(-1) + (heights.get(String(cue.id))?.height || 96));
+    };
+    const anchor = () => {
+      // Skip the small overscan prefix to find the actual first visible row.
+      let actual = youtubeTimelineRange(offsets, list.scrollTop, 0).start;
+      while (actual < cues.length - 1 && offsets[actual + 1] <= list.scrollTop) actual++;
+      return { id: cues[actual]?.id, delta: list.scrollTop - (offsets[actual] || 0) };
+    };
+    const updateSpacers = () => {
+      const top = list.querySelector('[data-yt-spacer="top"]');
+      const bottom = list.querySelector('[data-yt-spacer="bottom"]');
+      if (top) top.style.height = `${offsets[Math.max(0, rangeStart)] || 0}px`;
+      if (bottom) bottom.style.height = `${Math.max(0, offsets.at(-1) - (offsets[Math.max(0, rangeEnd)] || 0))}px`;
+    };
+    const restoreAnchor = saved => {
+      const index = cues.findIndex(cue => cue.id === saved.id);
+      if (index >= 0) list.scrollTop = Math.max(0, offsets[index] + saved.delta);
+    };
+    const measure = () => {
+      const saved = anchor();
+      let changed = false;
+      if (list.clientWidth !== width) { width = list.clientWidth; heights.clear(); changed = true; }
+      for (const row of list.querySelectorAll('.ig-yt-cue-item')) {
+        const height = Math.max(1, row.getBoundingClientRect().height + 6);
+        const key = row.dataset.cueId;
+        if (Math.abs((heights.get(key)?.height || 96) - height) > 0.5) {
+          const cue = cues[Number(row.dataset.timelineIndex)];
+          heights.set(key, { height, text: cue?.text, translation: cue?.translation });
+          changed = true;
+        }
+      }
+      if (changed) { rebuildOffsets(); updateSpacers(); restoreAnchor(saved); }
+    };
+    const draw = (force = false) => {
+      if (disposed) return;
+      const { start, end } = youtubeTimelineRange(offsets, list.scrollTop, list.clientHeight);
+      if (force || start !== rangeStart || end !== rangeEnd) {
+        observer?.disconnect();
+        rangeStart = start; rangeEnd = end;
+        list.innerHTML = `<div data-yt-spacer="top" aria-hidden="true"></div>` + cues.slice(start, end).map((cue, index) => `
+          <div class="ig-yt-cue-item${cue.id === activeId ? ' is-current' : ''}" data-cue-id="${escapeText(String(cue.id))}" data-start="${cue.start}" data-timeline-index="${start + index}">
+            <div class="ig-yt-cue-time">${formatSec(cue.start)}</div>
+            <div class="ig-yt-cue-orig">${escapeText(cue.text)}</div>
+            <div class="ig-yt-cue-trans">${escapeText(cue.translation || '…')}</div>
+          </div>`).join('') + '<div data-yt-spacer="bottom" aria-hidden="true"></div>';
+        observer?.observe(list);
+        for (const row of list.querySelectorAll('.ig-yt-cue-item')) observer?.observe(row);
+        schedule();
+      }
+      updateSpacers();
+    };
+    const schedule = () => {
+      if (frame || disposed) return;
+      frame = requestAnimationFrame(() => { frame = 0; if (!disposed) { measure(); draw(); } });
+    };
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    const onClick = event => {
+      const row = event.target.closest('.ig-yt-cue-item');
+      if (row && list.contains(row)) window.postMessage({ source: 'IG_YT_CONTENT_SCRIPT', type: 'SEEK_VIDEO_TO', seconds: Number(row.dataset.start) }, '*');
+    };
+    list.addEventListener('scroll', schedule, { passive: true });
+    list.addEventListener('click', onClick);
+    return {
+      setCues(next, resetScroll = false) {
+        const saved = anchor();
+        cues = next;
+        const valid = new Set(cues.map(cue => String(cue.id)));
+        for (const key of heights.keys()) if (!valid.has(key)) heights.delete(key);
+        for (const cue of cues) {
+          const measured = heights.get(String(cue.id));
+          if (measured && (measured.text !== cue.text || measured.translation !== cue.translation)) heights.delete(String(cue.id));
+        }
+        rebuildOffsets(); draw(true);
+        if (resetScroll) list.scrollTop = 0;
+        else restoreAnchor(saved);
+        draw();
+      },
+      highlight(id) {
+        activeId = id;
+        const index = cues.findIndex(cue => cue.id === id);
+        if (index < 0) return;
+        if (offsets[index] < list.scrollTop || offsets[index + 1] > list.scrollTop + list.clientHeight) list.scrollTop = offsets[index];
+        draw();
+        for (const row of list.querySelectorAll('.ig-yt-cue-item')) row.classList.toggle('is-current', row.dataset.cueId === String(id));
+      },
+      dispose() {
+        disposed = true; cancelAnimationFrame(frame); observer?.disconnect();
+        list.removeEventListener('scroll', schedule); list.removeEventListener('click', onClick);
+        list.replaceChildren(); cues = []; offsets = [0]; heights.clear();
+      }
+    };
+  }
+
   function renderYoutubeTimelineList(noCaptions = false, filterKeyword) {
     if (!ytSidebarEl || ytSidebarEl.style.display === 'none') return;
     const listEl = ytSidebarEl.querySelector('[data-yt-list]');
@@ -3406,6 +3538,7 @@
     const coverage = ytSidebarEl.querySelector('[data-yt-coverage]');
     if (coverage) coverage.textContent = youtubeCoverageText();
     if (noCaptions && timelineCues.length === 0) {
+      disposeYoutubeTimeline();
       listEl.innerHTML = `
         <div style="padding:18px;text-align:center;color:#94a3b8;font-size:12.5px;line-height:1.6;">
           当前视频未检测到原生/自动字幕轨道。<br/>
@@ -3423,27 +3556,11 @@
         )
       : timelineCues;
 
-    listEl.innerHTML = filtered
-      .map(
-        (c) => `
-      <div class="ig-yt-cue-item" data-cue-id="${c.id}" data-start="${c.start}">
-        <div class="ig-yt-cue-time">${formatSec(c.start)}</div>
-        <div class="ig-yt-cue-orig">${escapeText(c.text)}</div>
-        <div class="ig-yt-cue-trans">${escapeText(c.translation || '…')}</div>
-      </div>
-    `
-      )
-      .join('');
-
-    listEl.querySelectorAll('.ig-yt-cue-item').forEach((item) => {
-      item.addEventListener('click', () => {
-        const sec = Number(item.dataset.start);
-        window.postMessage(
-          { source: 'IG_YT_CONTENT_SCRIPT', type: 'SEEK_VIDEO_TO', seconds: sec },
-          '*'
-        );
-      });
-    });
+    const opening = !ytTimelineWindow;
+    ytTimelineWindow ||= createYoutubeTimelineWindow(listEl);
+    ytTimelineWindow.setCues(filtered, ytTimelineFilter !== filterKeyword);
+    ytTimelineFilter = filterKeyword;
+    if (opening && !filterKeyword && ytTimelineCurrentCueId !== null) ytTimelineWindow.highlight(ytTimelineCurrentCueId);
   }
 
   function formatSec(sec) {
@@ -3693,15 +3810,9 @@
   }
 
   function highlightCurrentTimelineCue(cueId) {
+    ytTimelineCurrentCueId = cueId;
     if (!ytSidebarEl || ytSidebarEl.style.display === 'none') return;
-    ytSidebarEl.querySelectorAll('.ig-yt-cue-item.is-current').forEach((el) => {
-      el.classList.remove('is-current');
-    });
-    const currentEl = ytSidebarEl.querySelector(`.ig-yt-cue-item[data-cue-id="${cueId}"]`);
-    if (currentEl) {
-      currentEl.classList.add('is-current');
-      currentEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
+    ytTimelineWindow?.highlight(cueId);
   }
 
   /**

@@ -436,14 +436,20 @@ html[data-ig-style="translation-only"] .ig-trans-node {
 
 .ig-yt-timeline-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: block;
+}
+
+.ig-yt-timeline-list > [data-yt-spacer] {
+  pointer-events: none;
 }
 
 .ig-yt-cue-item {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   border-radius: 8px;
   background: rgba(30, 41, 59, 0.45);

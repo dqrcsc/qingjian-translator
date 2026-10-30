@@ -4,82 +4,115 @@
  * with zero external library dependencies.
  */
 
-async function inflateRaw(compressedBytes) {
-  const ds = new DecompressionStream('deflate-raw');
-  const writer = ds.writable.getWriter();
-  const writePromise = writer.write(compressedBytes).catch(() => {});
-  const closePromise = writer.close().catch(() => {});
-  const resp = new Response(ds.readable);
-  const ab = await resp.arrayBuffer();
-  await Promise.all([writePromise, closePromise]);
+import { createDocumentBudget, readBoundedStream } from './document-budget.js';
+
+async function inflateRaw(compressedBytes, budget) {
+  let offset = 0;
+  const input = new ReadableStream({
+    pull(controller) {
+      if (offset >= compressedBytes.length) { controller.close(); return; }
+      const end = Math.min(offset + 65536, compressedBytes.length);
+      controller.enqueue(compressedBytes.subarray(offset, end));
+      offset = end;
+    }
+  });
+  const stream = input.pipeThrough(new DecompressionStream('deflate-raw'));
+  const ab = await readBoundedStream(stream, budget, (count, size) =>
+    budget.addExpandedBytes(count, size, compressedBytes.length));
   return new Uint8Array(ab);
 }
 
 /**
- * Parse a ZIP archive ArrayBuffer into an array of entry descriptors and raw/decompressed bytes.
+ * A lazy ZIP reader with one deadline and expansion quota shared by all members.
+ * Direct callers can dispose the owned budget with entries.dispose() after reading.
  */
-export async function readZipArchive(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  const view = new DataView(arrayBuffer);
-
-  // Locate End of Central Directory (EOCD) signature 0x06054b50
-  let eocdOffset = -1;
-  const minEocd = Math.max(0, bytes.length - 65557);
-  for (let i = bytes.length - 22; i >= minEocd; i--) {
-    if (view.getUint32(i, true) === 0x06054b50) {
-      eocdOffset = i;
-      break;
+export async function readZipArchive(arrayBuffer, { budget, signal } = {}) {
+  const ownsBudget = !budget;
+  budget ||= createDocumentBudget({ signal });
+  try {
+    budget.checkInputBytes(arrayBuffer.byteLength);
+    const bytes = new Uint8Array(arrayBuffer), view = new DataView(arrayBuffer);
+    const invalid = detail => { throw new Error(`无效的 EPUB/ZIP 文件结构：${detail}`); };
+    const within = (offset, size, end = bytes.length) => {
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset + size > end) invalid('目录或文件数据越界/截断');
+    };
+    let eocdOffset = -1;
+    for (let i = bytes.length - 22, min = Math.max(0, bytes.length - 65557); i >= min; i--) {
+      if (view.getUint32(i, true) === 0x06054b50 && i + 22 + view.getUint16(i + 20, true) === bytes.length) { eocdOffset = i; break; }
     }
+    if (eocdOffset < 0) invalid('未找到完整中央目录结束记录');
+    const totalEntries = view.getUint16(eocdOffset + 10, true);
+    const cdSize = view.getUint32(eocdOffset + 12, true), cdOffset = view.getUint32(eocdOffset + 16, true);
+    if (view.getUint16(eocdOffset + 4, true) || view.getUint16(eocdOffset + 6, true) ||
+      view.getUint16(eocdOffset + 8, true) !== totalEntries) invalid('不支持分卷 ZIP');
+    if (totalEntries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) invalid('不支持 ZIP64');
+    if (totalEntries > budget.limits.maxEntries) budget.fail(`EPUB 条目数量超过上限（${budget.limits.maxEntries} 项）。`);
+    within(cdOffset, cdSize, eocdOffset);
+    if (cdOffset + cdSize !== eocdOffset) invalid('中央目录长度不一致');
+    const entries = new Map(), ranges = [];
+    const decoder = new TextDecoder('utf-8');
+    let ptr = cdOffset;
+    for (let i = 0; i < totalEntries; i++) {
+      budget.check();
+      within(ptr, 46, eocdOffset);
+      if (view.getUint32(ptr, true) !== 0x02014b50) invalid('中央目录条目签名不正确');
+      const flags = view.getUint16(ptr + 8, true), compressionMethod = view.getUint16(ptr + 10, true);
+      const expectedCrc = view.getUint32(ptr + 16, true);
+      const compressedSize = view.getUint32(ptr + 20, true), uncompressedSize = view.getUint32(ptr + 24, true);
+      const fileNameLen = view.getUint16(ptr + 28, true), extraLen = view.getUint16(ptr + 30, true), commentLen = view.getUint16(ptr + 32, true);
+      const localHeaderOffset = view.getUint32(ptr + 42, true);
+      within(ptr, 46 + fileNameLen + extraLen + commentLen, eocdOffset);
+      if (flags & 1) invalid('不支持加密 ZIP');
+      if (view.getUint16(ptr + 34, true) !== 0 || [compressedSize, uncompressedSize, localHeaderOffset].includes(0xffffffff)) invalid('不支持分卷 ZIP 或 ZIP64');
+      if (![0, 8].includes(compressionMethod)) invalid(`不支持的 ZIP 压缩算法 ${compressionMethod}`);
+      const fileName = decoder.decode(bytes.subarray(ptr + 46, ptr + 46 + fileNameLen));
+      if (!fileName || entries.has(fileName)) invalid('文件名为空或重复');
+      budget.checkEntryBytes(uncompressedSize, compressedSize);
+      ptr += 46 + fileNameLen + extraLen + commentLen;
+      within(localHeaderOffset, 30, cdOffset);
+      if (view.getUint32(localHeaderOffset, true) !== 0x04034b50) invalid('本地文件头签名不正确');
+      const localNameLen = view.getUint16(localHeaderOffset + 26, true), localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+      const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+      within(localHeaderOffset, 30 + localNameLen + localExtraLen, cdOffset);
+      within(dataStart, compressedSize, cdOffset);
+      if (view.getUint16(localHeaderOffset + 6, true) !== flags || view.getUint16(localHeaderOffset + 8, true) !== compressionMethod ||
+        decoder.decode(bytes.subarray(localHeaderOffset + 30, localHeaderOffset + 30 + localNameLen)) !== fileName) invalid('本地文件头与中央目录不一致');
+      if (!(flags & 8) && (view.getUint32(localHeaderOffset + 14, true) !== expectedCrc ||
+        view.getUint32(localHeaderOffset + 18, true) !== compressedSize || view.getUint32(localHeaderOffset + 22, true) !== uncompressedSize)) invalid('本地文件大小或校验值与目录不一致');
+      ranges.push([localHeaderOffset, dataStart + compressedSize]);
+      const rawSlice = bytes.subarray(dataStart, dataStart + compressedSize);
+      entries.set(fileName, {
+        fileName, compressionMethod, compressedSize, uncompressedSize, rawSlice,
+        async getBytes() {
+          budget.check();
+          let result;
+          if (compressionMethod === 0) {
+            budget.addExpandedBytes(rawSlice.length, rawSlice.length, compressedSize);
+            result = rawSlice;
+          } else result = await inflateRaw(rawSlice, budget);
+          budget.check();
+          if (result.length !== uncompressedSize) invalid(`文件解压大小与声明不一致：${fileName}`);
+          if (crc32(result) !== expectedCrc) invalid(`文件 CRC 校验失败：${fileName}`);
+          budget.check();
+          return result;
+        },
+        async getText() {
+          const text = decoder.decode(await this.getBytes());
+          budget.check();
+          return text;
+        }
+      });
+    }
+    if (ptr !== cdOffset + cdSize) invalid('目录条目数量或长度不一致');
+    ranges.sort((a, b) => a[0] - b[0]);
+    for (let i = 1; i < ranges.length; i++) if (ranges[i][0] < ranges[i - 1][1]) invalid('文件数据区域重叠');
+    budget.check();
+    entries.dispose = () => { if (ownsBudget) budget.dispose(); };
+    return entries;
+  } catch (error) {
+    if (ownsBudget) budget.dispose();
+    throw error;
   }
-  if (eocdOffset === -1) {
-    throw new Error('无效的 EPUB/ZIP 文件结构（未找到中央目录签名）');
-  }
-
-  const totalEntries = view.getUint16(eocdOffset + 10, true);
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
-
-  const entries = new Map();
-  let ptr = cdOffset;
-  const decoder = new TextDecoder('utf-8');
-
-  for (let i = 0; i < totalEntries; i++) {
-    if (view.getUint32(ptr, true) !== 0x02014b50) break;
-    const compressionMethod = view.getUint16(ptr + 10, true);
-    const compressedSize = view.getUint32(ptr + 20, true);
-    const uncompressedSize = view.getUint32(ptr + 24, true);
-    const fileNameLen = view.getUint16(ptr + 28, true);
-    const extraLen = view.getUint16(ptr + 30, true);
-    const commentLen = view.getUint16(ptr + 32, true);
-    const localHeaderOffset = view.getUint32(ptr + 42, true);
-
-    const fileName = decoder.decode(bytes.subarray(ptr + 46, ptr + 46 + fileNameLen));
-    ptr += 46 + fileNameLen + extraLen + commentLen;
-
-    // Read local file header to find actual data start
-    const localNameLen = view.getUint16(localHeaderOffset + 26, true);
-    const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
-    const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
-    const rawSlice = bytes.subarray(dataStart, dataStart + compressedSize);
-
-    entries.set(fileName, {
-      fileName,
-      compressionMethod,
-      compressedSize,
-      uncompressedSize,
-      rawSlice,
-      async getBytes() {
-        if (compressionMethod === 0) return rawSlice;
-        if (compressionMethod === 8) return await inflateRaw(rawSlice);
-        throw new Error(`不支持的 ZIP 压缩算法: ${compressionMethod}`);
-      },
-      async getText() {
-        const b = await this.getBytes();
-        return decoder.decode(b);
-      }
-    });
-  }
-
-  return entries;
 }
 
 function resolveRelativePath(baseFile, relHref) {
@@ -133,8 +166,15 @@ function extractChapterBlocks(body, addBlock) {
 /**
  * Parse an EPUB file into structured metadata, chapters, and extracted blocks for translation.
  */
-export async function parseEpubFile(arrayBuffer) {
-  const entries = await readZipArchive(arrayBuffer);
+export async function parseEpubFile(arrayBuffer, { budget, signal } = {}) {
+  const ownsBudget = !budget;
+  budget ||= createDocumentBudget({ signal });
+  try { return await parseEpubWithBudget(arrayBuffer, budget); }
+  finally { if (ownsBudget) budget.dispose(); }
+}
+
+async function parseEpubWithBudget(arrayBuffer, budget) {
+  const entries = await readZipArchive(arrayBuffer, { budget });
   const containerEntry = entries.get('META-INF/container.xml');
   if (!containerEntry) {
     throw new Error('EPUB 缺少 META-INF/container.xml');
@@ -142,6 +182,7 @@ export async function parseEpubFile(arrayBuffer) {
 
   const domParser = new DOMParser();
   const containerXml = domParser.parseFromString(await containerEntry.getText(), 'application/xml');
+  budget.check();
   const rootfileEl = containerXml.querySelector('rootfile');
   const opfPath = rootfileEl?.getAttribute('full-path');
   if (!opfPath || !entries.has(opfPath)) {
@@ -149,6 +190,7 @@ export async function parseEpubFile(arrayBuffer) {
   }
 
   const opfXml = domParser.parseFromString(await entries.get(opfPath).getText(), 'application/xml');
+  budget.check();
   const bookTitle =
     opfXml.querySelector('title, dc\\:title')?.textContent?.trim() || 'EPUB 电子书';
   const bookAuthor =
@@ -181,12 +223,15 @@ export async function parseEpubFile(arrayBuffer) {
   const allBlocks = [];
 
   for (let cIdx = 0; cIdx < spineIds.length; cIdx++) {
+    await budget.wait(new Promise(resolve => setTimeout(resolve, 0)));
+    budget.check();
     const item = manifestMap.get(spineIds[cIdx]);
     const zipEntry = entries.get(item.fullPath) || entries.get(item.href);
-    if (!zipEntry) continue;
+    if (!zipEntry) throw new Error(`EPUB 缺少正文文件：${item.fullPath}`);
 
     const htmlText = await zipEntry.getText();
     const doc = domParser.parseFromString(htmlText, 'text/html');
+    budget.check();
     const chapterTitle =
       doc.querySelector('h1, h2, h3, title')?.textContent?.replace(/\s+/g, ' ').trim() ||
       `第 ${cIdx + 1} 章`;
@@ -205,6 +250,7 @@ export async function parseEpubFile(arrayBuffer) {
       allBlocks.push(blockObj);
     });
 
+    budget.check();
     if (chapterBlocks.length > 0) {
       chapters.push({
         index: cIdx,
@@ -215,6 +261,7 @@ export async function parseEpubFile(arrayBuffer) {
     }
   }
 
+  budget.check();
   return {
     bookTitle,
     bookAuthor,

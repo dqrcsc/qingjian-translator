@@ -156,10 +156,15 @@ export async function verifyReadingStudioBrowser(context, sw) {
     await run('F3 delayed PDF file read disables operations and guards actual click handlers', async () => {
       const page = await newStudio();
       await page.evaluate(() => {
-        const native = File.prototype.arrayBuffer;
-        File.prototype.arrayBuffer = async function () {
-          if (this.name === 'held-import.pdf') await new Promise(resolve => { globalThis.__releaseReadingFile = resolve; });
-          return native.call(this);
+        const native = File.prototype.stream;
+        File.prototype.stream = function () {
+          const stream = native.call(this);
+          if (this.name !== 'held-import.pdf') return stream;
+          const reader = stream.getReader();
+          return new ReadableStream({ async start(controller) {
+            await new Promise(resolve => { globalThis.__releaseReadingFile = resolve; });
+            for (;;) { const {done, value} = await reader.read(); if (done) { controller.close(); break; } controller.enqueue(value); }
+          }, cancel(reason) { return reader.cancel(reason); } });
         };
       });
       let downloads = 0; page.on('download', () => downloads++);
@@ -207,10 +212,17 @@ export async function verifyReadingStudioBrowser(context, sw) {
     await run('F3 a retired file read cannot overwrite the newer imported document', async () => {
       const page = await newStudio();
       await page.evaluate(() => {
-        const native = File.prototype.text;
-        File.prototype.text = async function () {
-          if (this.name === 'old-import.md') await new Promise(resolve => { globalThis.__releaseOldReadingFile = resolve; });
-          return native.call(this);
+        const native = File.prototype.stream;
+        File.prototype.stream = function () {
+          const stream = native.call(this);
+          if (this.name !== 'old-import.md') return stream;
+          const reader = stream.getReader();
+          let cancelled = false;
+          return new ReadableStream({ async start(controller) {
+            await new Promise(resolve => { globalThis.__releaseOldReadingFile = resolve; });
+            if (cancelled) return;
+            for (;;) { const {done, value} = await reader.read(); if (done) { controller.close(); break; } controller.enqueue(value); }
+          }, cancel(reason) { cancelled = true; return reader.cancel(reason); } });
         };
       });
       await page.locator('#fileInput').setInputFiles(file('old-import.md', 'OLD import must never appear.'));
