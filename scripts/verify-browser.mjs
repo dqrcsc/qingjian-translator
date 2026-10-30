@@ -32,6 +32,9 @@ import { verifyContentSettingsBrowser } from './verify-content-settings-browser.
 import { verifyMultimodalOutputBrowser } from './verify-multimodal-output-browser.mjs';
 import { verifyContentConfigLinksBrowser } from './verify-content-config-links-browser.mjs';
 import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-browser.mjs';
+import { verifyMarkerBrowser } from './verify-marker-browser.mjs';
+import { verifyAcademicTableBrowser } from './verify-academic-table-browser.mjs';
+import { verifySitePauseBrowser } from './verify-site-pause-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -245,18 +248,26 @@ try {
   checks.push('Actual settings save/reload persists request budget and clamps 1/999/empty to 30/300/90 seconds');
   stage = 'content lifecycle regressions';
   console.log('Checking actual content-script settings, rapid toggles and delayed image decoding…');
+  // Independent suites share a browser, but not a user's temporary site choice.
+  const resetSitePause = () => sw.evaluate(() => chrome.storage.session.remove('qingjian_site_pause_v1'));
+  await resetSitePause();
   checks.push(...await verifyContentBrowser(context, sw));
   stage = 'studio security and identity regressions';
+  await resetSitePause();
   checks.push(...await verifyStudioBrowser(context, sw));
   stage = 'settings and statistics regressions';
+  await resetSitePause();
   checks.push(...await verifySettingsBrowser(context, sw));
   stage = 'native Gemini regressions';
+  await resetSitePause();
   checks.push(...await verifyGeminiBrowser(context, sw));
   stage = 'web reading integrity regressions';
+  await resetSitePause();
   const readingContent = await verifyReadingContentBrowser(context, sw);
   checks.push(...readingContent.checks);
   errors.push(...readingContent.errors);
   stage = 'studio reading and export integrity regressions';
+  await resetSitePause();
   const readingStudio = await verifyReadingStudioBrowser(context, sw);
   checks.push(...readingStudio.checks);
   errors.push(...readingStudio.errors);
@@ -278,9 +289,13 @@ try {
     ['Content settings serialization', verifyContentSettingsBrowser],
     ['Multimodal result integrity', verifyMultimodalOutputBrowser],
     ['Content configuration and dynamic links', verifyContentConfigLinksBrowser],
-    ['Document roundtrip and empty subtitles', verifyDocumentRoundtripBrowser]
+    ['Document roundtrip and empty subtitles', verifyDocumentRoundtripBrowser],
+    ['Multiline marker paint', verifyMarkerBrowser],
+    ['Academic table layout and readable colors', verifyAcademicTableBrowser],
+    ['Session-wide site pause', verifySitePauseBrowser]
   ]) {
     stage = label;
+    await resetSitePause();
     const result = await verify(context, sw);
     checks.push(...result.checks); errors.push(...result.errors);
   }

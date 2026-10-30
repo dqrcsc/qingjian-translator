@@ -92,10 +92,12 @@ html[data-ig-style="mask"] *:hover > .ig-trans-node {
 }
 
 /* Style 5: Marker (荧光马克笔) */
-html[data-ig-style="marker"] .ig-trans-node {
+html[data-ig-style="marker"] .ig-trans-text {
   background: linear-gradient(180deg, transparent 55%, var(--ig-marker-bg) 55%);
   padding: 1px 3px;
   border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 /* Translation-only hides only source nodes with a successful replacement, never a whole block. */

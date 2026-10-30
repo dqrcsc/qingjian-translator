@@ -32,6 +32,8 @@ import {
   testGeminiConnection
 } from './gemini-client.js';
 
+import { getSitePause, setSitePause, sitePauseRequestUrl, sitePauseScope } from './site-pause.js';
+
 import { requestDocumentConfig } from '../shared/document-config.js';
 
 import { withConcurrencyLimit, abortRequestScope } from './request-queue.js';
@@ -54,8 +56,26 @@ async function sendMessageToTabSafely(tabId, message) {
   }
 }
 
-async function openPdfTranslationNewTab(rawPdfUrl, sourceTab = null, autoTranslate = true) {
+async function updateSiteAutoTranslatePause(url, paused) {
+  const settings = await getSettings();
+  const data = await setSitePause(url, settings.alwaysTranslateDomains, paused);
+  // Listeners reread canonical session state so overlapping broadcasts cannot
+  // restore an older pause value. Existing translated pages keep their content.
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.filter(tab => /^https?:\/\//i.test(tab.url || '') &&
+    sitePauseScope(tab.url, settings.alwaysTranslateDomains) === data.site).map(tab =>
+    sendMessageToTabSafely(tab.id, { type: MESSAGE_TYPES.SITE_AUTO_TRANSLATE_STATE_CHANGED })));
+  return data;
+}
+
+async function openPdfTranslationNewTab(rawPdfUrl, sourceTab = null, autoTranslate = true, automatic = false) {
   const normalizedUrl = normalizeOnlinePdfUrl(rawPdfUrl);
+  if (normalizedUrl) {
+    const settings = await getSettings();
+    const state = await getSitePause(normalizedUrl, settings.alwaysTranslateDomains);
+    if (automatic && state.paused) return false;
+    if (!automatic && state.paused) await updateSiteAutoTranslatePause(normalizedUrl, false);
+  }
   const query = normalizedUrl
     ? `?url=${encodeURIComponent(normalizedUrl)}&auto=${autoTranslate ? '1' : '0'}`
     : '';
@@ -65,6 +85,7 @@ async function openPdfTranslationNewTab(rawPdfUrl, sourceTab = null, autoTransla
     createProps.index = sourceTab.index + 1;
   }
   await chrome.tabs.create(createProps);
+  return true;
 }
 
 // Show a "PDF" badge on the toolbar icon when the user is viewing an online PDF
@@ -357,6 +378,15 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
       const documentConfig = requestDocumentConfig(message, sender, chrome.runtime.getURL('studio/studio.html'));
       signal?.throwIfAborted();
       switch (message.type) {
+        case MESSAGE_TYPES.GET_SITE_AUTO_TRANSLATE_STATE:
+        case MESSAGE_TYPES.SET_SITE_AUTO_TRANSLATE_STATE: {
+          const url = await sitePauseRequestUrl(sender, message.payload, chrome.runtime.getURL(''));
+          const data = message.type === MESSAGE_TYPES.SET_SITE_AUTO_TRANSLATE_STATE
+            ? await updateSiteAutoTranslatePause(url, message.payload?.paused)
+            : await getSitePause(url, (await getSettings()).alwaysTranslateDomains);
+          sendResponse({ ok: true, data });
+          break;
+        }
         case MESSAGE_TYPES.UPDATE_CONTENT_SETTINGS: {
           await saveContentSettings(message.payload);
           sendResponse({ ok: true });
@@ -445,8 +475,8 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
         case MESSAGE_TYPES.OPEN_DOCUMENT_STUDIO: {
           const pdfUrl = message.payload?.pdfUrl || '';
           const autoTranslate = message.payload?.autoTranslate !== false;
-          await openPdfTranslationNewTab(pdfUrl, sender?.tab || null, Boolean(pdfUrl && autoTranslate));
-          sendResponse({ ok: true });
+          const opened = await openPdfTranslationNewTab(pdfUrl, sender?.tab || null, Boolean(pdfUrl && autoTranslate), message.payload?.automatic === true);
+          sendResponse({ ok: true, opened, paused: !opened });
           break;
         }
         case MESSAGE_TYPES.SYNC_TAB_BADGE: {

@@ -83,6 +83,9 @@
   let settings = { ...DEFAULT_SETTINGS };
   let settingsRevision = 0;
   let isPageTranslated = false;
+  let siteAutoPaused = false;
+  let sitePauseReadRevision = 0;
+  let manualToggleRevision = 0;
   let pageTranslationSession = 0;
   let totalTranslatedCount = 0;
   let pendingParagraphQueue = [];
@@ -144,6 +147,30 @@
     } catch (error) {
       showPageToast(`设置保存失败：${error?.message || error}`, 'warn');
     }
+  }
+
+  async function refreshSiteAutoTranslatePause() {
+    const revision = ++sitePauseReadRevision;
+    const response = await safeRuntimeSendMessage({ type: 'GET_SITE_AUTO_TRANSLATE_STATE' });
+    if (!response?.ok) return false;
+    if (revision === sitePauseReadRevision) {
+      siteAutoPaused = response.data.paused;
+      updateFloatingBallStatus();
+    }
+    return true;
+  }
+
+  async function saveSiteAutoTranslatePause(paused) {
+    const response = await safeRuntimeSendMessage({ type: 'SET_SITE_AUTO_TRANSLATE_STATE', payload: { paused } });
+    if (!response?.ok) {
+      showPageToast(`本站临时暂停状态保存失败：${response?.error || '请刷新后重试'}`, 'warn');
+      return false;
+    }
+    if (!await refreshSiteAutoTranslatePause()) {
+      showPageToast('本站临时暂停状态已保存，但状态刷新失败，请刷新页面确认。', 'warn');
+      return false;
+    }
+    return true;
   }
 
   async function loadSettings() {
@@ -239,7 +266,9 @@
 
   let hasAutoOpenedPdfTab = false;
 
-  function checkAutoTranslateDomainRule() {
+  async function checkAutoTranslateDomainRule() {
+    const intent = manualToggleRevision;
+    if (!await refreshSiteAutoTranslatePause() || intent !== manualToggleRevision || siteAutoPaused) return;
     const host = window.location.hostname.toLowerCase();
     if (!host || host.includes('youtube.com')) return;
     const neverList = parseDomainList(settings.neverTranslateDomains);
@@ -250,7 +279,7 @@
     if (isOnlinePdfPage()) {
       if (settings.autoTranslateOnlinePdf && !hasAutoOpenedPdfTab) {
         hasAutoOpenedPdfTab = true;
-        openCurrentPdfInNewTab();
+        openCurrentPdfInNewTab(true);
       }
       return;
     }
@@ -1736,9 +1765,14 @@
             }`;
             transNode.dataset.igSegId = String(segId);
             transNode.setAttribute('translate', 'no');
-            transNode.appendChild(
+            // Keep paragraph layout outside the inline text fragments so marker
+            // backgrounds can follow each wrapped line instead of the whole block.
+            const transText = document.createElement('font');
+            transText.className = 'ig-trans-text';
+            transText.appendChild(
               restorePlaceholdersToFragment(translatedStr, record.placeholders)
             );
+            transNode.appendChild(transText);
             insertNodeAfterSegmentAnchor(el, record, transNode);
             updateStatus(el);
             totalTranslatedCount++;
@@ -1816,12 +1850,13 @@
     return false;
   }
 
-  function openCurrentPdfInNewTab() {
-    safeRuntimeSendMessage({
+  function openCurrentPdfInNewTab(automatic = false) {
+    return safeRuntimeSendMessage({
       type: 'OPEN_DOCUMENT_STUDIO',
       payload: {
         pdfUrl: window.location.href,
-        autoTranslate: true
+        autoTranslate: true,
+        automatic
       }
     });
   }
@@ -1902,16 +1937,21 @@
   }
 
   function togglePageTranslation() {
-    if (isOnlinePdfPage()) {
-      openCurrentPdfInNewTab();
-      return false;
+    manualToggleRevision++;
+    const pdfPage = isOnlinePdfPage();
+    const enable = pdfPage || !isPageTranslated;
+    // Keep immediate visual cancellation; persist the intent before responding
+    // to popup/shortcut callers so their next navigation sees the session pause.
+    if (!pdfPage) {
+      if (enable) enablePageTranslation(); else disablePageTranslation();
     }
-    if (isPageTranslated) {
-      disablePageTranslation();
-    } else {
-      enablePageTranslation();
-    }
-    return isPageTranslated;
+    return saveSiteAutoTranslatePause(!enable).then(async saved => {
+      if (pdfPage) await openCurrentPdfInNewTab();
+      else if (saved && !enable && siteAutoPaused) {
+        showPageToast('本站本次会话已暂停自动翻译；手动开启可恢复，重启浏览器后恢复站点规则。', 'info');
+      }
+      return isPageTranslated;
+    });
   }
 
   function cycleTranslationStyle() {
@@ -2683,13 +2723,14 @@
     const globalCheckEl = floatingBallEl.querySelector('.ig-check-global');
     const pdfCheckEl = floatingBallEl.querySelector('.ig-check-pdf');
 
-    domainCheckEl?.addEventListener('change', (e) => {
+    domainCheckEl?.addEventListener('change', async (e) => {
       e.stopPropagation();
       const host = window.location.hostname.toLowerCase();
       if (!host) return;
       const set = new Set(parseDomainList(settings.alwaysTranslateDomains));
       if (domainCheckEl.checked) {
         set.add(host);
+        await saveSiteAutoTranslatePause(false);
         if (!isPageTranslated && !isOnlinePdfPage()) enablePageTranslation();
       } else {
         set.delete(host);
@@ -2699,20 +2740,22 @@
       safeUpdateStorage({ alwaysTranslateDomains: nextDomains });
     });
 
-    globalCheckEl?.addEventListener('change', (e) => {
+    globalCheckEl?.addEventListener('change', async (e) => {
       e.stopPropagation();
       const enabled = Boolean(globalCheckEl.checked);
       settings.autoTranslateAllPages = enabled;
+      if (enabled) await saveSiteAutoTranslatePause(false);
       if (enabled && !isPageTranslated && !isOnlinePdfPage()) {
         enablePageTranslation();
       }
       safeUpdateStorage({ autoTranslateAllPages: enabled });
     });
 
-    pdfCheckEl?.addEventListener('change', (e) => {
+    pdfCheckEl?.addEventListener('change', async (e) => {
       e.stopPropagation();
       const enabled = Boolean(pdfCheckEl.checked);
       settings.autoTranslateOnlinePdf = enabled;
+      if (enabled) await saveSiteAutoTranslatePause(false);
       safeUpdateStorage({ autoTranslateOnlinePdf: enabled });
       if (enabled && isOnlinePdfPage() && !hasAutoOpenedPdfTab) {
         hasAutoOpenedPdfTab = true;
@@ -2818,7 +2861,7 @@
         drawerToggle.classList.remove('is-active');
         if (toggleCheck) toggleCheck.textContent = '📄';
         if (toggleMainText) toggleMainText.textContent = '在线 PDF 双语翻译';
-        if (toggleSubText) toggleSubText.textContent = '点击在新标签页打开翻译工作台 ↗';
+        if (toggleSubText) toggleSubText.textContent = siteAutoPaused ? '本站本次会话已暂停自动翻译 · 点击可恢复并打开工作台' : '点击在新标签页打开翻译工作台 ↗';
       }
       return;
     }
@@ -2857,8 +2900,8 @@
       if (drawerToggle) {
         drawerToggle.classList.remove('is-active');
         if (toggleCheck) toggleCheck.textContent = '';
-        if (toggleMainText) toggleMainText.textContent = '双语对照：未开启';
-        if (toggleSubText) toggleSubText.textContent = '点击此处或按 Alt+A 立即开启';
+        if (toggleMainText) toggleMainText.textContent = siteAutoPaused ? '本站本次会话已暂停' : '双语对照：未开启';
+        if (toggleSubText) toggleSubText.textContent = siteAutoPaused ? '手动开启可恢复本站自动翻译；重启浏览器后恢复规则' : '点击此处或按 Alt+A 立即开启';
       }
     }
 
@@ -4887,16 +4930,17 @@
       altHoverGesture.combined = true;
     }
 
+    if (message.type === 'SITE_AUTO_TRANSLATE_STATE_CHANGED') {
+      refreshSiteAutoTranslatePause().then(() => sendResponse({ ok: true }));
+      return true;
+    }
     if (message.type === 'TOGGLE_PAGE_TRANSLATION') {
       const pdfPage = isOnlinePdfPage();
-      const active = togglePageTranslation();
-      sendResponse({
-        ok: true,
-        isPageTranslated: active,
-        totalTranslatedCount,
-        openedPdfTab: pdfPage
-      });
-      return false;
+      togglePageTranslation().then(active => sendResponse({
+        ok: true, isPageTranslated: active, totalTranslatedCount,
+        siteAutoPaused, openedPdfTab: pdfPage
+      }));
+      return true;
     }
     if (message.type === 'CYCLE_TRANSLATION_STYLE') {
       cycleTranslationStyle();
@@ -4916,6 +4960,7 @@
         isPageTranslated,
         totalTranslatedCount,
         translationStyle: settings.translationStyle,
+        siteAutoPaused,
         isYoutube: window.location.hostname.includes('youtube.com'),
         isPdf: isOnlinePdfPage(),
         youtubeCueCount: ytCues.length

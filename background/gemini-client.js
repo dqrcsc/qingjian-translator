@@ -1038,7 +1038,8 @@ export async function analyzePdfWithGemini(
 3. For the paper title on Page 1, use "type": "heading". For the author names, institutional affiliations, and corresponding author emails on Page 1, use "type": "author" and separate the author list, affiliations, and corresponding author line with "\\n".
 4. For section titles (e.g. "Abstract", "1 Introduction", "2 Related Work"), use "type": "heading".
 5. For body paragraphs, merge broken lines within the same paragraph and set "column": "left" or "right" if the page uses a 2-column layout, or "full" if single-column.
-6. For standalone mathematical equations, emit a block with "type": "equation" and LaTeX $$...$$ notation; for inline mathematical expressions or variables inside paragraphs, use LaTeX $...$ notation.`;
+6. For tables, emit a block with "type": "table". Both "original" and "translation" must be complete Markdown pipe tables with a header row, separator row, and the same number and order of cells in every row. Preserve empty cells, numeric values, checkmarks, and column alignment; escape literal pipes inside cells as \\|. Do not flatten a table into prose or invent merged-cell values.
+7. For standalone mathematical equations, emit a block with "type": "equation" and LaTeX $$...$$ notation; for inline mathematical expressions or variables inside paragraphs, use LaTeX $...$ notation.`;
 
   const schema = {
     type: 'ARRAY',

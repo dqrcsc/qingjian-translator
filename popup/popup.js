@@ -51,6 +51,7 @@ let activeTab = null;
 let currentHost = '';
 let isActiveTabOnlinePdf = false;
 let isPageCurrentlyTranslated = false;
+let isSiteAutoPaused = false;
 let popupModelGeneration = 0;
 
 function invalidatePopupModelRequests() {
@@ -219,6 +220,7 @@ function renderStyleChips(activeStyle) {
               type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
             });
             if (res && res.ok) {
+              isSiteAutoPaused = Boolean(res.siteAutoPaused);
               updateToggleButtonUI(res.isPageTranslated, res.totalTranslatedCount);
               return;
             }
@@ -234,6 +236,10 @@ function renderStyleChips(activeStyle) {
 
 async function syncActiveTabTranslationStatus() {
   if (!activeTab?.id) return;
+  try {
+    const state = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.GET_SITE_AUTO_TRANSLATE_STATE, payload: { tabId: activeTab.id } });
+    if (state?.ok) isSiteAutoPaused = state.data.paused;
+  } catch { /* Restricted tabs have no site pause. */ }
   if (isActiveTabOnlinePdf) {
     updateToggleButtonUI(false, 0, false, true);
     return;
@@ -267,7 +273,7 @@ function updateToggleButtonUI(isTranslated, count = 0, isYoutube = false, isPdf 
     if (popupSwitchTrack) popupSwitchTrack.hidden = true;
     toggleBtnIcon.textContent = '📄';
     toggleBtnLabel.textContent = '新建标签页开启此在线 PDF 双语翻译 ↗';
-    toggleBtnSub.textContent = '已识别在线 PDF 文档 · 点击即刻拉取并对照精译 (Alt+A)';
+    toggleBtnSub.textContent = isSiteAutoPaused ? '本站本次会话已暂停自动翻译 · 点击可恢复并打开工作台' : '已识别在线 PDF 文档 · 点击即刻拉取并对照精译 (Alt+A)';
     if (currentSettings) renderStyleChips(currentSettings.translationStyle);
     return;
   }
@@ -283,10 +289,10 @@ function updateToggleButtonUI(isTranslated, count = 0, isYoutube = false, isPdf 
   } else {
     toggleTranslateBtn.classList.remove('is-active');
     toggleBtnIcon.textContent = '';
-    toggleBtnLabel.textContent = isYoutube
+    toggleBtnLabel.textContent = isSiteAutoPaused ? '本站本次会话已暂停' : isYoutube
       ? '网页评论翻译：未开启 (视频字幕已接管)'
       : '双语对照翻译：未开启';
-    toggleBtnSub.textContent = '点击此处或按 Alt + A 立即开启对照翻译';
+    toggleBtnSub.textContent = isSiteAutoPaused ? '手动开启可恢复本站自动翻译；重启浏览器后恢复规则' : '点击此处或按 Alt + A 立即开启对照翻译';
   }
 
   if (currentSettings) {
@@ -308,8 +314,21 @@ async function loadCacheStats() {
   }
 }
 
+async function resumeSiteAutoTranslate() {
+  if (!activeTab?.id) return false;
+  try {
+    const state = await chrome.runtime.sendMessage({ type: MESSAGE_TYPES.SET_SITE_AUTO_TRANSLATE_STATE, payload: { tabId: activeTab.id, paused: false } });
+    if (!state?.ok) throw new Error(state?.error || '请重试');
+    isSiteAutoPaused = false;
+    return true;
+  } catch (error) {
+    toggleBtnSub.textContent = `本站临时暂停状态保存失败：${error?.message || '请刷新后重试'}`;
+    return false;
+  }
+}
+
 async function launchOnlinePdfInNewTab() {
-  if (!activeTab?.url) return;
+  if (!activeTab?.url || !await resumeSiteAutoTranslate()) return;
   const pdfUrl = normalizeOnlinePdfUrl(activeTab.url);
   const studioUrl = chrome.runtime.getURL(
     `studio/studio.html?url=${encodeURIComponent(pdfUrl)}&auto=1`
@@ -338,6 +357,7 @@ toggleTranslateBtn.addEventListener('click', async () => {
         window.close();
         return;
       }
+      isSiteAutoPaused = Boolean(res.siteAutoPaused);
       updateToggleButtonUI(res.isPageTranslated, res.totalTranslatedCount);
       return;
     }
@@ -356,6 +376,7 @@ toggleTranslateBtn.addEventListener('click', async () => {
         type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
       });
       if (res && res.ok) {
+        isSiteAutoPaused = Boolean(res.siteAutoPaused);
         updateToggleButtonUI(res.isPageTranslated, res.totalTranslatedCount);
       }
     } catch {
@@ -425,12 +446,16 @@ autoTranslateDomainCheckbox.addEventListener('change', async () => {
   currentSettings = await saveSettings({
     alwaysTranslateDomains: Array.from(set).join('\n')
   });
+  if (autoTranslateDomainCheckbox.checked && !await resumeSiteAutoTranslate()) return;
+  await syncActiveTabTranslationStatus();
 });
 
 autoTranslateAllCheckbox?.addEventListener('change', async () => {
   currentSettings = await saveSettings({
     autoTranslateAllPages: Boolean(autoTranslateAllCheckbox.checked)
   });
+  if (autoTranslateAllCheckbox.checked && !await resumeSiteAutoTranslate()) return;
+  await syncActiveTabTranslationStatus();
 });
 
 autoTranslateOnlinePdfCheckbox?.addEventListener('change', async () => {
@@ -438,6 +463,7 @@ autoTranslateOnlinePdfCheckbox?.addEventListener('change', async () => {
   currentSettings = await saveSettings({
     autoTranslateOnlinePdf: enabled
   });
+  if (enabled && !await resumeSiteAutoTranslate()) return;
   if (enabled && isActiveTabOnlinePdf) {
     await launchOnlinePdfInNewTab();
   }
@@ -492,6 +518,10 @@ openStudioBtn.addEventListener('click', async () => {
   }
   const studioUrl = chrome.runtime.getURL('studio/studio.html');
   await chrome.tabs.create({ url: studioUrl });
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'session' && changes.qingjian_site_pause_v1) void syncActiveTabTranslationStatus();
 });
 
 initPopup();

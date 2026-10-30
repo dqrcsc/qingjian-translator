@@ -855,6 +855,63 @@ function formatAuthorAffiliationStructure(rawText) {
   return s;
 }
 
+// Only split structural pipes. Literal, code and inline-math pipes belong to a cell.
+// Ambiguous/unbalanced or ragged output stays as readable source instead of shifting columns.
+function splitAcademicTableRow(line) {
+  const cells = []; let cell = '', code = '', math = '';
+  let leadingPipe = false, trailingPipe = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (code) {
+      const run = c === '`' ? line.slice(i).match(/^`+/)[0] : '';
+      if (run === code) code = '';
+      cell += run || c; if (run) i += run.length - 1;
+      continue;
+    }
+    if (math) {
+      if (line.startsWith(math, i)) { cell += math; i += math.length - 1; math = ''; }
+      else if (c === '\\' && i + 1 < line.length) { cell += c + line[++i]; }
+      else cell += c;
+      continue;
+    }
+    if (c === '`') { code = line.slice(i).match(/^`+/)[0]; cell += code; i += code.length - 1; continue; }
+    if (c === '$') { math = line[i+1] === '$' ? '$$' : '$'; cell += math; i += math.length - 1; continue; }
+    if (c === '\\') {
+      if (line[i+1] === '(' || line[i+1] === '[') { math = line[i+1] === '(' ? '\\)' : '\\]'; cell += c + line[++i]; }
+      else if (line[i+1] === '|') { cell += '|'; i++; }
+      else { cell += c; if (i+1 < line.length) cell += line[++i]; }
+      continue;
+    }
+    if (c === '|') {
+      if (!cells.length && !cell.trim()) leadingPipe = true;
+      cells.push(cell.trim()); cell = ''; trailingPipe = i === line.length-1;
+    } else { cell += c; if (c.trim()) trailingPipe = false; }
+  }
+  if (code || math) return null;
+  cells.push(cell.trim());
+  if (leadingPipe) cells.shift();
+  if (trailingPipe) cells.pop();
+  return cells;
+}
+
+function renderAcademicTable(text, pageNum) {
+  const lines = text.split(/\r?\n/).map(line => line.trim());
+  if (lines.length < 2 || lines.some(line => !line)) return null;
+  const rows = lines.map(splitAcademicTableRow);
+  const width = rows[0]?.length || 0;
+  if (width < 2 || rows.some(row => !row || row.length !== width)) return null;
+  const separator = rows[1].every(cell => /^:?-{3,}:?$/.test(cell));
+  const align = separator ? rows[1].map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : 'left') : [];
+  const data = rows.slice(separator ? 2 : 1);
+  if (!data.length) return null;
+  const rowHtml = (row, header = false) => `<tr>${row.map((cell, col) => {
+    const tag = header ? 'th' : 'td';
+    const alignment = align[col] || (!header && /^[✓✔✗✘×—–−+\d.,%\s-]+$/.test(cell) ? 'center' : 'left');
+    return `<${tag}${header ? ' scope="col"' : ''} class="academic-align-${alignment}">${renderRichAcademicHtml(cell, { blockType: 'table-cell', pageNum })}</${tag}>`;
+  }).join('')}</tr>`;
+  return `<div class="academic-table-scroll"><table class="academic-table"><thead>${rowHtml(rows[0], true)}</thead><tbody>${data.map(row => rowHtml(row)).join('')}</tbody></table></div>`;
+}
+
 /**
  * Main entry point: Renders a block's text (`original` or `translation`) into safe, rich HTML
  * with full LaTeX inline/display formula support, superscript rendering, and Markdown bold/italic/code.
@@ -866,7 +923,12 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   let text = String(rawText).trim();
   if (!text) return '';
 
-  const isAuthor = isAuthorOrAffiliationBlock(text, blockType, pageNum);
+  if (blockType === 'table') {
+    const table = renderAcademicTable(text, pageNum);
+    if (table) return table;
+  }
+
+  const isAuthor = blockType !== 'table-cell' && isAuthorOrAffiliationBlock(text, blockType, pageNum);
   if (isAuthor) {
     text = formatAuthorAffiliationStructure(text);
   }

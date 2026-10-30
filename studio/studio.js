@@ -1653,7 +1653,7 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
             : '';
 
         return `
-          <div class="stream-block-card ${b.type === 'heading' ? 'is-heading' : ''}" data-block-id="${b.id}">
+          <div class="stream-block-card ${b.type === 'heading' ? 'is-heading' : b.type === 'table' ? 'is-table' : b.type === 'equation' ? 'is-equation' : ''}" data-block-id="${b.id}">
             <div class="stream-block-meta">
               <span class="page-jump-pill" data-page="${b.page || 1}" title="点击将左侧原文档平滑滚动至第 ${b.page || 1} 页">${badgeLabel}${
           b.type === 'figure' ? ' · 🖼️ 图表' : ''
@@ -3126,9 +3126,28 @@ function exportTranslatedDocument(format) {
   .math-expr { font-family: "Times New Roman", "STIX Two Math", Cambria, Georgia, serif; }
   .math-display-block { display: block; text-align: center; margin: 10px 0; padding: 8px 12px; background: #f8fafc; border-radius: 6px; overflow-x: auto; }
   .math-frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; padding: 0 3px; font-size: 0.9em; }
-  .math-frac-num { border-bottom: 1px solid currentColor; padding: 0 2px 1px; line-height: 1.1; }
-  .math-frac-den { padding: 1px 2px 0; line-height: 1.1; }
+  .math-frac .math-num { border-bottom: 1px solid currentColor; padding: 0 2px 1px; line-height: 1.1; }
+  .math-frac.is-binom .math-num { border-bottom: none; }
+  .math-frac .math-den { padding: 1px 2px 0; line-height: 1.1; }
   .academic-sup { font-size: 0.75em; line-height: 0; vertical-align: super; color: #4f46e5; }
+/* Shared semantic table layout; scrolling preserves columns on narrow viewports. */
+.academic-table-scroll { max-width: 100%; overflow-x: auto; text-indent: 0; }
+.academic-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.92em; line-height: 1.55; color: inherit; }
+.academic-table th, .academic-table td { padding: 7px 9px; border-bottom: 1px solid var(--academic-table-line, #d7e1e3); vertical-align: top; min-width: 2em; overflow-wrap: break-word; }
+.academic-table th { background: var(--academic-table-head, #edf2f3); font-weight: 600; }
+.academic-table .academic-align-left { text-align: left; }
+.academic-table .academic-align-center { text-align: center; }
+.academic-table .academic-align-right { text-align: right; }
+.paper-table-block .stream-orig, .paper-equation-block .stream-orig { color: #475569; }
+.paper-table-block .stream-trans, .paper-equation-block .stream-trans { color: #335f65; text-indent: 0 !important; }
+.paper-table-block .stream-trans { border-left: 0; padding-left: 0; }
+
+  .paper-table-block { margin: 16px 0; padding: 12px 14px; border-top: 2px solid #0f172a; border-bottom: 2px solid #0f172a; background: #f8fafc; column-span: all; }
+  .paper-equation-block { margin: 14px 0; padding: 12px 18px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center; }
+  .paper-equation-block .stream-orig, .paper-equation-block .stream-trans { text-align: center; text-indent: 0 !important; border-left: none; padding-left: 0; margin-bottom: 4px; }
+  .math-display-wrap { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 10px 0; padding: 6px 10px; overflow-x: auto; text-indent: 0 !important; }
+  .math-expr.is-display { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: center; }
+  .math-eq-tag { margin-left: auto; color: #475569; flex-shrink: 0; }
   @media print { body { background: #fff; padding: 0; } .export-topbar { display: none !important; } .paper-sheet-page { box-shadow: none; padding: 0; max-width: 100%; } }
 </style>
 </head>
