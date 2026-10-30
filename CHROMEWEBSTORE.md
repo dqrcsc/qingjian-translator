@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — 青简 · 译读 (QingJian) — 双语精读与智译
 
-> Last Updated: 2026-10-21
+> Last Updated: 2026-10-30
 
 ## Store Listing
 
@@ -16,7 +16,7 @@
 核心功能亮点：
 1. 纯粹开放多模型自由接入（自带密钥 BYOK，无内置模型绑定）：支持 Google Gemini、DeepSeek、OpenCode Go、OpenRouter、OpenAI、硅基流动、阿里云百炼、Moonshot Kimi、智谱 GLM 及任意兼容接口。支持一键从接口拉取可用模型或手动输入任意模型 ID，各服务商密钥与模型配置独立保存、一键切换。
 2. 网页段落级双语对照与贴图原位翻译：尽力保持原网页排版，在原文下方呈现译文，内置清爽对照、引用竖线、精致虚线、外语学习模糊遮罩、荧光马克笔及仅看译文 6 种视觉样式；支持网页插图与社交媒体配图文字原位识别与翻译。
-3. 高频跨语言效率交互：选中任意词句即可结合所在段落完整语境获得语境释义、音标与核心词汇语法拆解；在任意网页搜索框或聊天框中输入文字后连续按 3 次空格键，即可实时转换为目标外语；鼠标指向段落后单独按下并松开 Alt 可速译；图片使用其翻译控件。
+3. 高频跨语言效率交互：选中任意词句即可结合所在段落完整语境获得语境释义、音标与核心词汇语法拆解；在支持的普通输入框和部分富文本区域输入文字后连续按 3 次空格键，可请求转换为目标外语；等待期间继续编辑会取消旧结果；鼠标指向段落后单独按下并松开 Alt 可速译；图片使用其翻译控件。
 4. YouTube 视频双语字幕与实验性音频切片听译：自动锁定视频原声字幕轨道并展示上下双语字幕，支持展开右侧同步滚动的双语字幕时间轴、点击跳转视频进度、一键导出双语字幕文件，并提供无字幕视频音频切片听译功能（仅 Gemini 原生音频模型，每 7 秒切片，另需接口响应时间）。
 5. 学术论文 PDF 与多格式文档翻译工作台：支持在线 PDF 链接（如 arXiv 论文）直连与本地上传，提供左侧原版 PDF 联动预览、右侧保持论文单/双栏与数学公式排版、论文插图文字区域覆盖与原位中文重绘（效果依赖识别与背景）、按需滚动懒加载翻译（节省 Token），并支持导出保持排版的纯译文或双语 PDF、双语 EPUB 电子书、Markdown 与 HTML 文档。
 
@@ -91,6 +91,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.13 | 2026-10-30 | Correct PDF page ownership and failure recovery, input draft protection, dynamic source invalidation, complete HTML text and consistent export layout, figure label retranslation and capability wording. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.12 | 2026-10-30 | Document configuration snapshots, bounded PDF pixels and cancellation, media-time audio slices, manual timeline reading, 100-item document windows and corrected capability wording. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.9 | 2026-10-30 | Reading integrity, clickable translation links, Alt gesture isolation, import readiness, complete HTML exports, PDF forced refresh, EOF code preservation and full-width translation view. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.8 | 2026-10-23 | Studio single-block and full-document retranslate cache bypass, multi-segment retry cleanup, and YouTube detached error banner remounting. | Ready |
