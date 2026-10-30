@@ -11,7 +11,9 @@
   let lastVideoId = '';
   let lastDispatchedTrackUrl = '';
   let lastDispatchedPayload = null;
-  let isInternalTrackFetch = false;
+  let navigationGeneration = 0;
+  let navigationPending = false;
+  let trackController = new AbortController();
 
   function getVideoIdFromUrl() {
     try {
@@ -205,386 +207,255 @@
     }
   }
 
-  function areCuesMatchingPreferredLang(cues, preferred) {
-    if (!Array.isArray(cues) || cues.length === 0) return false;
-    const sample = cues
-      .slice(0, 12)
-      .map((c) => c.text || '')
-      .join(' ');
-    if (!sample) return false;
+  function resetVideoSession() {
+    navigationGeneration++;
+    lastVideoId = getVideoIdFromUrl();
+    lastDispatchedTrackUrl = '';
+    lastDispatchedPayload = null;
+    lastKnownPot = '';
+    lastKnownClient = '';
+    for (const key of Object.keys(lastKnownSessionParams)) delete lastKnownSessionParams[key];
+    trackController.abort();
+    trackController = new AbortController();
+  }
 
-    const cjkCount = (sample.match(/[\u4e00-\u9fff]/g) || []).length;
-    const arabicCount = (sample.match(/[\u0600-\u06ff]/g) || []).length;
-    const latinCount = (sample.match(/[a-zA-Z]/g) || []).length;
-    const prefLang = (preferred?.languageCode || '').toLowerCase();
+  function captureVideoSession() {
+    if (getVideoIdFromUrl() !== lastVideoId) resetVideoSession();
+    return { videoId: lastVideoId, generation: navigationGeneration, signal: trackController.signal };
+  }
 
-    // If preferred original track is English or another Latin-alphabet language, reject Arabic or Chinese cues
-    if (/^(en|es|fr|de|pt|it|nl)/i.test(prefLang)) {
-      if (arabicCount > 4 || cjkCount / sample.length > 0.15 || latinCount < 4) {
-        return false;
-      }
-    }
+  function isCurrentVideoSession(session) {
+    captureVideoSession();
+    return Boolean(session?.videoId) && !navigationPending &&
+      session.videoId === lastVideoId && session.generation === navigationGeneration;
+  }
 
-    // If video has any non-Chinese track, reject Chinese cues as "original"
-    if (cjkCount / sample.length > 0.2 && videoHasNonChineseTrack()) {
+  function isCurrentTrackRequest(session, rawUrl) {
+    if (!isCurrentVideoSession(session)) return false;
+    try {
+      const sourceVideoId = new URL(rawUrl, window.location.origin).searchParams.get('v');
+      return !sourceVideoId || sourceVideoId === session.videoId;
+    } catch {
       return false;
     }
-    return true;
   }
 
   function getCaptionTracklist() {
     try {
       const videoId = getVideoIdFromUrl();
       const player = document.getElementById('movie_player');
-      let playerResponse = null;
-      if (player && typeof player.getPlayerResponse === 'function') {
-        playerResponse = player.getPlayerResponse();
-      }
-      if (
-        (!playerResponse || playerResponse?.videoDetails?.videoId !== videoId) &&
-        window.ytInitialPlayerResponse &&
-        window.ytInitialPlayerResponse?.videoDetails?.videoId === videoId
-      ) {
-        playerResponse = window.ytInitialPlayerResponse;
-      }
-      if (!playerResponse && window.ytInitialPlayerResponse) {
-        playerResponse = window.ytInitialPlayerResponse;
-      }
-      return playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+      let response = player?.getPlayerResponse?.();
+      if (response?.videoDetails?.videoId !== videoId) response = window.ytInitialPlayerResponse;
+      if (!videoId || response?.videoDetails?.videoId !== videoId) return [];
+      return response?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
     } catch {
       return [];
     }
   }
 
+  function isAsrTrack(track) {
+    return track?.kind === 'asr' || track?.vssId?.startsWith('a.');
+  }
+
   function selectPreferredOriginalTrack(tracklist) {
     if (!Array.isArray(tracklist) || tracklist.length === 0) return null;
-    // 1. ASR track (kind === 'asr' or vssId starting with 'a.') only exists for the video's spoken original audio language
-    const asrTrack = tracklist.find(
-      (t) => t.kind === 'asr' || (typeof t.vssId === 'string' && t.vssId.startsWith('a.'))
-    );
-    const origLangPrefix = asrTrack?.languageCode?.split('-')[0]?.toLowerCase() || '';
-
-    // 2. Also check if a track name explicitly says "Original" / "原声"
-    const explicitOrigTrack = tracklist.find((t) => {
-      const label = (t.name?.simpleText || t.name?.runs?.[0]?.text || '').toLowerCase();
+    // ASR metadata is a useful source-language hint, not a guarantee for every video.
+    const asrTrack = tracklist.find(isAsrTrack);
+    const originalLanguage = asrTrack?.languageCode?.split('-')[0]?.toLowerCase();
+    const explicitOriginal = tracklist.find((track) => {
+      const label = (track.name?.simpleText || track.name?.runs?.[0]?.text || '').toLowerCase();
       return label.includes('original') || label.includes('原声');
     });
-
-    return (
-      explicitOrigTrack ||
-      (origLangPrefix &&
-        tracklist.find(
-          (t) =>
-            t.kind !== 'asr' &&
-            typeof t.languageCode === 'string' &&
-            t.languageCode.toLowerCase().startsWith(origLangPrefix)
-        )) ||
-      tracklist.find((t) => t.kind !== 'asr' && /^en/i.test(t.languageCode)) ||
-      asrTrack ||
-      tracklist.find((t) => /^en/i.test(t.languageCode)) ||
-      tracklist.find((t) => !/^(zh|ar)/i.test(t.languageCode)) ||
-      tracklist[0]
-    );
+    return explicitOriginal ||
+      (originalLanguage && tracklist.find((track) => !isAsrTrack(track) &&
+        track.languageCode?.split('-')[0]?.toLowerCase() === originalLanguage)) ||
+      asrTrack || tracklist[0];
   }
 
-  function videoHasNonChineseTrack() {
-    const tracklist = getCaptionTracklist();
-    return tracklist.some((t) => t.languageCode && !/^zh/i.test(t.languageCode));
+  function matchSelectedTrack(tracklist, selected) {
+    if (!selected?.languageCode) return null;
+    if (selected.vssId) {
+      const exact = tracklist.find((track) => track.vssId === selected.vssId);
+      if (exact) return exact;
+    }
+    return tracklist.find((track) => track.languageCode === selected.languageCode &&
+      Boolean(isAsrTrack(track)) === Boolean(isAsrTrack(selected))) || null;
   }
 
-  function dispatchCuesToContentScript(cues, trackMeta = {}, sourceUrl = '') {
-    if (!Array.isArray(cues) || cues.length === 0) return false;
-    const preferred = selectPreferredOriginalTrack(getCaptionTracklist());
-    if (!areCuesMatchingPreferredLang(cues, preferred)) {
-      return false;
+  function selectCaptionTrack(tracklist = getCaptionTracklist()) {
+    try {
+      const selected = document.getElementById('movie_player')?.getOption?.('captions', 'track');
+      const matching = matchSelectedTrack(tracklist, selected);
+      if (matching) return matching;
+    } catch {
+      // Player options can be temporarily unavailable while navigating.
     }
+    return selectPreferredOriginalTrack(tracklist);
+  }
 
-    const videoId = getVideoIdFromUrl();
-    if (sourceUrl) {
-      lastDispatchedTrackUrl = sourceUrl;
-    }
+  function isSelectedSource(trackMeta) {
+    const selected = selectCaptionTrack();
+    if (!selected || !trackMeta?.languageCode) return true;
+    return selected.languageCode === trackMeta.languageCode &&
+      Boolean(isAsrTrack(selected)) === Boolean(isAsrTrack(trackMeta));
+  }
+
+  function dispatchCuesToContentScript(cues, trackMeta, sourceUrl, session) {
+    if (!isCurrentTrackRequest(session, sourceUrl) || !isSelectedSource(trackMeta)) return false;
+    if (!Array.isArray(cues) || !cues.some((cue) => cue.text?.trim())) return false;
+    lastDispatchedTrackUrl = sourceUrl;
     lastDispatchedPayload = {
-      videoId,
+      videoId: session.videoId,
       videoTitle: document.title.replace(/\s*-\s*YouTube$/i, ''),
-      languageCode: trackMeta.languageCode || preferred?.languageCode || 'auto',
+      languageCode: trackMeta.languageCode || 'auto',
       trackName: trackMeta.name?.simpleText || trackMeta.name?.runs?.[0]?.text || '',
-      isAutoGenerated: trackMeta.kind === 'asr',
+      isAutoGenerated: Boolean(isAsrTrack(trackMeta)),
       cues
     };
-    window.postMessage(
-      {
-        source: 'IG_YT_MAIN_BRIDGE',
-        type: 'YT_CUES_LOADED',
-        payload: lastDispatchedPayload
-      },
-      '*'
-    );
+    window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CUES_LOADED', payload: lastDispatchedPayload }, '*');
     return true;
   }
 
-  async function fetchAndDispatchTrack(baseUrl, trackMeta = {}) {
-    if (!baseUrl) return false;
+  async function fetchAndDispatchTrack(baseUrl, trackMeta = {}, session = captureVideoSession()) {
+    if (!baseUrl || !isCurrentTrackRequest(session, baseUrl)) return false;
     try {
       capturePotFromTimedTextUrl(baseUrl);
       const urlObj = new URL(baseUrl, window.location.origin);
       urlObj.searchParams.set('fmt', 'json3');
-      // Always remove tlang so YouTube returns the original spoken language track instead of machine-translated Chinese
+      // Translate the chosen base track ourselves; leave the player's display choice intact.
       urlObj.searchParams.delete('tlang');
       applySessionParamsToUrl(urlObj);
       const finalUrl = urlObj.toString();
-
-      const currentVid = getVideoIdFromUrl();
-      const preferred = selectPreferredOriginalTrack(getCaptionTracklist());
-      if (
-        finalUrl === lastDispatchedTrackUrl &&
-        lastDispatchedPayload &&
-        lastDispatchedPayload.videoId === currentVid &&
-        lastDispatchedPayload.cues?.length > 0 &&
-        areCuesMatchingPreferredLang(lastDispatchedPayload.cues, preferred)
-      ) {
-        window.postMessage(
-          {
-            source: 'IG_YT_MAIN_BRIDGE',
-            type: 'YT_CUES_LOADED',
-            payload: lastDispatchedPayload
-          },
-          '*'
-        );
+      if (finalUrl === lastDispatchedTrackUrl && lastDispatchedPayload && isSelectedSource(trackMeta)) {
+        window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CUES_LOADED', payload: lastDispatchedPayload }, '*');
         return true;
       }
 
-      isInternalTrackFetch = true;
-      const resp = await window.fetch(finalUrl, { credentials: 'same-origin' });
-      isInternalTrackFetch = false;
-      if (resp.ok) {
-        const rawText = await resp.text();
+      // Bypass our fetch interceptor instead of suppressing unrelated concurrent requests.
+      const response = await origFetch.call(window, finalUrl, { credentials: 'same-origin', signal: session.signal });
+      if (!isCurrentTrackRequest(session, baseUrl)) return false;
+      if (response.ok) {
+        const rawText = await response.text();
+        if (!isCurrentTrackRequest(session, baseUrl)) return false;
         const cues = parseTimedTextPayload(rawText);
-        if (cues.length > 0) {
-          return dispatchCuesToContentScript(cues, trackMeta, finalUrl);
-        }
+        if (cues.length) return dispatchCuesToContentScript(cues, trackMeta, finalUrl, session);
       }
 
-      // Fallback: try without forcing fmt=json3 (still stripping tlang and keeping pot)
-      const fallbackUrlObj = new URL(baseUrl, window.location.origin);
-      fallbackUrlObj.searchParams.delete('tlang');
-      applySessionParamsToUrl(fallbackUrlObj);
-      isInternalTrackFetch = true;
-      const fallbackResp = await window.fetch(fallbackUrlObj.toString(), {
-        credentials: 'same-origin'
+      const fallbackUrl = new URL(baseUrl, window.location.origin);
+      fallbackUrl.searchParams.delete('tlang');
+      applySessionParamsToUrl(fallbackUrl);
+      const fallbackResponse = await origFetch.call(window, fallbackUrl.toString(), {
+        credentials: 'same-origin', signal: session.signal
       });
-      isInternalTrackFetch = false;
-      if (fallbackResp.ok) {
-        const fallbackText = await fallbackResp.text();
-        const fallbackCues = parseTimedTextPayload(fallbackText);
-        if (fallbackCues.length > 0) {
-          return dispatchCuesToContentScript(fallbackCues, trackMeta, finalUrl);
-        }
+      if (!isCurrentTrackRequest(session, baseUrl)) return false;
+      if (fallbackResponse.ok) {
+        const rawText = await fallbackResponse.text();
+        return dispatchCuesToContentScript(parseTimedTextPayload(rawText), trackMeta, finalUrl, session);
       }
     } catch {
-      isInternalTrackFetch = false;
+      // Navigation aborts and temporary timedtext failures are recovered by the next extraction.
     }
     return false;
   }
 
-  async function extractCaptionTracksFromPlayer() {
+  async function extractCaptionTracksFromPlayer(session = captureVideoSession()) {
     try {
-      const videoId = getVideoIdFromUrl();
-      if (!videoId) return;
-
+      if (!isCurrentVideoSession(session)) return;
       const tracklist = getCaptionTracklist();
-      const preferred = selectPreferredOriginalTrack(tracklist);
-
-      // If we already have valid original cues for this exact videoId, replay them immediately
-      if (
-        lastDispatchedPayload &&
-        lastDispatchedPayload.videoId === videoId &&
-        Array.isArray(lastDispatchedPayload.cues) &&
-        lastDispatchedPayload.cues.length > 0 &&
-        areCuesMatchingPreferredLang(lastDispatchedPayload.cues, preferred)
-      ) {
-        window.postMessage(
-          {
-            source: 'IG_YT_MAIN_BRIDGE',
-            type: 'YT_CUES_LOADED',
-            payload: lastDispatchedPayload
-          },
-          '*'
-        );
-        return;
-      }
-
+      const preferred = selectCaptionTrack(tracklist);
       const player = document.getElementById('movie_player');
-
       if (!Array.isArray(tracklist) || tracklist.length === 0) {
-        window.postMessage(
-          {
-            source: 'IG_YT_MAIN_BRIDGE',
-            type: 'YT_NO_CAPTIONS_AVAILABLE',
-            payload: {
-              videoId,
-              videoTitle: document.title.replace(/\s*-\s*YouTube$/i, '')
-            }
-          },
-          '*'
-        );
+        window.postMessage({
+          source: 'IG_YT_MAIN_BRIDGE', type: 'YT_NO_CAPTIONS_AVAILABLE',
+          payload: { videoId: session.videoId, videoTitle: document.title.replace(/\s*-\s*YouTube$/i, '') }
+        }, '*');
         return;
       }
-
-      if (preferred && preferred.baseUrl) {
-        ensurePlayerOriginalCaptionTrack(player, preferred);
-        const ok = await fetchAndDispatchTrack(preferred.baseUrl, preferred);
-        if (!ok) {
-          ensurePlayerOriginalCaptionTrack(player, preferred, true);
-        }
+      if (preferred?.baseUrl) {
+        ensurePlayerCaptionTrack(player, preferred, session);
+        await fetchAndDispatchTrack(preferred.baseUrl, preferred, session);
       }
     } catch {
-      // Ignore transient player state errors
+      // Ignore transient player state errors.
     }
   }
 
-  function ensurePlayerOriginalCaptionTrack(player, preferred, forceActivate = false, retryCount = 0) {
-    if (!player || !preferred || !preferred.languageCode) return;
+  function ensurePlayerCaptionTrack(player, preferred, session, retryCount = 0) {
+    if (!isCurrentVideoSession(session) || !player || !preferred?.languageCode) return;
     try {
-      if (typeof player.loadModule === 'function') {
-        player.loadModule('captions');
+      // A valid active track belongs to the viewer; don't force another language or clear translation settings.
+      if (matchSelectedTrack(getCaptionTracklist(), player.getOption?.('captions', 'track'))) return;
+      player.loadModule?.('captions');
+      if (typeof player.getOption !== 'function' || typeof player.setOption !== 'function') return;
+      const runtimeTracklist = player.getOption('captions', 'tracklist') || [];
+      if (!Array.isArray(runtimeTracklist) || !runtimeTracklist.length) {
+        if (retryCount < 3) setTimeout(() => ensurePlayerCaptionTrack(player, preferred, session, retryCount + 1), 380);
+        return;
       }
-      if (typeof player.getOption === 'function' && typeof player.setOption === 'function') {
-        const runtimeTracklist = player.getOption('captions', 'tracklist') || [];
-        if (!Array.isArray(runtimeTracklist) || runtimeTracklist.length === 0) {
-          if (retryCount < 3) {
-            setTimeout(
-              () => ensurePlayerOriginalCaptionTrack(player, preferred, forceActivate, retryCount + 1),
-              380
-            );
-          }
-          return;
-        }
-
-        const prefPrefix = preferred.languageCode.split('-')[0].toLowerCase();
-        // Match the exact full track object from the player's runtime tracklist so YouTube never defaults to tracklist[0] ('ar' Arabic)
-        const matchedRuntimeTrack =
-          runtimeTracklist.find(
-            (t) => t.languageCode === preferred.languageCode && t.kind === preferred.kind
-          ) ||
-          runtimeTracklist.find((t) => t.languageCode === preferred.languageCode) ||
-          runtimeTracklist.find(
-            (t) =>
-              typeof t.languageCode === 'string' &&
-              t.languageCode.toLowerCase().startsWith(prefPrefix) &&
-              t.kind !== 'asr'
-          ) ||
-          runtimeTracklist.find(
-            (t) =>
-              typeof t.languageCode === 'string' &&
-              t.languageCode.toLowerCase().startsWith(prefPrefix)
-          );
-
-        if (!matchedRuntimeTrack) return;
-
-        const currentTrack = player.getOption('captions', 'track');
-        const hasAutoTrans = Boolean(
-          currentTrack &&
-            (currentTrack.translationLanguage ||
-              currentTrack.translationLanguage?.languageCode)
-        );
-        const isCurrentWrongLang =
-          Boolean(currentTrack?.languageCode) &&
-          !currentTrack.languageCode.toLowerCase().startsWith(prefPrefix);
-        const isTrackUnset = !currentTrack || !currentTrack.languageCode;
-
-        if (forceActivate || hasAutoTrans || isCurrentWrongLang || isTrackUnset) {
-          const cleanTrack = { ...matchedRuntimeTrack };
-          delete cleanTrack.translationLanguage;
-          player.setOption('captions', 'track', cleanTrack);
-        }
-      }
+      const matching = matchSelectedTrack(runtimeTracklist, preferred);
+      if (matching) player.setOption('captions', 'track', { ...matching });
     } catch {
-      // ignore
+      // Ignore transient caption-module state errors.
     }
   }
 
-  function handleInterceptedTimedText(reqUrl, rawResponseText) {
+  function handleInterceptedTimedText(reqUrl, rawResponseText, session) {
+    if (!isCurrentTrackRequest(session, reqUrl)) return;
     try {
       capturePotFromTimedTextUrl(reqUrl);
-      const u = new URL(reqUrl, window.location.origin);
-      const hasTlang = u.searchParams.has('tlang');
-      const reqLang = (u.searchParams.get('lang') || '').toLowerCase();
-      const preferred = selectPreferredOriginalTrack(getCaptionTracklist());
-      const prefPrefix = preferred?.languageCode?.split('-')[0]?.toLowerCase() || '';
-      const isWrongLangTrack =
-        Boolean(prefPrefix && reqLang && !reqLang.startsWith(prefPrefix)) ||
-        (/^zh/i.test(reqLang) && videoHasNonChineseTrack());
-
-      // If YouTube's player requested a machine-translated track (tlang=...) or a non-original language track (e.g. 'ar' or 'zh' on an 'en' video),
-      // DO NOT use rawResponseText directly; instead switch & fetch the original language track!
-      if (hasTlang || isWrongLangTrack) {
-        const player = document.getElementById('movie_player');
-        if (player && preferred) {
-          ensurePlayerOriginalCaptionTrack(player, preferred, true);
-        }
-        if (hasTlang && (!prefPrefix || reqLang.startsWith(prefPrefix))) {
-          fetchAndDispatchTrack(reqUrl, { languageCode: reqLang || 'en' });
-        } else if (preferred && preferred.baseUrl) {
-          fetchAndDispatchTrack(preferred.baseUrl, preferred);
-        }
+      const url = new URL(reqUrl, window.location.origin);
+      const requestLanguage = url.searchParams.get('lang') || '';
+      const preferred = selectCaptionTrack();
+      const requestTrack = {
+        languageCode: requestLanguage || 'auto',
+        kind: url.searchParams.get('kind') || undefined,
+        vssId: url.searchParams.get('vssId') || undefined
+      };
+      if (url.searchParams.has('tlang') || !isSelectedSource(requestTrack)) {
+        if (preferred?.baseUrl) fetchAndDispatchTrack(preferred.baseUrl, preferred, session);
+        else if (url.searchParams.has('tlang')) fetchAndDispatchTrack(reqUrl, requestTrack, session);
         return;
       }
-
-      if (typeof rawResponseText === 'string' && rawResponseText.length > 10) {
-        const cues = parseTimedTextPayload(rawResponseText);
-        if (cues.length > 0) {
-          const dispatched = dispatchCuesToContentScript(
-            cues,
-            { languageCode: reqLang || 'detected' },
-            reqUrl
-          );
-          if (dispatched) return;
-        }
-      }
-
-      if (reqUrl !== lastDispatchedTrackUrl) {
-        fetchAndDispatchTrack(reqUrl, { languageCode: reqLang || 'detected' });
-      }
+      const cues = parseTimedTextPayload(rawResponseText);
+      if (cues.length && dispatchCuesToContentScript(cues, preferred || requestTrack, reqUrl, session)) return;
+      if (reqUrl !== lastDispatchedTrackUrl) fetchAndDispatchTrack(reqUrl, preferred || requestTrack, session);
     } catch {
-      // ignore
+      // Ignore malformed URLs/responses from the player.
     }
   }
 
-  // 1. Intercept XMLHttpRequest for /api/timedtext
+  // Bind identity before asynchronous work starts, including the response-body read.
   const origOpen = XMLHttpRequest.prototype.open;
+  const xhrHandlers = new WeakMap();
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    const previous = xhrHandlers.get(this);
+    if (previous) this.removeEventListener('load', previous);
     if (typeof url === 'string' && url.includes('/api/timedtext')) {
-      capturePotFromTimedTextUrl(url);
-      this.addEventListener('load', function () {
-        handleInterceptedTimedText(url, this.responseText);
-      });
+      const session = captureVideoSession();
+      if (isCurrentTrackRequest(session, url)) capturePotFromTimedTextUrl(url);
+      const onLoad = () => handleInterceptedTimedText(url, this.responseText, session);
+      xhrHandlers.set(this, onLoad);
+      this.addEventListener('load', onLoad, { once: true });
     }
     return origOpen.call(this, method, url, ...rest);
   };
 
-  // 2. Intercept window.fetch for /api/timedtext
   const origFetch = window.fetch;
   if (typeof origFetch === 'function') {
     window.fetch = async function (...args) {
-      const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
-      if (!isInternalTrackFetch && reqUrl && reqUrl.includes('/api/timedtext')) {
-        capturePotFromTimedTextUrl(reqUrl);
-      }
-      const resp = await origFetch.apply(this, args);
-      if (!isInternalTrackFetch && reqUrl && reqUrl.includes('/api/timedtext')) {
+      const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || String(args[0] || '');
+      const session = captureVideoSession();
+      const intercept = reqUrl.includes('/api/timedtext') && isCurrentTrackRequest(session, reqUrl);
+      if (intercept) capturePotFromTimedTextUrl(reqUrl);
+      const response = await origFetch.apply(this, args);
+      if (intercept && isCurrentTrackRequest(session, reqUrl)) {
         try {
-          const clone = resp.clone();
-          clone
-            .text()
-            .then((rawText) => {
-              handleInterceptedTimedText(reqUrl, rawText);
-            })
-            .catch(() => {});
+          response.clone().text().then((rawText) => handleInterceptedTimedText(reqUrl, rawText, session)).catch(() => {});
         } catch {
-          // ignore
+          // Opaque or already consumed responses cannot be inspected.
         }
       }
-      return resp;
+      return response;
     };
   }
 
@@ -608,31 +479,32 @@
     }
   });
 
+  function scheduleExtraction(delays) {
+    const session = captureVideoSession();
+    for (const delay of delays) setTimeout(() => extractCaptionTracksFromPlayer(session), delay);
+  }
+
   function checkVideoChange() {
-    const vid = getVideoIdFromUrl();
-    if (vid && vid !== lastVideoId) {
-      lastVideoId = vid;
-      lastDispatchedTrackUrl = '';
-      lastDispatchedPayload = null;
-      setTimeout(extractCaptionTracksFromPlayer, 500);
-      setTimeout(extractCaptionTracksFromPlayer, 1800);
+    if (getVideoIdFromUrl() !== lastVideoId) {
+      resetVideoSession();
+      scheduleExtraction([500, 1800]);
     }
   }
 
+  window.addEventListener('yt-navigate-start', () => {
+    navigationPending = true;
+    resetVideoSession();
+  });
   window.addEventListener('yt-navigate-finish', () => {
-    const vid = getVideoIdFromUrl();
-    if (vid !== lastVideoId) {
-      lastVideoId = vid;
-      lastDispatchedTrackUrl = '';
-      lastDispatchedPayload = null;
-    }
-    setTimeout(extractCaptionTracksFromPlayer, 450);
-    setTimeout(extractCaptionTracksFromPlayer, 1600);
+    navigationPending = false;
+    resetVideoSession();
+    scheduleExtraction([450, 1600]);
   });
-
-  window.addEventListener('load', () => {
-    setTimeout(extractCaptionTracksFromPlayer, 600);
+  window.addEventListener('popstate', () => {
+    navigationPending = false;
+    resetVideoSession();
+    scheduleExtraction([500, 1800]);
   });
-
+  window.addEventListener('load', () => scheduleExtraction([600]));
   setInterval(checkVideoChange, 1200);
 })();

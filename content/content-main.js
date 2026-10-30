@@ -80,6 +80,7 @@
   ];
 
   let settings = { ...DEFAULT_SETTINGS };
+  let settingsRevision = 0;
   let isPageTranslated = false;
   let pageTranslationSession = 0;
   let totalTranslatedCount = 0;
@@ -151,17 +152,19 @@
   }
 
   async function loadSettings() {
-    if (!isExtensionContextValid()) return;
+    if (!isExtensionContextValid()) return false;
+    const revision = settingsRevision;
     try {
       const res = await chrome.storage.local.get(STORAGE_KEY);
-      settings = sanitizeContentSettings(res?.[STORAGE_KEY]);
+      if (revision === settingsRevision) settings = sanitizeContentSettings(res?.[STORAGE_KEY]);
       applyStyleAttribute(settings.translationStyle);
       applyYoutubeCssVariables();
       updateFloatingBallVisibility();
       updateFloatingBallStatus();
       checkAutoTranslateDomainRule();
+      return true;
     } catch {
-      // ignore if extension context was invalidated during tab reload
+      return false;
     }
   }
 
@@ -169,11 +172,14 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local' && changes[STORAGE_KEY]) {
         const change = changes[STORAGE_KEY];
+        settingsRevision++;
+        const previous = settings;
         const requestFields = ['providerId', 'apiProtocol', 'apiBaseUrl', 'apiKey', 'modelId', 'customModelId', 'targetLang', 'glossaryText', 'customSystemPrompt'];
         if (requestFields.some(key => change.oldValue?.[key] !== change.newValue?.[key])) {
-          resetYoutubeTranslationSession();
+          invalidateYoutubeTranslations();
         }
         settings = sanitizeContentSettings(change.newValue);
+        syncYoutubePreferences(previous);
         applyStyleAttribute(settings.translationStyle);
         applyYoutubeCssVariables();
         updateFloatingBallVisibility();
@@ -2936,6 +2942,13 @@
   // ============================================================================
 
   let ytCues = [];
+  let ytInitialized = false;
+  let ytNavigationPending = false;
+  let ytCaptionSource = 'none';
+  let ytObservedCues = [];
+  let ytObservedCueId = 0;
+  let ytCurrentObservedCue = null;
+  let ytObservedDropped = 0;
   let ytVideoTitle = '';
   let ytCurrentVideoId = '';
   let ytDualActive = true;
@@ -2976,6 +2989,85 @@
     ytErrorEl?.remove();
     ytErrorEl = null;
     ytLastRenderedSig = '';
+  }
+
+  function invalidateYoutubeTranslations() {
+    resetYoutubeTranslationSession();
+    stopYoutubeAudioListen();
+    for (const cue of [...ytCues, ...ytObservedCues]) cue.translation = '';
+    ytLiveCaptionCache.clear();
+    renderYoutubeTimelineList();
+  }
+
+  function clearYoutubeSourceCues() {
+    ytCues = [];
+    ytVideoTitle = '';
+    ytCaptionSource = 'none';
+    ytObservedCues = [];
+    ytCurrentObservedCue = null;
+    ytObservedCueId = 0;
+    ytObservedDropped = 0;
+    ytLiveCaptionCache.clear();
+    if (ytOverlayEl) ytOverlayEl.innerHTML = '';
+    renderYoutubeTimelineList(true);
+  }
+
+  function syncYoutubeVideoSession() {
+    const videoId = getCurrentYoutubeVideoId();
+    if (videoId === ytCurrentVideoId) return false;
+    stopYoutubeAudioListen();
+    resetYoutubeTranslationSession();
+    ytCurrentVideoId = videoId;
+    clearYoutubeSourceCues();
+    return true;
+  }
+
+  function getYoutubeTimelineCues() {
+    return ytCues.length ? ytCues : [...ytObservedCues].sort((a, b) => a.start - b.start);
+  }
+
+  function observeYoutubeLiveCaption(text, time, translation = '') {
+    if (!text || !Number.isFinite(time)) return;
+    const t = Math.max(0, time);
+    let cue = ytCurrentObservedCue;
+    if (!cue || cue.text !== text || t < cue.start || t > cue.end + 1.5) {
+      cue = ytObservedCues.find(item => item.text === text && t >= item.start && t <= item.end);
+    }
+    let changed = false;
+    if (!cue) {
+      cue = { id: `live-${++ytObservedCueId}`, start: t, end: t + 0.001, text, translation };
+      ytObservedCues.push(cue);
+      if (ytObservedCues.length > 1000) { ytObservedCues.shift(); ytObservedDropped++; }
+      changed = true;
+    } else {
+      cue.end = Math.max(cue.end, t);
+      if (translation && cue.translation !== translation) { cue.translation = translation; changed = true; }
+    }
+    ytCurrentObservedCue = cue;
+    if (changed) renderYoutubeTimelineList();
+    return cue;
+  }
+
+  function youtubeCoverageText() {
+    const cues = getYoutubeTimelineCues();
+    const translated = cues.filter(cue => cue.translation).length;
+    if (ytCues.length) return `${ytCaptionSource === 'audio' ? '已听译音频片段' : '已加载字幕轨道'}：${cues.length} 条，已有译文 ${translated} 条`;
+    return `仅包含已观察到的字幕片段：${cues.length} 条，已有译文 ${translated} 条；时间为观察区间，不是完整视频字幕${ytObservedDropped ? `；已移除最早 ${ytObservedDropped} 条记录` : ''}`;
+  }
+
+  function syncYoutubePreferences(previous) {
+    if (!ytInitialized) return;
+    if (previous.youtubeAutoEnable !== settings.youtubeAutoEnable || previous.enableYoutubeDualSub !== settings.enableYoutubeDualSub) {
+      ytDualActive = settings.enableYoutubeDualSub !== false && settings.youtubeAutoEnable !== false;
+      resetYoutubeTranslationSession();
+      if (!ytDualActive) { stopYoutubeAudioListen(); if (ytOverlayEl) ytOverlayEl.innerHTML = ''; }
+      updateYoutubeControlButtonUI();
+    }
+    if (previous.youtubeShowSidebar !== settings.youtubeShowSidebar) {
+      ytSidebarOpen = Boolean(settings.youtubeShowSidebar);
+      if (!ytSidebarOpen && ytSidebarEl) ytSidebarEl.style.display = 'none';
+    }
+    mountYoutubePlayerUI();
   }
 
   function canRequestYoutubeTranslation() {
@@ -3059,14 +3151,27 @@
   function initYoutubeIntegration() {
     if (!window.location.hostname.includes('youtube.com')) return;
 
-    ytDualActive = settings.youtubeAutoEnable !== false;
+    ytInitialized = true;
+    ytDualActive = settings.enableYoutubeDualSub !== false && settings.youtubeAutoEnable !== false;
     ytSidebarOpen = Boolean(settings.youtubeShowSidebar);
     ytCurrentVideoId = getCurrentYoutubeVideoId();
     applyYoutubeCssVariables();
 
+    window.addEventListener('yt-navigate-start', () => {
+      ytNavigationPending = true;
+      stopYoutubeAudioListen();
+      resetYoutubeTranslationSession();
+      clearYoutubeSourceCues();
+    });
+    window.addEventListener('yt-navigate-finish', () => {
+      ytNavigationPending = false;
+      syncYoutubeVideoSession();
+      requestYoutubeTracksFromBridge();
+    });
     window.addEventListener('message', (event) => {
       if (event.source !== window || !event.data) return;
-      if (event.data.source !== 'IG_YT_MAIN_BRIDGE') return;
+      if (event.data.source !== 'IG_YT_MAIN_BRIDGE' || ytNavigationPending) return;
+      syncYoutubeVideoSession();
 
       if (event.data.type === 'YT_CUES_LOADED') {
         const { cues, videoTitle, videoId } = event.data.payload || {};
@@ -3080,6 +3185,7 @@
           ytTranslationBusy = false;
           ytLiveCaptionInFlight.clear();
           ytCues = cues.map((c) => ({ ...c, translation: '' }));
+          ytCaptionSource = 'track';
           ytVideoTitle = videoTitle || document.title;
           ytInFlightBatchIds.clear();
           ytLastRenderedSig = '';
@@ -3091,6 +3197,7 @@
           prefetchYoutubeCuesAround(curTime);
         }
       } else if (event.data.type === 'YT_NO_CAPTIONS_AVAILABLE') {
+        if (event.data.payload?.videoId && event.data.payload.videoId !== getCurrentYoutubeVideoId()) return;
         ytVideoTitle = event.data.payload?.videoTitle || document.title;
         mountYoutubePlayerUI();
         renderYoutubeTimelineList(true);
@@ -3118,24 +3225,14 @@
         if (ytCurrentVideoId || ytTranslationBusy) {
           resetYoutubeTranslationSession();
           ytCurrentVideoId = '';
+          clearYoutubeSourceCues();
         }
         if (ytAudioListenActive) stopYoutubeAudioListen();
         return;
       }
 
-      const currentVid = getCurrentYoutubeVideoId();
-      if (currentVid && currentVid !== ytCurrentVideoId) {
-        stopYoutubeAudioListen();
-        resetYoutubeTranslationSession();
-        ytCurrentVideoId = currentVid;
-        ytCues = [];
-        ytInFlightBatchIds.clear();
-        ytLiveCaptionCache.clear();
-        ytLiveCaptionInFlight.clear();
-        ytLastRenderedSig = '';
-        if (ytOverlayEl) ytOverlayEl.innerHTML = '';
-        requestYoutubeTracksFromBridge();
-      } else if (ytDualActive && ytCues.length === 0) {
+      if (ytNavigationPending) return;
+      if (syncYoutubeVideoSession() || (ytDualActive && ytCues.length === 0)) {
         requestYoutubeTracksFromBridge();
       }
 
@@ -3167,7 +3264,7 @@
           requestYoutubeTracksFromBridge();
         }
       };
-      video.addEventListener('seeked', triggerImmediatePrefetch);
+      video.addEventListener('seeked', () => { ytCurrentObservedCue = null; triggerImmediatePrefetch(); });
       video.addEventListener('playing', triggerImmediatePrefetch);
     }
 
@@ -3207,6 +3304,10 @@
       });
 
       rightControls.insertBefore(ytCtrlBtnEl, rightControls.firstChild);
+    }
+    if (ytSidebarOpen && (!ytSidebarEl || !ytSidebarEl.isConnected || ytSidebarEl.style.display === 'none')) {
+      ensureYoutubeTimelineSidebar();
+      renderYoutubeTimelineList(true);
     }
   }
 
@@ -3254,9 +3355,10 @@
       </div>
       <div class="ig-yt-export-bar" data-yt-export-bar="1" hidden>
         <button class="ig-yt-export-opt" data-export-fmt="txt" title="Mac 双击直接用文本编辑打开，无安全拦截弹窗">📄 导出 .txt (直接打开)</button>
-        <button class="ig-yt-export-opt" data-export-fmt="copy" title="复制全部带时间戳的中英双语字幕到剪贴板">📋 复制双语全文</button>
+        <button class="ig-yt-export-opt" data-export-fmt="copy" title="复制当前已记录的原文及译文到剪贴板">📋 复制已记录字幕</button>
         <button class="ig-yt-export-opt" data-export-fmt="srt" title="下载标准 .srt 字幕文件（供 IINA / VLC / 剪映 导入）">🎬 导出 .srt</button>
       </div>
+      <div data-yt-coverage="1" style="padding:8px 14px;color:#94a3b8;font-size:12px"></div>
       <div class="ig-yt-timeline-search">
         <input type="text" placeholder="搜索原文字幕或译文关键词…" data-yt-search="1" />
       </div>
@@ -3274,7 +3376,6 @@
       if (exportBar) {
         exportBar.hidden = !exportBar.hidden;
       }
-      exportYoutubeBilingualSrt('txt');
     });
 
     ytSidebarEl.querySelectorAll('[data-export-fmt]').forEach((btn) => {
@@ -3295,12 +3396,16 @@
     });
   }
 
-  function renderYoutubeTimelineList(noCaptions = false, filterKeyword = '') {
+  function renderYoutubeTimelineList(noCaptions = false, filterKeyword) {
     if (!ytSidebarEl || ytSidebarEl.style.display === 'none') return;
     const listEl = ytSidebarEl.querySelector('[data-yt-list]');
     if (!listEl) return;
 
-    if (noCaptions && ytCues.length === 0) {
+    const timelineCues = getYoutubeTimelineCues();
+    filterKeyword ??= ytSidebarEl.querySelector('[data-yt-search]')?.value.trim().toLowerCase() || '';
+    const coverage = ytSidebarEl.querySelector('[data-yt-coverage]');
+    if (coverage) coverage.textContent = youtubeCoverageText();
+    if (noCaptions && timelineCues.length === 0) {
       listEl.innerHTML = `
         <div style="padding:18px;text-align:center;color:#94a3b8;font-size:12.5px;line-height:1.6;">
           当前视频未检测到原生/自动字幕轨道。<br/>
@@ -3311,12 +3416,12 @@
     }
 
     const filtered = filterKeyword
-      ? ytCues.filter(
+      ? timelineCues.filter(
           (c) =>
             c.text.toLowerCase().includes(filterKeyword) ||
             (c.translation && c.translation.toLowerCase().includes(filterKeyword))
         )
-      : ytCues;
+      : timelineCues;
 
     listEl.innerHTML = filtered
       .map(
@@ -3386,14 +3491,14 @@
           const target = ytCues.find((c) => Number(c.id) === Number(item.id));
           if (target && item.translation) {
             target.translation = item.translation;
-            if (ytSidebarEl && ytSidebarEl.style.display !== 'none') {
-              const rowTrans = ytSidebarEl.querySelector(
-                `.ig-yt-cue-item[data-cue-id="${target.id}"] .ig-yt-cue-trans`
-              );
-              if (rowTrans) rowTrans.textContent = item.translation;
-            }
+            const row = ytSidebarEl?.querySelector(`.ig-yt-cue-item[data-cue-id="${target.id}"] .ig-yt-cue-trans`);
+            if (row) row.textContent = item.translation;
           }
         }
+        // Keep the existing long timeline DOM unless translation changes affect a search.
+        if (ytSidebarEl?.querySelector('[data-yt-search]')?.value.trim()) renderYoutubeTimelineList();
+        const coverage = ytSidebarEl?.querySelector('[data-yt-coverage]');
+        if (coverage) coverage.textContent = youtubeCoverageText();
         ytLastRenderedSig = ''; // Trigger immediate overlay refresh even if paused
       } else {
         if (!res?.cancelled) recordYoutubeTranslationFailure(res?.error ? res : '模型未返回有效字幕译文，请重试');
@@ -3431,27 +3536,15 @@
     dispatchCueBatchTranslation(urgent.length > 0 ? urgent : candidates.slice(0, 10));
   }
 
-  let lastBridgeTrackRequestAt = 0;
-
   function isMostlyChineseText(str) {
     if (!str) return false;
     const cjk = (str.match(/[\u4e00-\u9fff]/g) || []).length;
     return cjk / str.length > 0.2;
   }
 
-  function isUnexpectedArabicCaption(str) {
-    if (!str) return false;
-    const arabicCount = (str.match(/[\u0600-\u06ff]/g) || []).length;
-    if (arabicCount < 3) return false;
-    const title = ytVideoTitle || document.title || '';
-    const titleHasArabic = /[\u0600-\u06ff]/.test(title);
-    return !titleHasArabic;
-  }
-
   async function translateLiveYoutubeCaptionText(rawText) {
     if (!canRequestYoutubeTranslation() || !rawText || ytLiveCaptionCache.has(rawText) || ytLiveCaptionInFlight.has(rawText)) return;
     if (isMostlyChineseText(rawText) && /^zh/i.test(settings.targetLang || 'zh-CN')) return;
-    if (isUnexpectedArabicCaption(rawText)) return;
     const session = ytTranslationSession;
     ytTranslationBusy = true;
     const requestCues = ytCues;
@@ -3473,6 +3566,9 @@
       if (trans) {
         clearYoutubeTranslationFailure();
         ytLiveCaptionCache.set(rawText, trans);
+        if (ytLiveCaptionCache.size > 1000) ytLiveCaptionCache.delete(ytLiveCaptionCache.keys().next().value);
+        for (const cue of ytObservedCues) if (cue.text === rawText) cue.translation = trans;
+        renderYoutubeTimelineList();
         ytLastRenderedSig = '';
       } else if (!res?.cancelled) {
         recordYoutubeTranslationFailure(res?.error ? res : '模型未返回有效字幕译文，请重试');
@@ -3493,7 +3589,8 @@
       (window.location.pathname.startsWith('/watch') ||
         window.location.pathname.startsWith('/shorts'));
 
-    if (!isVideoRoute || !ytDualActive || document.hidden) {
+    if (!ytNavigationPending) syncYoutubeVideoSession();
+    if (!isVideoRoute || ytNavigationPending || !ytDualActive || document.hidden) {
       setTimeout(syncYoutubeSubtitlesLoop, 600);
       return;
     }
@@ -3544,22 +3641,9 @@
       if (liveText) {
         const isAlreadyTargetChinese =
           isMostlyChineseText(liveText) && /^zh/i.test(settings.targetLang || 'zh-CN');
-        const isStaleArabic = isUnexpectedArabicCaption(liveText);
-
-        if (isStaleArabic) {
-          const now = Date.now();
-          if (now - lastBridgeTrackRequestAt > 1000) {
-            lastBridgeTrackRequestAt = now;
-            requestYoutubeTracksFromBridge();
-          }
-          player.classList.add('ig-yt-dual-active');
-        } else if (isAlreadyTargetChinese) {
-          // Native YouTube CC is currently set to Chinese; prompt bridge to switch to original track
-          const now = Date.now();
-          if (now - lastBridgeTrackRequestAt > 1500) {
-            lastBridgeTrackRequestAt = now;
-            requestYoutubeTracksFromBridge();
-          }
+        observeYoutubeLiveCaption(liveText, video?.currentTime || 0,
+          isAlreadyTargetChinese ? liveText : ytLiveCaptionCache.get(liveText) || '');
+        if (isAlreadyTargetChinese) {
           const sig = `live-zh:${liveText}`;
           if (sig !== ytLastRenderedSig) {
             ytLastRenderedSig = sig;
@@ -3595,6 +3679,7 @@
           }
         }
       } else {
+        ytCurrentObservedCue = null;
         if (ytOverlayEl && ytLastRenderedSig !== '') {
           ytLastRenderedSig = '';
           ytOverlayEl.innerHTML = '';
@@ -3738,6 +3823,7 @@
                 translation: res.data.translation || ''
               };
               // Reindexing changes cue identity: invalidate old batch callbacks too.
+              ytCaptionSource = 'audio';
               ytCues = [...ytCues, newCue].sort((a, b) => a.start - b.start)
                 .map((cue, index) => ({ ...cue, id: index }));
               subtitleRequests.cancel();
@@ -3804,23 +3890,26 @@
   }
 
   function exportYoutubeBilingualSrt(format = 'txt') {
-    if (ytCues.length === 0) {
+    const cues = getYoutubeTimelineCues();
+    const partial = !ytCues.length || ytCaptionSource === 'audio';
+    if (cues.length === 0) {
       showPageToast('暂无可导出的字幕数据', 'warn');
       return;
     }
     const formatSrt = (sec) => {
-      const s = Math.max(0, Number(sec) || 0);
+      const totalMs = Math.max(0, Math.round((Number(sec) || 0) * 1000));
+      const s = Math.floor(totalMs / 1000);
       const h = Math.floor(s / 3600);
       const m = Math.floor((s % 3600) / 60);
       const sc = Math.floor(s % 60);
-      const ms = Math.round((s - Math.floor(s)) * 1000);
+      const ms = totalMs % 1000;
       return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sc).padStart(
         2,
         '0'
       )},${String(ms).padStart(3, '0')}`;
     };
 
-    const srtContent = ytCues
+    const srtContent = cues
       .map(
         (c, i) =>
           `${i + 1}\n${formatSrt(c.start)} --> ${formatSrt(c.end)}\n${c.text}\n${
@@ -3830,7 +3919,7 @@
       .join('\n');
 
     if (format === 'copy') {
-      const readableText = ytCues
+      const readableText = youtubeCoverageText() + '\n\n' + cues
         .map(
           (c) =>
             `[${formatSec(c.start)}] ${c.text}${c.translation ? `\n${c.translation}` : ''}`
@@ -3839,7 +3928,7 @@
       navigator.clipboard
         .writeText(readableText)
         .then(() => {
-          showPageToast('✅ 已复制全部双语字幕到剪贴板', 'success');
+          showPageToast('✅ 已复制当前已记录字幕到剪贴板', 'success');
         })
         .catch(() => {
           showPageToast('复制失败，请使用导出 .txt 文件', 'warn');
@@ -3849,9 +3938,9 @@
 
     const baseName = sanitizeSubtitleBaseName(ytVideoTitle || document.title);
     const isTxt = format === 'txt';
-    const ext = isTxt ? 'bilingual.txt' : 'bilingual.srt';
+    const ext = `${partial ? 'observed-partial' : 'bilingual'}.${isTxt ? 'txt' : 'srt'}`;
     const fileHeader = isTxt
-      ? `# ${baseName} — 双语字幕对照 (青简 · 译读)\n# 包含标准 SRT 时间轴，可直接阅读或改后缀为 .srt 导入播放器\n\n`
+      ? `# ${baseName} — 双语字幕对照 (青简 · 译读)\n# ${youtubeCoverageText()}\n# 可直接阅读；播放器请使用单独的 .srt 导出\n\n`
       : '';
     const finalPayload = `\uFEFF${fileHeader}${srtContent}`;
 
@@ -4550,7 +4639,6 @@
 
   // Boot sequence
   initShadowUI();
-  loadSettings();
-  initYoutubeIntegration();
+  loadSettings().then(loaded => { if (loaded) initYoutubeIntegration(); });
   initImageTranslationEngine();
 })();

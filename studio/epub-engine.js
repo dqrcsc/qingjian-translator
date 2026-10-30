@@ -95,6 +95,41 @@ function resolveRelativePath(baseFile, relHref) {
   return baseParts.join('/');
 }
 
+// Visit each text node once. Flushing at structural boundaries retains text before
+// and after nested lists/quotes without repeating their descendants as parent text.
+function extractChapterBlocks(body, addBlock) {
+  const boundaries = new Set(['address', 'article', 'aside', 'blockquote', 'caption', 'dd', 'div', 'dl', 'dt',
+    'figcaption', 'figure', 'footer', 'header', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'main',
+    'nav', 'ol', 'p', 'section', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul']);
+  const ignored = new Set(['script', 'style', 'noscript', 'template']);
+  let pending = '';
+  const flush = type => {
+    const text = pending.replace(/\s+/g, ' ').trim();
+    pending = '';
+    if (text) addBlock(type, text);
+  };
+  const visit = (node, type) => {
+    if (node.nodeType === 3) { pending += node.textContent; return; }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toLowerCase();
+    if (ignored.has(tag)) return;
+    if (tag === 'pre') {
+      flush(type);
+      const code = node.textContent || '';
+      if (code.trim()) addBlock('code', code);
+      return;
+    }
+    if (tag === 'br' || tag === 'hr') { pending += '\n'; return; }
+    const boundary = boundaries.has(tag);
+    if (boundary) flush(type);
+    const childType = /^h[1-6]$/.test(tag) ? 'heading' : tag === 'blockquote' ? 'quote' : type;
+    for (const child of node.childNodes) visit(child, childType);
+    if (boundary) flush(childType);
+  };
+  visit(body, 'paragraph');
+  flush('paragraph');
+}
+
 /**
  * Parse an EPUB file into structured metadata, chapters, and extracted blocks for translation.
  */
@@ -157,20 +192,14 @@ export async function parseEpubFile(arrayBuffer) {
       `第 ${cIdx + 1} 章`;
 
     const chapterBlocks = [];
-    const blockEls = doc.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, blockquote');
-    blockEls.forEach((el) => {
-      if (el.querySelector('p')) return;
-      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (text.length < 3) return;
-      const tag = el.tagName.toLowerCase();
-      const type = tag.startsWith('h') ? 'heading' : tag === 'blockquote' ? 'quote' : 'paragraph';
+    extractChapterBlocks(doc.body, (type, text) => {
       const blockObj = {
         id: allBlocks.length,
         chapterIndex: cIdx,
         chapterTitle,
         type,
         original: text,
-        translation: ''
+        translation: type === 'code' ? text : ''
       };
       chapterBlocks.push(blockObj);
       allBlocks.push(blockObj);
@@ -254,6 +283,7 @@ export function buildBilingualEpubBlob({ bookTitle, bookAuthor, blocks, targetLa
   const chapterName = index => index === 0 ? 'chapter.xhtml' : `chapter-${index + 1}.xhtml`;
   chapters.forEach((chapter, index) => {
     const bodyHtml = chapter.blocks.map(b => {
+      if (b.type === 'code') return `<pre><code>${escapeXml(b.original)}</code></pre>`;
       const tag = b.type === 'heading' ? 'h2' : 'p';
       const original = escapeXml(b.original);
       const translation = escapeXml(b.translation || b.original);
@@ -268,6 +298,7 @@ export function buildBilingualEpubBlob({ bookTitle, bookAuthor, blocks, targetLa
 body { font-family: serif; line-height: 1.75; padding: 4%; }
 .pair { margin-bottom: 1.1em; } .orig { color: #334155; }
 .trans { border-left: 3px solid #6366f1; padding-left: 0.65em; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style></head><body><h1>${escapeXml(chapter.title)}</h1>${bodyHtml}</body></html>`) });
   });
   files.push({ name: 'OEBPS/nav.xhtml', data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?>

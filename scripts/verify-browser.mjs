@@ -13,6 +13,9 @@ import { verifySettingsBrowser } from './verify-settings-browser.mjs';
 import { verifyGeminiBrowser } from './verify-gemini-browser.mjs';
 import { verifyReadingContentBrowser } from './verify-reading-content-browser.mjs';
 import { verifyReadingStudioBrowser } from './verify-reading-studio-browser.mjs';
+import { verifyYoutubeStateBrowser } from './verify-youtube-state-browser.mjs';
+import { verifyYoutubeBridgeBrowser } from './verify-youtube-bridge-browser.mjs';
+import { verifyEpubIntegrityBrowser } from './verify-epub-integrity-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -241,6 +244,15 @@ try {
   const readingStudio = await verifyReadingStudioBrowser(context, sw);
   checks.push(...readingStudio.checks);
   errors.push(...readingStudio.errors);
+  for (const [label, verify] of [
+    ['YouTube saved settings and observed subtitles', verifyYoutubeStateBrowser],
+    ['YouTube bridge session and track identity', verifyYoutubeBridgeBrowser],
+    ['EPUB source and export integrity', verifyEpubIntegrityBrowser]
+  ]) {
+    stage = label;
+    const result = await verify(context, sw);
+    checks.push(...result.checks); errors.push(...result.errors);
+  }
   assert.deepEqual(errors, [], 'No uncaught page errors or CSP errors');
   const report = { passed: true, browser: context.browser().version(), pdfjs: '6.4.299', checks, pdf: result, workers, errors };
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(report, null, 2) + '\n');

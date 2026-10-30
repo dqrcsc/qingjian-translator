@@ -249,10 +249,10 @@ function subtitleHarness() {
   const replies = [], errors = [];
   const ctx = vm.createContext({
     Date: { now: () => now }, subtitleRequests: { cancel() {} },
-    document: { title: 'fixture', body: { appendChild: node => errors.push(node) }, querySelector: () => null,
+    document: { title: 'fixture', addEventListener() {}, body: { appendChild: node => errors.push(node) }, querySelector: () => null,
       createElement: () => ({ style: {}, setAttribute() {}, appendChild() {}, addEventListener() {}, remove() {} }) },
     getCurrentYoutubeVideoId: () => 'video', settings: { targetLang: 'zh-CN' },
-    isMostlyChineseText: () => false, isUnexpectedArabicCaption: () => false,
+    isMostlyChineseText: () => false, renderYoutubeTimelineList() {},
     safeRuntimeSendMessage: () => new Promise(resolve => replies.push(resolve))
   });
   vm.runInContext(section('  let ytCues =', '  function getCurrentYoutubeVideoId(') + '\n' +
