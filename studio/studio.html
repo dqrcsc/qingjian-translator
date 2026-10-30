@@ -39,7 +39,7 @@
           <button id="loadOnlinePdfBtn" class="ghost-btn">🌐 加载</button>
         </div>
 
-        <select id="layoutStyleSelect" class="toolbar-select" title="译文排版视图样式（保持原文论文排版或流式卡片阅读）">
+        <select id="layoutStyleSelect" class="toolbar-select" title="译文排版视图样式（按提取结果尽力重排论文，或流式卡片阅读；不保证像素级还原）">
           <option value="paper-layout">样式: 📄 保持排版</option>
           <option value="card-stream">样式: ✦ 卡片流</option>
         </select>
@@ -52,7 +52,7 @@
       </div>
 
       <div class="topbar-right">
-        <label class="ghost-btn" for="figureImageInput" title="上传或直接 Ctrl+V 粘贴论文插图/网页截图，识别并原位翻译图中文字">
+        <label class="ghost-btn" for="figureImageInput" title="上传或直接 Ctrl+V 粘贴论文插图/网页截图，识别并覆盖翻译图中文字；效果依赖识别质量与背景">
           <span>🖼️ 译图</span>
           <input type="file" id="figureImageInput" accept="image/*" hidden />
         </label>
@@ -94,7 +94,7 @@
         <p>支持<b>保持原文论文排版（保留原图 + 图内文字原位译文）</b>与<b>滚动按需流式翻译（省 Token）</b>；也可直接 <code>Ctrl+V</code> 粘贴截图译图</p>
 
         <div class="format-badges">
-          <span class="fmt-badge">📕 在线 / 本地 PDF (保持排版 + 保留原图译字)</span>
+          <span class="fmt-badge">📕 在线 / 本地 PDF (尽力重排 + 图中文字覆盖)</span>
           <span class="fmt-badge">⚡ 滚动按需懒加载翻译 (默认首译前 2 页)</span>
           <span class="fmt-badge">📗 EPUB (章节目录 + 导出双语电子书)</span>
           <span class="fmt-badge">📘 Markdown / HTML (保留代码块与公式)</span>

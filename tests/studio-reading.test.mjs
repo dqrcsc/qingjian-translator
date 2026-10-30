@@ -112,7 +112,7 @@ for (const protocol of ['openai', 'gemini']) {
     vm.runInContext(readiness + identities + section('async function translateSinglePdfPage(', '\nstartTranslateDocBtn.addEventListener('), ctx);
     fail = true; await ctx.translateSinglePdfPage(3);
     assert.equal(ctx.currentDoc.forceRetranslatePages.has(3), true);
-    fail = false; requests.length = 0; await ctx.translateSinglePdfPage(3);
+    fail = false; requests.length = 0; await ctx.translateSinglePdfPage(3, { retryFailed: true });
     assert.equal(requests.length, 2, 'page model request and vector-label batch both execute');
     assert.ok(requests.every(req => req.payload.bypassCache === true));
     assert.equal(ctx.currentDoc.forceRetranslatePages.has(3), false);

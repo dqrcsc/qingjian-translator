@@ -24,6 +24,10 @@ import { verifyYoutubeAudioBrowser } from './verify-youtube-audio-browser.mjs';
 import { verifyDocumentConfigBrowser } from './verify-document-config-browser.mjs';
 import { verifyPdfRenderBudgetBrowser } from './verify-pdf-render-budget-browser.mjs';
 import { verifyDocumentWindowBrowser } from './verify-document-window-browser.mjs';
+import { verifyContentEditingBrowser } from './verify-content-editing-browser.mjs';
+import { verifyPdfPageFailureBrowser } from './verify-pdf-page-failure-browser.mjs';
+import { verifyHtmlDocumentBrowser } from './verify-html-document-browser.mjs';
+import { verifyFigureConfigBrowser } from './verify-figure-config-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -262,7 +266,11 @@ try {
     ['Document translation configuration', verifyDocumentConfigBrowser],
     ['PDF render pixel budget and cancellation', verifyPdfRenderBudgetBrowser],
     ['Long document reading windows', verifyDocumentWindowBrowser],
-    ['YouTube media-time audio slices', verifyYoutubeAudioBrowser]
+    ['YouTube media-time audio slices', verifyYoutubeAudioBrowser],
+    ['Input editing and changing webpage sources', verifyContentEditingBrowser],
+    ['PDF page ownership and explicit failure recovery', verifyPdfPageFailureBrowser],
+    ['HTML text integrity and exported layout', verifyHtmlDocumentBrowser],
+    ['Figure configuration retranslation', verifyFigureConfigBrowser]
   ]) {
     stage = label;
     const result = await verify(context, sw);

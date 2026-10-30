@@ -97,7 +97,9 @@ export async function verifyStudioBrowser(context, sw) {
     await until(() => held.length === 1, 'delayed document batch');
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="white"/><text x="10" y="40">Figure</text></svg>';
     await studio.locator('#figureImageInput').setInputFiles({ name: 'figure.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(svg) });
-    await studio.waitForFunction(() => document.querySelector('#docStatusSubtitle').textContent.includes('图表无痕原位翻译完成'));
+    // This fixture has no regions: the UI must report no detected labels, not
+    // claim a seamless translation. Keep all identity/export assertions below.
+    await studio.waitForFunction(() => document.querySelector('#docStatusSubtitle').textContent.includes('未发现需要翻译的图中文字'));
     held.shift().reply();
     await studio.waitForFunction(() => document.querySelector('#docStatusSubtitle').textContent.includes('文档双语翻译已完成'));
     assert.equal((await studio.locator('#stream-trans-0').textContent()).trim(), 'ALPHA译文');
