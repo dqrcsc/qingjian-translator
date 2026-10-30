@@ -56,7 +56,7 @@
 
 ---
 
-**当前开发版资源优化（尚未发布新版本）**：文档导入共用 90 秒预算；新增输入/解压字节限制、PDF 离屏预览回收及长字幕时间轴虚拟化。下面新增资源限制适用于当前源码，已发布的 v1.0.10 ZIP 不包含这些改动。详见 [资源优化验收](./docs/verification/2026-10-30-document-resources.md)。
+**v1.0.11 资源优化**：文档导入共用 90 秒预算；新增输入/解压字节限制、PDF 离屏预览回收及长字幕时间轴虚拟化。安装包与中文说明见 [v1.0.11 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.11)，详见 [发布验收](./docs/verification/v1.0.11.md) 与 [资源优化验收](./docs/verification/2026-10-30-document-resources.md)。
 
 **v1.0.10 字幕与阅读完整性修复**：修复 YouTube 升级连接失效提示、设置启动顺序、字幕跨视频归属与配置变更旧译文；补齐已观察字幕的时间轴/导出，并修复 EPUB 内容遗漏。安装包与中文说明见 [v1.0.10 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.10)，详见 [发布验收](./docs/verification/v1.0.10.md) 和 [功能验证](./docs/verification/2026-10-30-reading-consistency.md)。升级或重新加载扩展后需要刷新已有 YouTube 标签页。
 
@@ -406,7 +406,7 @@ npm run icons
 # 2. 运行 结构/功能检查与 Node 故障回归（模拟接口）
 npm run verify
 
-# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.10.zip)
+# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.11.zip)
 npm run pack
 
 # 4. 真实 Chromium 扩展验收（本地模拟 API，不使用真实密钥）
