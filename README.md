@@ -56,7 +56,7 @@
 
 ---
 
-**当前开发修复（尚未发布）**：修复 YouTube 升级连接失效提示、设置启动顺序、字幕跨视频归属与配置变更旧译文；补齐已观察字幕的时间轴/导出，并修复 EPUB 内容遗漏。详见 [验证记录](./docs/verification/2026-10-30-reading-consistency.md)。安装已发布 v1.0.9 不包含这些后续修复，升级或重新加载扩展后需要刷新已有 YouTube 标签页。
+**v1.0.10 字幕与阅读完整性修复**：修复 YouTube 升级连接失效提示、设置启动顺序、字幕跨视频归属与配置变更旧译文；补齐已观察字幕的时间轴/导出，并修复 EPUB 内容遗漏。安装包与中文说明见 [v1.0.10 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.10)，详见 [发布验收](./docs/verification/v1.0.10.md) 和 [功能验证](./docs/verification/2026-10-30-reading-consistency.md)。升级或重新加载扩展后需要刷新已有 YouTube 标签页。
 
 **v1.0.9 升级与使用边界**：见 [版本说明](./CHANGELOG.md)。本版修复仅译文模式的分段内容隐藏与链接交互、Alt 快捷键冲突、文档未就绪操作、HTML 导出缺段、PDF 强制重译缓存及 Markdown 末尾代码丢失，并增加工作台全宽纯译文阅读。请求总预算保持默认 90 秒、可调整为 30–300 秒，PDF.js 保持官方 6.4.299；已有配置和历史统计保留。极端存储故障时使用统计可能延迟或少记，不作为计费依据。
 
@@ -400,7 +400,7 @@ npm run icons
 # 2. 运行 结构/功能检查与 Node 故障回归（模拟接口）
 npm run verify
 
-# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.9.zip)
+# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.10.zip)
 npm run pack
 
 # 4. 真实 Chromium 扩展验收（本地模拟 API，不使用真实密钥）
