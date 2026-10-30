@@ -22,7 +22,7 @@ for (const cleanupFirst of [true, false]) {
       viewportObserver: null, domMutationObserver: null,
       IntersectionObserver: class { constructor(fn) { intersect = fn; } observe() {} unobserve() {} disconnect() {} },
       MutationObserver: class { disconnect() {} }, window: { removeEventListener() {} },
-      handleScrollRescan() {}, clearTimeout() {}, cleanupAllImageOverlays() {}, blockMap: new Map(),
+      handleScrollRescan() {}, clearTimeout() {}, cleanupAllImageOverlays() {}, blockMap: new Map(), paragraphSourceSignatures: new WeakMap(),
       totalTranslatedCount: 65, updateFloatingBallStatus() {},
       document: { querySelectorAll: () => elements }, requestAnimationFrame: fn => frames.push(fn),
       unwrapOriginalTextNodes() {}, showPageToast() {}, BLOCK_SELECTOR: 'p', isProseBlock: () => true,
@@ -117,7 +117,7 @@ test('image source replacement during decoding prevents stale overlay', async ()
 function reclamationHarness() {
   const timers = new Map(), observed = new Set(), scanned = [], cleared = [];
   let nextTimer = 1;
-  const ctx = vm.createContext({ Node: { ELEMENT_NODE: 1 }, blockMap: new Map(),
+  const ctx = vm.createContext({ Node: { ELEMENT_NODE: 1 }, blockMap: new Map(), paragraphSourceSignatures: new WeakMap(),
     pendingParagraphQueue: [], flushQueueTimer: null, pendingScanRoots: new Set(), mutationScanTimer: null,
     viewportObserver: { unobserve: el => observed.delete(el) }, imageTranslationTasks: new WeakMap(),
     imageControlBars: new WeakMap(), releaseImageControls() {},

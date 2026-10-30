@@ -465,6 +465,7 @@ test('disablePageTranslation clears flushQueueTimer and does not wipe a re-enabl
     clearTimeout: id => clearedTimers.push(id),
     cleanupAllImageOverlays() {},
     blockMap: new Map([[1, { element: elRequeued }]]),
+    paragraphSourceSignatures: new WeakMap(),
     totalTranslatedCount: 5,
     updateFloatingBallStatus() {},
     document: { querySelectorAll: () => [elRequeued, elUntouched] },

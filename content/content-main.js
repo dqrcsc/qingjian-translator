@@ -89,6 +89,7 @@
   let flushQueueTimer = null;
   let blockIdCounter = 1;
   const blockMap = new Map(); // id -> { element, rawText, placeholders }
+  const paragraphSourceSignatures = new WeakMap();
   let viewportObserver = null;
   let domMutationObserver = null;
   let hoveredElement = null;
@@ -1126,6 +1127,35 @@
     }, 50);
   }
 
+  // Compare source DOM independently of translation-only CSS and our text wrappers.
+  // Translated output/spinners never contribute, so our own rendering is not an edit.
+  function originalParagraphSignature(root) {
+    const parts = [];
+    const walk = node => {
+      if (node.nodeType === Node.TEXT_NODE) { parts.push(node.nodeValue || ''); return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.matches('script, style, noscript, .ig-trans-node, .ig-trans-block, .ig-trans-inline, .ig-trans-loading, .ig-trans-error')) return;
+      if (node !== root && (node.hidden || node.getAttribute('aria-hidden') === 'true')) return;
+      if (node.tagName === 'BR') { parts.push('\n'); return; }
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(root);
+    return parts.join('').replace(/\s+/g, ' ').trim();
+  }
+
+  function invalidateChangedParagraph(el) {
+    const previous = paragraphSourceSignatures.get(el);
+    if (previous === undefined || previous === originalParagraphSignature(el)) return false;
+    // In-flight batches may contain other paragraphs. Retire only this element's
+    // records; their late replies can no longer write into the changed source.
+    for (const [id, record] of blockMap) if (record.element === el) blockMap.delete(id);
+    pendingParagraphQueue = pendingParagraphQueue.filter(item => blockMap.has(item.id));
+    viewportObserver?.unobserve(el);
+    resetElementTranslationState(el);
+    if (el.isConnected) scheduleMutationScan([el]);
+    return true;
+  }
+
   function handleScrollRescan() {
     if (!isPageTranslated || scrollRescanTimer) return;
     scrollRescanTimer = setTimeout(() => {
@@ -1169,8 +1199,12 @@
       domMutationObserver = new MutationObserver((mutations) => {
         if (!isPageTranslated) return;
         const addedRoots = [];
+        const changedParagraphs = new Set();
         let removed = false;
         for (const m of mutations) {
+          const target = m.target.nodeType === Node.ELEMENT_NODE ? m.target : m.target.parentElement;
+          const owner = target?.closest('[data-ig-status]');
+          if (owner) changedParagraphs.add(owner);
           for (const node of m.removedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE && node.isConnected === false) {
               releaseDetachedContent(node);
@@ -1194,6 +1228,7 @@
             }
           }
         }
+        for (const el of changedParagraphs) invalidateChangedParagraph(el);
         if (removed) pruneDetachedParagraphs();
         scheduleMutationScan(addedRoots);
       });
@@ -1483,6 +1518,7 @@
     delete el.dataset.igStatus;
     delete el.dataset.igBlockId;
     delete el.dataset.igCleanupSession;
+    paragraphSourceSignatures.delete(el);
   }
 
   function queueParagraphForTranslation(el) {
@@ -1508,6 +1544,8 @@
     }
 
     el.dataset.igStatus = 'queued';
+    const sourceSignature = originalParagraphSignature(el);
+    paragraphSourceSignatures.set(el, sourceSignature);
 
     for (const seg of validSegments) {
       const id = blockIdCounter++;
@@ -1525,6 +1563,7 @@
       blockMap.set(id, {
         element: el,
         text: seg.text,
+        sourceSignature,
         placeholders: seg.placeholders,
         sourceNodes: seg.sourceNodes,
         anchorNode: seg.anchorNode,
@@ -1620,6 +1659,10 @@
             if (!record || !record.element) continue;
             const el = record.element;
             if (el.isConnected === false) continue;
+            if (record.sourceSignature !== undefined && record.sourceSignature !== originalParagraphSignature(el)) {
+              invalidateChangedParagraph(el);
+              continue;
+            }
 
             if (record.isMultiSeg) {
               el.querySelectorAll(`[data-ig-seg-id="${segId}"]`).forEach((n) => n.remove());
@@ -1673,6 +1716,10 @@
           if (!record || !record.element) continue;
           const el = record.element;
           if (el.isConnected === false) continue;
+          if (record.sourceSignature !== undefined && record.sourceSignature !== originalParagraphSignature(el)) {
+            invalidateChangedParagraph(el);
+            continue;
+          }
           if (record.isMultiSeg) {
             el.querySelectorAll(`.ig-trans-loading[data-ig-seg-id="${segId}"]`).forEach((n) => n.remove());
           } else {
@@ -1743,7 +1790,7 @@
     isPageTranslated = true;
     ensureObservers();
     scanAndObserveContainer(document.body);
-    domMutationObserver.observe(document.body, { childList: true, subtree: true });
+    domMutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
     window.addEventListener('scroll', handleScrollRescan, { passive: true });
     postEnableTimers.forEach((t) => clearTimeout(t));
     postEnableTimers = [
@@ -1896,84 +1943,106 @@
 
   let spacePressTimestamps = [];
   let lastSpaceTarget = null;
+  let pendingInputTranslation = null;
+
+  function readInputTranslationValue(target, isInput) {
+    return isInput ? target.value : target.innerText || target.textContent || '';
+  }
+
+  function invalidateInputTranslation(task = pendingInputTranslation) {
+    if (!task || task !== pendingInputTranslation) return;
+    pendingInputTranslation = null;
+    task.observer.disconnect();
+    task.target.classList.remove('ig-input-translating');
+    inputRequests.cancel();
+  }
+
+  for (const event of ['beforeinput', 'input', 'compositionstart', 'focusout']) {
+    document.addEventListener(event, e => {
+      const task = pendingInputTranslation;
+      if (task && (task.target === e.target || task.target.contains(e.target))) invalidateInputTranslation(task);
+      if (event === 'compositionstart') spacePressTimestamps = [];
+    }, true);
+  }
+
+  function ownsInputTranslation(task) {
+    return pendingInputTranslation === task && task.target.isConnected &&
+      document.activeElement === task.target &&
+      readInputTranslationValue(task.target, task.isInput) === task.original &&
+      (task.isInput || task.target.innerHTML === task.originalHtml);
+  }
 
   document.addEventListener(
     'keydown',
     async (e) => {
       if (!settings.enableTripleSpaceInput) return;
-      if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey) {
+      if (e.isComposing || e.keyCode === 229 || e.repeat || e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey) {
         spacePressTimestamps = [];
         return;
       }
-
       const active = document.activeElement;
       if (!active) return;
-
-      const isInput =
-        active.tagName === 'TEXTAREA' ||
-        (active.tagName === 'INPUT' &&
-          ['text', 'search', 'url', 'email', ''].includes((active.type || 'text').toLowerCase()));
+      const isInput = active.tagName === 'TEXTAREA' ||
+        (active.tagName === 'INPUT' && ['text', 'search', 'url', 'email', ''].includes((active.type || 'text').toLowerCase()));
       const isEditable = active.isContentEditable;
-
       if (!isInput && !isEditable) return;
-
       const now = Date.now();
-      if (lastSpaceTarget !== active) {
-        spacePressTimestamps = [];
-        lastSpaceTarget = active;
-      }
-
-      spacePressTimestamps = spacePressTimestamps.filter((t) => now - t < 650);
+      if (lastSpaceTarget !== active) { spacePressTimestamps = []; lastSpaceTarget = active; }
+      spacePressTimestamps = spacePressTimestamps.filter(t => now - t < 650);
       spacePressTimestamps.push(now);
-
-      if (spacePressTimestamps.length >= 3) {
-        spacePressTimestamps = [];
-        const rawValue = isInput ? active.value : active.innerText || active.textContent || '';
-        const trimmed = rawValue.trim();
-        if (trimmed.length < 2) return;
-
-        e.preventDefault();
-        inputRequests.cancel();
-        active.classList.add('ig-input-translating');
-        showPageToast('⚡ 正在将输入内容实时翻译为目标外语…', 'info');
-
-        try {
-          const res = await sendModelRequest({
-            type: 'TRANSLATE_INPUT_TEXT',
-            payload: {
-              text: trimmed,
-              targetLang: settings.inputTargetLang || 'en'
-            }
-          });
-
-          if (res?.cancelled) return;
-          if (!res || !res.ok) {
-            throw new Error(res?.error || '输入框翻译失败');
-          }
-
-          const translated = res.data?.translatedText || trimmed;
-          if (isInput) {
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-              window[active.tagName === 'TEXTAREA' ? 'HTMLTextAreaElement' : 'HTMLInputElement']
-                .prototype,
-              'value'
-            )?.set;
-            if (nativeSetter) {
-              nativeSetter.call(active, translated);
-            } else {
-              active.value = translated;
-            }
-            active.dispatchEvent(new Event('input', { bubbles: true }));
-            active.dispatchEvent(new Event('change', { bubbles: true }));
-          } else if (isEditable) {
-            active.focus();
-            document.execCommand('selectAll', false, null);
-            document.execCommand('insertText', false, translated);
-          }
-          showPageToast('✨ 输入框翻译完成', 'success');
-        } catch (err) {
+      if (spacePressTimestamps.length < 3) return;
+      spacePressTimestamps = [];
+      const original = readInputTranslationValue(active, isInput);
+      const trimmed = original.trim();
+      if (trimmed.length < 2) return;
+      e.preventDefault();
+      invalidateInputTranslation();
+      inputRequests.cancel();
+      const task = { target: active, isInput, original, originalHtml: isInput ? '' : active.innerHTML };
+      task.observer = new MutationObserver(() => {
+        if (!ownsInputTranslation(task)) invalidateInputTranslation(task);
+      });
+      pendingInputTranslation = task;
+      task.observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
+      active.classList.add('ig-input-translating');
+      showPageToast('⚡ 正在将输入内容翻译为目标外语；继续编辑会取消本次替换。', 'info');
+      let applying = false;
+      try {
+        const res = await sendModelRequest({ type: 'TRANSLATE_INPUT_TEXT',
+          payload: { text: trimmed, targetLang: settings.inputTargetLang || 'en' } });
+        if (res?.cancelled || !ownsInputTranslation(task)) return;
+        if (!res?.ok) throw new Error(res?.error || '输入框翻译失败');
+        const translated = res.data?.translatedText || trimmed;
+        // Release ownership before dispatching our own input event.
+        applying = true;
+        task.observer.disconnect();
+        pendingInputTranslation = null;
+        active.classList.remove('ig-input-translating');
+        if (isInput) {
+          const nativeSetter = Object.getOwnPropertyDescriptor(
+            window[active.tagName === 'TEXTAREA' ? 'HTMLTextAreaElement' : 'HTMLInputElement'].prototype, 'value')?.set;
+          if (nativeSetter) nativeSetter.call(active, translated);
+          else active.value = translated;
+          active.dispatchEvent(new Event('input', { bubbles: true }));
+          active.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          // Select only this editing host, never the whole document or another editor.
+          const range = document.createRange();
+          range.selectNodeContents(active);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          if (!document.execCommand('insertText', false, translated)) throw new Error('当前富文本编辑器不支持安全替换');
+        }
+        showPageToast('✨ 输入框翻译完成', 'success');
+      } catch (err) {
+        if (pendingInputTranslation === task || applying) {
           showPageToast(`翻译失败: ${err?.message || '请检查 API Key'}`, 'warn', true);
-        } finally {
+        }
+      } finally {
+        task.observer.disconnect();
+        if (pendingInputTranslation === task) {
+          pendingInputTranslation = null;
           active.classList.remove('ig-input-translating');
         }
       }
