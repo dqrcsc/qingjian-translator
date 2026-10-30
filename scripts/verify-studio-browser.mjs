@@ -41,7 +41,7 @@ export async function verifyStudioBrowser(context, sw) {
       res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }));
     };
-    if (Array.isArray(content)) { reply({ hasText: true, summaryTranslation: '图表译文', regions: [] }); return; }
+    if (Array.isArray(content)) { reply({ hasText: false, summaryTranslation: '', regions: [] }); return; }
     const ids = [...content.matchAll(/"id"\s*:\s*(\d+)/g)].map(match => Number(match[1]));
     const translations = ids.map(id => ({ id, translation: content.includes('ALPHA original')
       ? (id === 0 ? 'ALPHA译文' : 'BETA译文') : `PDF译文 ${id}` }));
@@ -106,7 +106,7 @@ export async function verifyStudioBrowser(context, sw) {
     assert.equal((await studio.locator('#stream-trans-1').textContent()).trim(), 'BETA译文');
     assert.match(await studio.locator('[data-block-id="0"]').textContent(), /ALPHA original/);
     assert.match(await studio.locator('[data-block-id="1"]').textContent(), /BETA original/);
-    assert.match(await studio.locator('[data-block-id="2"]').textContent(), /图表译文/);
+    assert.match(await studio.locator('[data-block-id="2"]').textContent(), /Figure \(figure\.svg\)[\s\S]*已处理 0 处图中文字/);
     await studio.locator('#exportMenuBtn').click();
     const downloadEvent = studio.waitForEvent('download');
     await studio.locator('[data-export="md"]').click();
@@ -114,7 +114,7 @@ export async function verifyStudioBrowser(context, sw) {
     for await (const chunk of stream) chunks.push(chunk);
     const markdown = Buffer.concat(chunks).toString();
     assert.match(markdown, /ALPHA original paragraph\.[\s\S]*?ALPHA译文[\s\S]*?BETA original paragraph\.[\s\S]*?BETA译文/);
-    assert.match(markdown, /图表译文/);
+    assert.match(markdown, /figure\.svg[\s\S]*已处理 0 处图中文字/);
     checks.push('Inserting a figure while a batch is delayed preserves original/translation identities in the UI and actual Markdown export');
 
     mode = 'fail';

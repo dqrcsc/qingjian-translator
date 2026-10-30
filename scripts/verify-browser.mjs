@@ -28,6 +28,10 @@ import { verifyContentEditingBrowser } from './verify-content-editing-browser.mj
 import { verifyPdfPageFailureBrowser } from './verify-pdf-page-failure-browser.mjs';
 import { verifyHtmlDocumentBrowser } from './verify-html-document-browser.mjs';
 import { verifyFigureConfigBrowser } from './verify-figure-config-browser.mjs';
+import { verifyContentSettingsBrowser } from './verify-content-settings-browser.mjs';
+import { verifyMultimodalOutputBrowser } from './verify-multimodal-output-browser.mjs';
+import { verifyContentConfigLinksBrowser } from './verify-content-config-links-browser.mjs';
+import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : 'playwright');
@@ -270,7 +274,11 @@ try {
     ['Input editing and changing webpage sources', verifyContentEditingBrowser],
     ['PDF page ownership and explicit failure recovery', verifyPdfPageFailureBrowser],
     ['HTML text integrity and exported layout', verifyHtmlDocumentBrowser],
-    ['Figure configuration retranslation', verifyFigureConfigBrowser]
+    ['Figure configuration retranslation', verifyFigureConfigBrowser],
+    ['Content settings serialization', verifyContentSettingsBrowser],
+    ['Multimodal result integrity', verifyMultimodalOutputBrowser],
+    ['Content configuration and dynamic links', verifyContentConfigLinksBrowser],
+    ['Document roundtrip and empty subtitles', verifyDocumentRoundtripBrowser]
   ]) {
     stage = label;
     const result = await verify(context, sw);

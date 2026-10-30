@@ -667,7 +667,8 @@ async function handleFileLoaded(file, options = {}) {
       currentDoc.fileType = 'srt';
       const text = new TextDecoder().decode(ab);
       if (session !== documentSession) return;
-      const cues = parseSubtitles(text);
+      const cues = parseSubtitles(text).filter(cue => Number.isFinite(cue.start) && Number.isFinite(cue.end) && cue.start >= 0 && cue.end > cue.start);
+      if (!cues.length) throw new Error('没有可翻译字幕：文件为空、没有有效字幕条目或时间格式无法解析，请检查 SRT / VTT 文件');
       adoptParsedBlocks(cues.map((c) => ({
         page: 1,
         type: 'subtitle',
@@ -722,6 +723,25 @@ async function handleFileLoaded(file, options = {}) {
 
 }
 
+// Code imported from HTML/EPUB is raw text; only Markdown parser-owned
+// fences may be reused. Raw code can itself contain apparent fence lines.
+function serializeMarkdownCode(block) {
+  const source = String(block.original || '');
+  if (block.codeFence) {
+    const marker = block.codeFence;
+    const lines = source.split('\n');
+    const closing = lines.slice(1).some(line => {
+      const match = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+      return match && match[1][0] === marker[0] && match[1].length >= marker.length;
+    });
+    return closing ? source : `${source}\n${marker}`;
+  }
+  let longest = 0;
+  for (const match of source.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}\n${source}\n${fence}`;
+}
+
 function parseMarkdownToBlocks(mdText) {
   const lines = mdText.replace(/\r\n/g, '\n').split('\n');
   const blocks = [];
@@ -762,7 +782,8 @@ function parseMarkdownToBlocks(mdText) {
           page: 1,
           type: 'code',
           original: codeStr,
-          translation: codeStr // Code blocks stay untranslated
+          translation: codeStr, // Code blocks stay untranslated
+          codeFence: fenceMarker
         });
         codeBuffer = [];
       }
@@ -794,7 +815,7 @@ function parseMarkdownToBlocks(mdText) {
   }
   if (inCodeFence) {
     const codeStr = codeBuffer.join('\n');
-    blocks.push({ id: blocks.length, page: 1, type: 'code', original: codeStr, translation: codeStr });
+    blocks.push({ id: blocks.length, page: 1, type: 'code', original: codeStr, translation: codeStr, codeFence: fenceMarker });
   }
   flushPara();
   return blocks;
@@ -3063,7 +3084,7 @@ function exportTranslatedDocument(format) {
 
   if (format === 'md') {
     const mdLines = currentDoc.blocks.map((b) => {
-      if (b.type === 'code') return b.original;
+      if (b.type === 'code') return serializeMarkdownCode(b);
       if (mode === 'translation-only') return b.translation || `【未翻译，显示原文】\n${b.original}`;
       return `${b.original}\n\n> ${b.translation || ''}`;
     });

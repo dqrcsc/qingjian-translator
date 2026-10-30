@@ -947,6 +947,65 @@ Previous spoken context: "${previousContext}"
  * Supports single-page high-DPI image snapshots (`pageImageBase64`, saving ~95% tokens and enabling exact
  * original figure cropping via `figureBox2d`) as well as raw PDF binary (`pdfBase64`).
  */
+function validTranslationBox(box) {
+  return Array.isArray(box) && box.length === 4 &&
+    box.every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1000) &&
+    box[0] < box[2] && box[1] < box[3];
+}
+
+function validateTranslatedRegion(region, description) {
+  if (!region || typeof region !== 'object' || Array.isArray(region) ||
+      typeof region.original !== 'string' || !region.original.trim() ||
+      typeof region.translation !== 'string' || !region.translation.trim()) {
+    throw new Error(`${description}缺少有效原文或译文，请重试。`);
+  }
+  if (!validTranslationBox(region.box_2d)) throw new Error(`${description}文字坐标无效，请重试。`);
+}
+
+function validatePdfTranslationBlocks(value, expectedPage) {
+  if (!Array.isArray(value) || value.length === 0) throw new Error('PDF 解析结果为空或无效，未完成翻译，请重试。');
+  const types = new Set(['heading', 'author', 'paragraph', 'caption', 'figure', 'table', 'list', 'code', 'equation']);
+  return value.map((block, index) => {
+    const description = `PDF 第 ${index + 1} 个内容块`;
+    if (!block || typeof block !== 'object' || Array.isArray(block) || !types.has(block.type) ||
+        !Number.isSafeInteger(block.page) || block.page < 1 || (expectedPage && block.page !== expectedPage) ||
+        (block.column !== undefined && !['left', 'right', 'full'].includes(block.column)) ||
+        typeof block.original !== 'string' || !block.original.trim()) {
+      throw new Error(`${description}结构、页码或原文无效，请重试。`);
+    }
+    const preserveSource = block.type === 'code' || block.type === 'equation';
+    if ((block.translation !== undefined && typeof block.translation !== 'string') ||
+        (!preserveSource && (typeof block.translation !== 'string' || !block.translation.trim()))) {
+      throw new Error(`${description}缺少有效译文，未完成本页翻译，请重试。`);
+    }
+    if (block.type === 'figure') {
+      if (!validTranslationBox(block.figureBox2d) || !Array.isArray(block.figureLabels)) {
+        throw new Error(`${description}图形坐标或标签结构无效，请重试。`);
+      }
+      block.figureLabels.forEach(label => validateTranslatedRegion(label, `${description}图中文字`));
+    }
+    return preserveSource && !block.translation?.trim() ? { ...block, translation: block.original } : block;
+  });
+}
+
+function validateImageTranslation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      typeof value.hasText !== 'boolean' || !Array.isArray(value.regions) ||
+      (value.sourceLang !== undefined && typeof value.sourceLang !== 'string') ||
+      (value.summaryTranslation !== undefined && typeof value.summaryTranslation !== 'string')) {
+    throw new Error('图片识别结果结构无效，请重试。');
+  }
+  if (!value.hasText) {
+    if (value.regions.length || value.summaryTranslation?.trim()) {
+      throw new Error('图片识别结果的文字状态与内容不一致，请重试。');
+    }
+  } else {
+    if (!value.regions.length) throw new Error('图片识别到文字但缺少有效译文区域，请重试。');
+    value.regions.forEach(region => validateTranslatedRegion(region, '图片'));
+  }
+  return value;
+}
+
 export async function analyzePdfWithGemini(
   {
     pageImageBase64 = '',
@@ -1052,14 +1111,14 @@ export async function analyzePdfWithGemini(
     raw = await callGeminiApi(settings, fallbackPayload);
   }
 
-  const blocks = safeParseJson(raw);
+  const blocks = validatePdfTranslationBlocks(safeParseJson(raw), isSinglePageImage ? Number(pageNumber) || 1 : null);
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
-    paragraphs: Array.isArray(blocks) ? blocks.length : 1,
-    chars: Array.isArray(blocks) ? blocks.reduce((s, b) => s + (b.original?.length || 0), 0) : 500
+    paragraphs: blocks.length,
+    chars: blocks.reduce((s, b) => s + b.original.length, 0)
   }, settings.requestSignal);
-  return Array.isArray(blocks) ? blocks : [];
+  return blocks;
 }
 
 function arrayBufferToBase64InWorker(buffer) {
@@ -1181,8 +1240,8 @@ Rules:
     });
   }
 
-  const parsed = safeParseJson(raw);
-  const regions = Array.isArray(parsed?.regions) ? parsed.regions : [];
+  const parsed = validateImageTranslation(safeParseJson(raw));
+  const regions = parsed.regions;
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({
     requests: 1,
@@ -1191,7 +1250,7 @@ Rules:
   }, settings.requestSignal);
 
   return {
-    hasText: Boolean(parsed?.hasText && regions.length > 0),
+    hasText: parsed.hasText,
     sourceLang: parsed?.sourceLang || '',
     summaryTranslation: parsed?.summaryTranslation || regions.map((r) => r.translation).join('\n'),
     regions,
