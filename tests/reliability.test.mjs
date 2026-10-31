@@ -177,17 +177,20 @@ test('worker respects page context in persisted cache keys', async () => {
   assert.equal(calls.length, 2);
 });
 
-test('timeout includes slow response body', async () => {
+test('timeout includes slow response body and does not retry when attempt timer expires', async () => {
   let signal;
+  let attempts = 0;
   globalThis.fetch = async (_url, init) => {
+    attempts++;
     signal = init.signal;
     return new Response(new ReadableStream({ start(controller) {
       const timer = setTimeout(() => { controller.enqueue(new TextEncoder().encode('{}')); controller.close(); }, 80);
       init.signal.addEventListener('abort', () => { clearTimeout(timer); controller.error(init.signal.reason); }, { once: true });
     } }));
   };
-  await assert.rejects(() => client.fetchWithTimeoutAndRetry('https://mock.invalid', {}, { timeoutMs: 10, maxRetries: 0 }), /超时/);
+  await assert.rejects(() => client.fetchWithTimeoutAndRetry('https://mock.invalid', {}, { timeoutMs: 10, maxRetries: 2 }), /超时/);
   assert.equal(signal.aborted, true);
+  assert.equal(attempts, 1, 'attempt timeout must fail immediately without starting a second slow attempt');
 });
 
 test('caller cancellation does not retry', async () => {

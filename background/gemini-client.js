@@ -293,7 +293,11 @@ export async function fetchWithTimeoutAndRetry(
     const controller = new AbortController();
     const onCallerAbort = () => controller.abort(callerSignal.reason);
     callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(new Error('API 请求超时，请稍后重试')), timeoutMs);
+    let timedOutByAttempt = false;
+    const timer = setTimeout(() => {
+      timedOutByAttempt = true;
+      controller.abort(new Error('API 请求超时，请稍后重试'));
+    }, timeoutMs);
     let onAbort;
     try {
       // Every current API call is non-streaming. Keep the timeout active until
@@ -316,7 +320,7 @@ export async function fetchWithTimeoutAndRetry(
     } catch (err) {
       if (callerSignal?.aborted) throw callerSignal.reason;
       lastError = err;
-      if (attempt === maxRetries) throw err;
+      if (timedOutByAttempt || attempt === maxRetries) throw err;
     } finally {
       clearTimeout(timer);
       controller.signal.removeEventListener('abort', onAbort);
@@ -456,7 +460,8 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     Authorization: `Bearer ${apiKey}`
   };
 
-  const fetchOpts = imageInlineParts.length > 0 ? { timeoutMs: 75000 } : undefined;
+  const requestTimeoutMs = Math.max(85000, (Number(settings?.requestBudgetSeconds) || 90) * 1000);
+  const fetchOpts = { timeoutMs: requestTimeoutMs };
   let response = await fetchWithTimeoutAndRetry(chatUrl, {
     method: 'POST',
     signal: settings.requestSignal,
@@ -516,7 +521,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
 
   const activeModel = (overrideModelId || getActiveModelId(settings)).replace(/^models\//i, '');
   const url = getEndpointUrl(settings, activeModel);
-  const hasInlineMedia = Boolean(payload?.contents?.[0]?.parts?.some(p => p?.inlineData));
+  const requestTimeoutMs = Math.max(85000, (Number(settings?.requestBudgetSeconds) || 90) * 1000);
   const response = await fetchWithTimeoutAndRetry(url, {
     method: 'POST',
     signal: settings.requestSignal,
@@ -524,7 +529,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
-  }, hasInlineMedia ? { timeoutMs: 75000 } : undefined);
+  }, { timeoutMs: requestTimeoutMs });
 
   if (!response.ok) {
     const errDetail = await readApiError(response);
@@ -609,6 +614,7 @@ function safeParseJson(rawText) {
 function buildFastGenerationConfig(settings, responseSchema = null, includeThinkingZero = true) {
   const activeModel = getActiveModelId(settings).toLowerCase();
   const isFlash = activeModel.includes('flash');
+  const isGemini25Pro = activeModel.includes('2.5-pro');
 
   const config = {
     temperature: Number(settings.temperature ?? 0.2),
@@ -619,6 +625,8 @@ function buildFastGenerationConfig(settings, responseSchema = null, includeThink
   }
   if (includeThinkingZero && isFlash) {
     config.thinkingConfig = { thinkingBudget: 0 };
+  } else if (includeThinkingZero && isGemini25Pro) {
+    config.thinkingConfig = { thinkingBudget: 128 };
   }
   return config;
 }
@@ -1106,7 +1114,7 @@ export async function analyzePdfWithGemini(
   try {
     raw = await callGeminiApi(settings, payloadWithFastConfig);
   } catch (err) {
-    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) throw err;
+    if (!/thinking|responseSchema|generationConfig|400/i.test(err?.message || '')) throw err;
     const fallbackPayload = {
       ...payloadWithFastConfig,
       generationConfig: buildFastGenerationConfig(settings, schema, false)

@@ -180,6 +180,58 @@ test('startDocumentTranslation keeps lazyScrollEnabled off during initial pages 
   assert.equal(ctx.currentDoc.lazyScrollTriggered, false, 'lazyScrollTriggered waits for user scroll when scrollTop is 0');
 });
 
+test('dense born-digital PDF page uses fast parallel small batches instead of a single monolithic 90s request', async () => {
+  const { createBatches } = await import('../shared/utils.js');
+  const denseBlocks = Array.from({ length: 7 }, (_, i) => ({
+    type: 'paragraph',
+    original: `Academic paragraph ${i + 1}: ` + 'conservation-scale-selection principle in shock transport '.repeat(5),
+    translation: ''
+  }));
+  for (const protocol of ['openai', 'gemini']) {
+    const requests = [];
+    let inFlight = 0, maxInFlight = 0;
+    const ctx = vm.createContext({
+      currentDoc: { loadState: 'ready', fileType: 'pdf', blocks: [], pdfDoc: {},
+        totalPages: 2, translatedPages: new Set(), translatingPages: new Set(), forceRetranslatePages: new Set() },
+      documentSession: 1, stopRequested: false, isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [],
+      startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {},
+      bilingualStreamContainer: { querySelector: () => null }, progressBarWrap: {}, progressBarFill: { style: {} }, docStatusSubtitle: {},
+      streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setTimeout() {},
+      getDocumentTranslationSettings: async () => ({ batchMaxItems: 10, batchMaxChars: 2400 }),
+      getActiveProtocol: () => protocol,
+      evictPdfPageRender() {}, trimPdfPageRenderCache() {},
+      getOrRenderPdfPage: async () => ({
+        canvas: {},
+        textItems: Array.from({ length: 20 }, (_, i) => ({ str: `item-${i}` })),
+        jpegBase64: 'AA==', width: 100, height: 100
+      }),
+      ensureLeftPdfPageRendered() {},
+      extractStructuredPdfPageBlocks: () => denseBlocks.map(b => ({ ...b })),
+      createBatches,
+      normalizeFigureLabelsToCrop: () => [],
+      MESSAGE_TYPES: { TRANSLATE_BATCH: 'batch', ANALYZE_PDF_MULTIMODAL: 'pdf' },
+      sendModelRequest: async req => {
+        requests.push(req);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise(resolve => setImmediate(resolve));
+        inFlight--;
+        return {
+          ok: true,
+          data: { translations: req.payload.items.map(it => ({ id: it.id, translation: `译文-${it.id}` })) }
+        };
+      }
+    });
+    vm.runInContext(readiness + identities + section('async function translateSinglePdfPage(', '\nstartTranslateDocBtn.addEventListener('), ctx);
+    await ctx.translateSinglePdfPage(1);
+    assert.ok(requests.length >= 3, `${protocol}: 7 dense paragraphs should split into >=3 small batches`);
+    assert.ok(requests.every(r => r.type === 'batch' && r.payload.items.length <= 3), `${protocol}: every batch has <=3 items`);
+    assert.ok(maxInFlight >= 2, `${protocol}: page batches execute in parallel`);
+    assert.equal(ctx.currentDoc.translatedPages.has(1), true);
+    assert.equal(ctx.currentDoc.blocks.length, 7);
+  }
+});
+
 test('PDF printing limits both translated sheets and untranslated placeholders; an empty selection never prints all pages', async () => {
   for (const secondPageType of ['paper-sheet-page', 'paper-untranslated-page']) {
     const pages = [1, 2].map((number, index) => {

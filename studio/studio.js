@@ -2189,7 +2189,16 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
       ensureLeftPdfPageRendered(pageNum);
     }
 
-    const usesGeminiVision = getActiveProtocol(settings) === 'gemini';
+    const isGeminiProtocol = getActiveProtocol(settings) === 'gemini';
+    const localCandidateBlocks =
+      pageRender && Array.isArray(pageRender.textItems) && pageRender.textItems.length > 0
+        ? extractStructuredPdfPageBlocks(pageRender, pageNum)
+        : [];
+    const hasRichVectorText =
+      Array.isArray(pageRender?.textItems) &&
+      pageRender.textItems.length >= 12 &&
+      localCandidateBlocks.reduce((sum, b) => sum + (b.original?.length || 0), 0) >= 300;
+    const usesGeminiVision = isGeminiProtocol && !hasRichVectorText;
     let rawBlocks = [];
 
     if (usesGeminiVision) {
@@ -2220,11 +2229,9 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
 
       rawBlocks = res.data?.blocks || [];
     } else {
-      // Non-Gemini / OpenAI-compatible text models (e.g., DeepSeek):
+      // Non-Gemini / OpenAI-compatible text models (e.g., DeepSeek) OR born-digital PDFs with rich vector text:
       // Reconstruct 2-column academic layout, headings, authors, equations, and figure bounding boxes locally via PDF.js 2D coordinates
-      if (pageRender && Array.isArray(pageRender.textItems) && pageRender.textItems.length > 0) {
-        rawBlocks = extractStructuredPdfPageBlocks(pageRender, pageNum);
-      }
+      rawBlocks = localCandidateBlocks;
       // Only text extracted from this PDF.js page belongs to this page. The
       // whole-document stream fallback uses estimated page numbers and cannot
       // safely fill a textless page in the layout-preserving pipeline.
@@ -2242,37 +2249,39 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
       const pageBatches = createBatches(
         translatableEntries,
         (entry) => entry.b.original,
-        settings.batchMaxItems || 10,
-        settings.batchMaxChars || 2400
+        Math.min(settings.batchMaxItems || 10, 3),
+        Math.min(settings.batchMaxChars || 2400, 900)
       );
 
-      for (const batch of pageBatches) {
-        if (!isCurrent()) return;
-        const batchRes = await sendModelRequest({
-          type: MESSAGE_TYPES.TRANSLATE_BATCH,
-          payload: {
-            bypassCache: forceRetranslate,
-            items: batch.map((entry) => ({ id: entry.idx, text: entry.b.original })),
-            targetLang: settings.targetLang,
-            pageTitle: currentDoc.bookTitle || currentDoc.fileName
-          }
-        });
+      await Promise.all(
+        pageBatches.map(async (batch) => {
+          if (!isCurrent()) return;
+          const batchRes = await sendModelRequest({
+            type: MESSAGE_TYPES.TRANSLATE_BATCH,
+            payload: {
+              bypassCache: forceRetranslate,
+              items: batch.map((entry) => ({ id: entry.idx, text: entry.b.original })),
+              targetLang: settings.targetLang,
+              pageTitle: currentDoc.bookTitle || currentDoc.fileName
+            }
+          });
 
-        if (!isCurrent()) return;
-        if (!batchRes || !batchRes.ok) {
-          throw new Error(batchRes?.error || `第 ${pageNum} 页文本翻译失败`);
-        }
-
-        const returnedList = batchRes.data?.translations || [];
-        for (let i = 0; i < batch.length; i++) {
-          const entry = batch[i];
-          const matched =
-            returnedList.find((tr) => Number(tr.id) === entry.idx) || returnedList[i];
-          if (matched && matched.translation) {
-            entry.b.translation = matched.translation;
+          if (!isCurrent()) return;
+          if (!batchRes || !batchRes.ok) {
+            throw new Error(batchRes?.error || `第 ${pageNum} 页文本翻译失败`);
           }
-        }
-      }
+
+          const returnedList = batchRes.data?.translations || [];
+          for (let i = 0; i < batch.length; i++) {
+            const entry = batch[i];
+            const matched =
+              returnedList.find((tr) => Number(tr.id) === entry.idx) || returnedList[i];
+            if (matched && matched.translation) {
+              entry.b.translation = matched.translation;
+            }
+          }
+        })
+      );
     }
 
     if (!isCurrent()) return;

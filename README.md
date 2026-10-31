@@ -56,6 +56,8 @@
 
 ---
 
+**v1.0.17 PDF 单页并发小批次加速与 45s/90s 超时重试冲突修复**：修复单次请求 45 秒超时后自动重跑第 2 次请求并撞上 90 秒总时间预算（`请求已超过总时间预算（90 秒）`）的问题，将单次请求超时与总预算对齐且超时不再盲目重试；针对原生矢量文本 PDF（如 arXiv 论文）优先复用本地 PDF.js 2D 版面段落提取并拆分为并发小批次（每批 ≤ 3 段 / 900 字符）并行翻译，大幅缩短高密度论文单页响应耗时。安装包见 [v1.0.17 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.17)，详见 [中文说明](./docs/releases/v1.0.17.zh-CN.md)。
+
 **v1.0.16 PDF 长连接保活与按需懒加载修复**：为后台请求 Port 增加 15 秒双向心跳保活与意外断连单次自动重连，解决长耗时学术 PDF 页面翻译触发 MV3 Service Worker 30 秒回收导致 `请求连接已关闭` 的问题；严格隔离首 2 页顺序预翻译与滚动触发的按需懒加载，某页失败时立即中止后续懒加载队列并完善加载态卡片提示。安装包见 [v1.0.16 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.16)，详见 [中文说明](./docs/releases/v1.0.16.zh-CN.md)。
 
 **v1.0.15 阅读体验优化**：荧光马克按文字逐行高亮；论文中的规则表格按行列展示，表格与公式采用柔和青灰配色。手动关闭后，本次浏览器会话内暂停整个站点的自动翻译，新页面/新标签页也遵守；保留长期站点规则，手动开启可恢复。重启浏览器或重新加载扩展后临时暂停结束。已完成的其他标签页不撤回译文。安装包见 [v1.0.15 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.15)，详见 [功能验收与边界](./docs/verification/paper-reading-2026-10-30.md)。
