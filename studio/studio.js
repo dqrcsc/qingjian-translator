@@ -115,6 +115,7 @@ let currentDoc = {
   translatedPages: new Set(),
   translatingPages: new Set(),
   lazyScrollEnabled: false,
+  lazyScrollTriggered: false,
   bookTitle: '',
   bookAuthor: '',
   chapters: [],
@@ -215,6 +216,7 @@ function stopDocumentTranslations() {
   isProgrammaticRightScroll = false;
   currentDoc.translatingPages?.clear();
   currentDoc.lazyScrollEnabled = false;
+  currentDoc.lazyScrollTriggered = false;
   lazyPageQueue.length = 0;
   lazyPageObserver?.disconnect();
   isTranslating = false;
@@ -555,6 +557,7 @@ async function handleFileLoaded(file, options = {}) {
       translatedPages: new Set(),
       translatingPages: new Set(),
       lazyScrollEnabled: false,
+      lazyScrollTriggered: false,
       bookTitle: name.replace(/\.[^.]+$/, ''),
       bookAuthor: '',
       chapters: [],
@@ -2011,6 +2014,7 @@ function setupLazyPageObserver() {
 
   if (
     !currentDoc.lazyScrollEnabled ||
+    !currentDoc.lazyScrollTriggered ||
     currentDoc.fileType !== 'pdf' ||
     (pdfModeSelect && pdfModeSelect.value !== 'gemini-multimodal') ||
     typeof IntersectionObserver === 'undefined'
@@ -2020,7 +2024,7 @@ function setupLazyPageObserver() {
 
   lazyPageObserver = new IntersectionObserver(
     (entries) => {
-      if (session !== documentSession || stopRequested || !currentDoc.lazyScrollEnabled || isProgrammaticRightScroll) return;
+      if (session !== documentSession || stopRequested || !currentDoc.lazyScrollEnabled || !currentDoc.lazyScrollTriggered || isProgrammaticRightScroll) return;
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         const pageNum = Number(entry.target.getAttribute('data-lazy-page'));
@@ -2044,6 +2048,16 @@ function setupLazyPageObserver() {
   bilingualStreamContainer
     .querySelectorAll('.paper-page-lazy-placeholder[data-lazy-page], .paper-sheet-page[data-lazy-page]')
     .forEach((el) => lazyPageObserver.observe(el));
+}
+
+for (const eventName of ['scroll', 'wheel', 'touchmove']) {
+  bilingualStreamContainer?.addEventListener(eventName, () => {
+    if (!currentDoc.lazyScrollEnabled || isProgrammaticRightScroll || stopRequested) return;
+    if (!currentDoc.lazyScrollTriggered) {
+      currentDoc.lazyScrollTriggered = true;
+      setupLazyPageObserver();
+    }
+  }, { passive: true });
 }
 
 function queueLazyPageTranslation(pageNum, prioritize = false) {
@@ -2081,6 +2095,9 @@ async function processLazyPageQueue() {
   if (isProcessingLazyQueue) return;
   isProcessingLazyQueue = true;
   const session = documentSession;
+  if (typeof startTranslateDocBtn !== 'undefined' && startTranslateDocBtn) {
+    startTranslateDocBtn.textContent = '⏹ 暂停翻译';
+  }
 
   try {
     while (session === documentSession && lazyPageQueue.length > 0 && !stopRequested) {
@@ -2094,6 +2111,10 @@ async function processLazyPageQueue() {
         continue;
       }
       await translateSinglePdfPage(nextPage);
+      if (session === documentSession && currentDoc.failedPages?.has(nextPage)) {
+        lazyPageQueue.length = 0;
+        break;
+      }
     }
   } finally {
     if (session === documentSession) {
@@ -2138,9 +2159,18 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
   );
   if (placeholderEl) {
     placeholderEl.classList.add('is-loading-page');
-    const titleEl = placeholderEl.querySelector('.paper-lazy-title');
+    const titleEl = placeholderEl.querySelector?.('.paper-lazy-title');
     if (titleEl) {
       titleEl.textContent = `⏳ 正在按需翻译第 ${pageNum} / ${totalPages} 页（图片文字覆盖 + 原文排版）…`;
+    }
+    const descEl = placeholderEl.querySelector?.('.paper-lazy-desc');
+    if (descEl) {
+      descEl.textContent = '正在提取本页学术段落、裁剪原始插图并生成图中标签译文…';
+    }
+    const actionBtn = placeholderEl.querySelector?.('[data-translate-page]');
+    if (actionBtn) {
+      actionBtn.hidden = true;
+      if (actionBtn.style) actionBtn.style.display = 'none';
     }
   }
 
@@ -2381,6 +2411,7 @@ startTranslateDocBtn.addEventListener('click', () => {
     stopRequested = true;
     lazyPageQueue.length = 0;
     currentDoc.lazyScrollEnabled = false;
+    currentDoc.lazyScrollTriggered = false;
     lazyPageObserver?.disconnect();
     startTranslateDocBtn.textContent = '✦ 继续翻译';
     docStatusSubtitle.textContent = '⏸ 已暂停自动流式翻译（保留已出译文）';
@@ -2488,7 +2519,10 @@ async function startDocumentTranslation(targetPageRange = null) {
         }
         navigateToPdfPage(targetPageRange.start);
       } else {
-        currentDoc.lazyScrollEnabled = true;
+        currentDoc.lazyScrollEnabled = false;
+        currentDoc.lazyScrollTriggered = false;
+        if (typeof lazyPageQueue !== 'undefined') lazyPageQueue.length = 0;
+        if (typeof lazyPageObserver !== 'undefined') lazyPageObserver?.disconnect();
 
         // If all pages were already translated (user clicked '✦ 重新翻译'), reset translatedPages to re-translate from page 1
         if (currentDoc.translatedPages.size >= totalPages) {
@@ -2509,6 +2543,14 @@ async function startDocumentTranslation(targetPageRange = null) {
           if (!isCurrent()) return;
           await translateSinglePdfPage(p, { retryFailed: failedAtStart.has(p) });
           if (!isCurrent()) return;
+        }
+
+        if (initialPages.some(p => currentDoc.translatedPages.has(p))) {
+          currentDoc.lazyScrollEnabled = true;
+          if (typeof bilingualStreamContainer !== 'undefined' && bilingualStreamContainer?.scrollTop > 0) {
+            currentDoc.lazyScrollTriggered = true;
+          }
+          if (typeof setupLazyPageObserver === 'function') setupLazyPageObserver();
         }
       }
       return;

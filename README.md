@@ -56,6 +56,8 @@
 
 ---
 
+**v1.0.16 PDF 长连接保活与按需懒加载修复**：为后台请求 Port 增加 15 秒双向心跳保活与意外断连单次自动重连，解决长耗时学术 PDF 页面翻译触发 MV3 Service Worker 30 秒回收导致 `请求连接已关闭` 的问题；严格隔离首 2 页顺序预翻译与滚动触发的按需懒加载，某页失败时立即中止后续懒加载队列并完善加载态卡片提示。安装包见 [v1.0.16 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.16)，详见 [中文说明](./docs/releases/v1.0.16.zh-CN.md)。
+
 **v1.0.15 阅读体验优化**：荧光马克按文字逐行高亮；论文中的规则表格按行列展示，表格与公式采用柔和青灰配色。手动关闭后，本次浏览器会话内暂停整个站点的自动翻译，新页面/新标签页也遵守；保留长期站点规则，手动开启可恢复。重启浏览器或重新加载扩展后临时暂停结束。已完成的其他标签页不撤回译文。安装包见 [v1.0.15 Release](https://github.com/dqrcsc/qingjian-translator/releases/tag/v1.0.15)，详见 [功能验收与边界](./docs/verification/paper-reading-2026-10-30.md)。
 
 **v1.0.14 配置与结果完整性修复**：统一网页设置保存，完善配置变化后的旧结果处理、多模态业务校验、动态链接同步、代码 Markdown 往返和空字幕反馈。修改翻译配置后网页恢复原文，需重新开启翻译；YouTube 字幕按新配置重新请求。见 [中文说明](./docs/releases/v1.0.14.zh-CN.md) 与 [发布验收](./docs/verification/v1.0.14.md)。
@@ -425,7 +427,7 @@ npm run icons
 # 2. 运行 结构/功能检查与 Node 故障回归（模拟接口）
 npm run verify
 
-# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.15.zip)
+# 3. 先验证，再打包并检查实际 ZIP 内容与许可证 (输出至 dist/qingjian-translator-v1.0.16.zip)
 npm run pack
 
 # 4. 真实 Chromium 扩展验收（本地模拟 API，不使用真实密钥）

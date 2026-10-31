@@ -10,6 +10,7 @@ function event() {
 }
 const onConnect = event();
 const storage = {};
+let lastConnectedPair = null;
 globalThis.chrome = {
   storage: { local: { async get(key) { return { [key]: storage[key] }; }, async set(value) { Object.assign(storage, value); } }, onChanged: event() },
   runtime: { onInstalled: event(), onMessage: event(), onConnect, getURL: x => x,
@@ -24,6 +25,12 @@ globalThis.chrome = {
         disconnected = true;
         server.onDisconnect.emit(); client.onDisconnect.emit();
       };
+      server.disconnect = () => {
+        if (disconnected) return;
+        disconnected = true;
+        server.onDisconnect.emit(); client.onDisconnect.emit();
+      };
+      lastConnectedPair = { client, server };
       onConnect.emit(server);
       return client;
     } },
@@ -412,4 +419,37 @@ test('failed statistics reads or writes do not discard successful output and sub
       assert.equal(storage[key].totalParagraphs, before + 1);
     }
   } finally { chrome.storage.local.get = nativeGet; chrome.storage.local.set = nativeSet; }
+});
+
+test('unexpected worker port disconnect reconnects once automatically and ignores keepalive frames', async () => {
+  let attempts = 0;
+  let disconnectOnSecondAttempt = false;
+  globalThis.fetch = (_url, init) => new Promise((resolve, reject) => {
+    attempts++;
+    init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    if (attempts === 1 || disconnectOnSecondAttempt) {
+      const activeServer = lastConnectedPair.server;
+      setTimeout(() => {
+        activeServer.postMessage({ type: 'keepalive' });
+        activeServer.disconnect();
+      }, 5);
+      return;
+    }
+    setTimeout(() => resolve(success('重连恢复成功')), 5);
+  });
+
+  const firstScope = scope();
+  const recovered = await firstScope.request(batch('reconnect-once-success'));
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.data.translations[0].translation, '重连恢复成功');
+  assert.equal(attempts, 2);
+
+  attempts = 0;
+  disconnectOnSecondAttempt = true;
+  const secondScope = scope();
+  const failed = await secondScope.request(batch('reconnect-twice-fails'));
+  assert.equal(failed.ok, false);
+  assert.equal(Boolean(failed.cancelled), false);
+  assert.equal(failed.error, '请求连接已关闭');
+  assert.equal(attempts, 2);
 });

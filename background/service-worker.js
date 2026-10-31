@@ -547,14 +547,40 @@ chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'qingjian-request-v1') return;
   const controllers = new Map();
   let disconnected = false;
+  let keepaliveTimer = null;
+  const pingKeepalive = () => {
+    if (disconnected || controllers.size === 0) return;
+    try { chrome.runtime?.getPlatformInfo?.().catch?.(() => {}); } catch {}
+    try { port.postMessage({ type: 'keepalive' }); } catch {}
+  };
+  const syncKeepalive = () => {
+    if (disconnected || controllers.size === 0) {
+      if (keepaliveTimer !== null) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+      return;
+    }
+    if (keepaliveTimer === null) {
+      keepaliveTimer = setInterval(pingKeepalive, 15000);
+      keepaliveTimer?.unref?.();
+    }
+  };
   port.onDisconnect.addListener(() => {
     disconnected = true;
+    syncKeepalive();
     // Abort the entire scope in one event before any freed slot admits a waiter.
     abortRequestScope(controllers.values());
     controllers.clear();
   });
-  port.onMessage.addListener(({ requestId, message } = {}) => {
-    if (disconnected || !Number.isSafeInteger(requestId) || controllers.has(requestId)) return;
+  port.onMessage.addListener((packet = {}) => {
+    if (disconnected) return;
+    if (packet?.type === 'keepalive') {
+      pingKeepalive();
+      return;
+    }
+    const { requestId, message } = packet;
+    if (!Number.isSafeInteger(requestId) || controllers.has(requestId)) return;
     if (!cancellableTypes.has(message?.type)) {
       port.postMessage({ requestId, response: { ok: false, error: '不支持的可取消请求' } });
       return;
@@ -562,8 +588,10 @@ chrome.runtime.onConnect.addListener(port => {
     const budget = createRequestBudget();
     const controller = budget.controller;
     controllers.set(requestId, controller);
+    syncKeepalive();
     void dispatchMessage(message, port.sender, response => {
       controllers.delete(requestId);
+      syncKeepalive();
       if (disconnected) return;
       try { port.postMessage({ requestId, response }); } catch { controller.abort(); }
     }, budget);

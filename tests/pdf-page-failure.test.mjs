@@ -58,3 +58,38 @@ test('retained old blocks after failed page retranslation do not count as comple
   assert.deepEqual([...h.ctx.getTranslatedPagesSet()], []);
   h.doc.translatedPages.add(2); assert.deepEqual([...h.ctx.getTranslatedPagesSet()], [2]);
 });
+
+test('lazy page queue stops draining remaining pages when a queued page fails and updates placeholder loading UI', async () => {
+  const h = harness();
+  h.doc.totalPages = 3;
+  const titleEl = { textContent: '📄 第 2 / 3 页待翻译' };
+  const descEl = { textContent: '为节省 Token 消耗，向下滚动至此页时将自动触发翻译，您也可点击下方按钮立即翻译本页。' };
+  const actionBtn = { style: { display: '' } };
+  const classes = new Set();
+  const placeholderEl = {
+    classList: { add: cls => classes.add(cls) },
+    querySelector: sel => {
+      if (sel === '.paper-lazy-title') return titleEl;
+      if (sel === '.paper-lazy-desc') return descEl;
+      if (sel === '[data-translate-page]') return actionBtn;
+      return null;
+    }
+  };
+  h.ctx.bilingualStreamContainer = {
+    querySelector: sel => sel.includes('data-lazy-page="2"') ? placeholderEl : null
+  };
+
+  h.setFail(true);
+  h.ctx.queueLazyPageTranslation(2, false);
+  h.ctx.queueLazyPageTranslation(3, false);
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+
+  assert.equal(classes.has('is-loading-page'), true);
+  assert.match(titleEl.textContent, /正在按需翻译第 2 \/ 3 页/);
+  assert.equal(descEl.textContent, '正在提取本页学术段落、裁剪原始插图并生成图中标签译文…');
+  assert.equal(actionBtn.style.display, 'none');
+  assert.equal(h.doc.failedPages.has(2), true);
+  assert.equal(h.doc.failedPages.has(3), false, 'page 3 must not be attempted after page 2 fails');
+  assert.equal(h.ctx.lazyPageQueue.length, 0, 'lazy queue must be cleared after failure');
+  assert.equal(h.calls.length, 1);
+});

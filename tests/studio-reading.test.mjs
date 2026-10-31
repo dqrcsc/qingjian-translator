@@ -140,6 +140,46 @@ test('completed PDF retranslation retains force intent for pages beyond the firs
   assert.deepEqual(Array.from(ctx.currentDoc.forceRetranslatePages), [3]);
 });
 
+test('startDocumentTranslation keeps lazyScrollEnabled off during initial pages and leaves it off if all initial pages fail', async () => {
+  const observedFlags = [];
+  let shouldSucceed = false;
+  const ctx = vm.createContext({
+    currentDoc: { loadState: 'ready', fileType: 'pdf', pdfArrayBuffer: new ArrayBuffer(1), blocks: [],
+      totalPages: 5, translatedPages: new Set(), failedPages: new Map() },
+    isTranslating: false, isProcessingLazyQueue: false, lazyPageQueue: [3, 4], lazyPageObserver: { disconnect() {} },
+    documentSession: 1, stopRequested: false,
+    startTranslateDocBtn: {}, exportMenuBtn: {}, translateSinglePageBtn: {}, progressBarWrap: {}, progressBarFill: { style: {} },
+    bilingualStreamContainer: { scrollTop: 0 },
+    getDocumentTranslationSettings: async () => ({}), pdfModeSelect: null, INITIAL_EAGER_PDF_PAGES: 2,
+    streamSearchInput: { value: '' }, renderWorkspaceBlocks() {}, setupLazyPageObserver() {}, setTimeout() {}
+  });
+  ctx.translateSinglePdfPage = async page => {
+    observedFlags.push({ page, lazyScrollEnabled: ctx.currentDoc.lazyScrollEnabled, queueLen: ctx.lazyPageQueue.length });
+    if (shouldSucceed) {
+      ctx.currentDoc.translatedPages.add(page);
+    } else {
+      ctx.currentDoc.failedPages.set(page, '请求连接已关闭');
+    }
+  };
+  vm.runInContext(readiness + start, ctx);
+
+  await ctx.startDocumentTranslation();
+  assert.deepEqual(observedFlags, [
+    { page: 1, lazyScrollEnabled: false, queueLen: 0 },
+    { page: 2, lazyScrollEnabled: false, queueLen: 0 }
+  ]);
+  assert.equal(ctx.currentDoc.lazyScrollEnabled, false, 'lazyScrollEnabled stays false when all initial pages fail');
+
+  observedFlags.length = 0;
+  shouldSucceed = true;
+  ctx.currentDoc.failedPages.clear();
+  await ctx.startDocumentTranslation();
+  assert.equal(observedFlags[0].lazyScrollEnabled, false);
+  assert.equal(observedFlags[1].lazyScrollEnabled, false);
+  assert.equal(ctx.currentDoc.lazyScrollEnabled, true, 'lazyScrollEnabled turns on after initial pages succeed');
+  assert.equal(ctx.currentDoc.lazyScrollTriggered, false, 'lazyScrollTriggered waits for user scroll when scrollTop is 0');
+});
+
 test('PDF printing limits both translated sheets and untranslated placeholders; an empty selection never prints all pages', async () => {
   for (const secondPageType of ['paper-sheet-page', 'paper-untranslated-page']) {
     const pages = [1, 2].map((number, index) => {

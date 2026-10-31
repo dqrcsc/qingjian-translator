@@ -456,12 +456,13 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     Authorization: `Bearer ${apiKey}`
   };
 
+  const fetchOpts = imageInlineParts.length > 0 ? { timeoutMs: 75000 } : undefined;
   let response = await fetchWithTimeoutAndRetry(chatUrl, {
     method: 'POST',
     signal: settings.requestSignal,
     headers,
     body: JSON.stringify(openAiBody)
-  });
+  }, fetchOpts);
 
   if (!response.ok && fallbackChatUrl && response.status === 404) {
     response = await fetchWithTimeoutAndRetry(fallbackChatUrl, {
@@ -469,7 +470,7 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
       signal: settings.requestSignal,
       headers,
       body: JSON.stringify(openAiBody)
-    });
+    }, fetchOpts);
   }
 
   if (!response.ok) {
@@ -515,6 +516,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
 
   const activeModel = (overrideModelId || getActiveModelId(settings)).replace(/^models\//i, '');
   const url = getEndpointUrl(settings, activeModel);
+  const hasInlineMedia = Boolean(payload?.contents?.[0]?.parts?.some(p => p?.inlineData));
   const response = await fetchWithTimeoutAndRetry(url, {
     method: 'POST',
     signal: settings.requestSignal,
@@ -522,7 +524,7 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
-  });
+  }, hasInlineMedia ? { timeoutMs: 75000 } : undefined);
 
   if (!response.ok) {
     const errDetail = await readApiError(response);
