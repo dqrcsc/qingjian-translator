@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { isOnlinePdfUrl } from '../shared/utils.js';
 import { buildBilingualEpubBlob } from '../studio/epub-engine.js';
-import { renderLatexMathToHtml } from '../studio/math-renderer.js';
+import { renderLatexMathToHtml, renderRichAcademicHtml } from '../studio/math-renderer.js';
+import { extractStructuredPdfPageBlocks } from '../studio/pdf-engine.js';
 
 const swSource = fs.readFileSync(new URL('../background/service-worker.js', import.meta.url), 'utf8');
 const contentSource = fs.readFileSync(new URL('../content/content-main.js', import.meta.url), 'utf8');
@@ -299,4 +300,106 @@ test('translateSinglePdfPage shares in-flight promise for concurrent callers and
   assert.equal(doc.translatedPages.has(1), true);
   assert.equal(doc.blocks.length, 2, 'both userAttached figure and translated page paragraph are preserved');
   assert.equal(doc.blocks.some((b) => b.userAttached && b.original === 'User Pasted Figure'), true);
+});
+
+test('extractStructuredPdfPageBlocks keeps elevated author & affiliation superscripts inline without emitting orphan superscript blocks (arXiv:2609.13531 regression)', () => {
+  const samplePageRender = {
+    width: 1000,
+    height: 1400,
+    canvas: null,
+    textItems: [
+      // Paper Title
+      {
+        str: 'Attention Is All You Need (to Avoid Spurious Oscillations)',
+        x: 150,
+        y: 145,
+        top: 117,
+        bottom: 145,
+        width: 700,
+        height: 28,
+        fontSize: 28
+      },
+      // Author line with 6 elevated superscripts (y = 191, fontSize = 11 vs author baseline y = 199, fontSize = 18)
+      { str: 'Jinyoung Jeong', x: 110, y: 199, top: 181, bottom: 199, width: 115, height: 18, fontSize: 18 },
+      { str: '1', x: 226, y: 191, top: 180, bottom: 191, width: 7, height: 11, fontSize: 11 },
+      { str: ', Joseph B. Choi', x: 234, y: 199, top: 181, bottom: 199, width: 120, height: 18, fontSize: 18 },
+      { str: '2', x: 355, y: 191, top: 180, bottom: 191, width: 7, height: 11, fontSize: 11 },
+      { str: ', Xinlun Cheng', x: 363, y: 199, top: 181, bottom: 199, width: 110, height: 18, fontSize: 18 },
+      { str: '2', x: 474, y: 191, top: 180, bottom: 191, width: 7, height: 11, fontSize: 11 },
+      { str: ', H. S. Udaykumar', x: 482, y: 199, top: 181, bottom: 199, width: 138, height: 18, fontSize: 18 },
+      { str: '3', x: 621, y: 191, top: 180, bottom: 191, width: 7, height: 11, fontSize: 11 },
+      { str: ', Sanghun Choi', x: 629, y: 199, top: 181, bottom: 199, width: 114, height: 18, fontSize: 18 },
+      { str: '1,*', x: 744, y: 191, top: 180, bottom: 191, width: 16, height: 11, fontSize: 11 },
+      { str: ', and Stephen S. Baek', x: 761, y: 199, top: 181, bottom: 199, width: 158, height: 18, fontSize: 18 },
+      { str: '1,2,4,*', x: 920, y: 191, top: 180, bottom: 191, width: 34, height: 11, fontSize: 11 },
+      // Affiliations with leading elevated superscripts
+      { str: '1', x: 180, y: 223, top: 213, bottom: 223, width: 6, height: 10, fontSize: 10 },
+      {
+        str: 'School of Mechanical Engineering & IEDT, Kyungpook National University, Daegu, South Korea',
+        x: 189,
+        y: 230,
+        top: 214,
+        bottom: 230,
+        width: 620,
+        height: 16,
+        fontSize: 16
+      },
+      { str: '2', x: 220, y: 249, top: 239, bottom: 249, width: 6, height: 10, fontSize: 10 },
+      {
+        str: 'School of Data Science, University of Virginia, Charlottesville, VA 22903, USA',
+        x: 229,
+        y: 256,
+        top: 240,
+        bottom: 256,
+        width: 540,
+        height: 16,
+        fontSize: 16
+      },
+      { str: '*', x: 195, y: 275, top: 265, bottom: 275, width: 6, height: 10, fontSize: 10 },
+      {
+        str: 'Corresponding authors: Sanghun Choi (s-choi@knu.ac.kr) and Stephen Baek (baek@virginia.edu).',
+        x: 204,
+        y: 282,
+        top: 266,
+        bottom: 282,
+        width: 590,
+        height: 16,
+        fontSize: 16
+      },
+      // Abstract Heading & Body
+      { str: 'Abstract', x: 110, y: 340, top: 318, bottom: 340, width: 90, height: 22, fontSize: 22 },
+      {
+        str: 'Can attention move a shock across several cells in one update without breaking it?',
+        x: 110,
+        y: 372,
+        top: 354,
+        bottom: 372,
+        width: 780,
+        height: 18,
+        fontSize: 18
+      }
+    ]
+  };
+
+  const blocks = extractStructuredPdfPageBlocks(samplePageRender, 1);
+  // Must NOT contain any orphan superscript block like "1 2 2" or "3 1,* 1,2,4,*"
+  assert.equal(
+    blocks.some((b) => /^[0-9,∗*†‡§\s]+$/.test(b.original)),
+    false,
+    'No orphan superscript blocks should be emitted'
+  );
+  assert.equal(blocks[0].type, 'heading');
+  assert.equal(blocks[1].type, 'author');
+  const authorLines = blocks[1].original.split('\n');
+  assert.equal(
+    authorLines[0],
+    'Jinyoung Jeong$^{1}$, Joseph B. Choi$^{2}$, Xinlun Cheng$^{2}$, H. S. Udaykumar$^{3}$, Sanghun Choi$^{1,*}$, and Stephen S. Baek$^{1,2,4,*}$'
+  );
+  assert.match(authorLines[1], /^\$\^\{1\}\$ School of Mechanical Engineering/);
+  assert.match(authorLines[2], /^\$\^\{2\}\$ School of Data Science/);
+  assert.match(authorLines[3], /^\$\^\{\*\}\$ Corresponding authors:/);
+
+  const renderedHtml = renderRichAcademicHtml(blocks[1].original, { blockType: 'author', pageNum: 1 });
+  assert.ok(renderedHtml.includes('Jinyoung Jeong<sup class="academic-sup">1</sup>, Joseph B. Choi<sup class="academic-sup">2</sup>'));
+  assert.ok(renderedHtml.includes('Stephen S. Baek<sup class="academic-sup">1,2,4,*</sup>'));
 });

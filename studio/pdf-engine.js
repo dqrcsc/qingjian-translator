@@ -1159,52 +1159,183 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
 
   if (normItems.length === 0) return [];
 
-  // 2. Sort runs by baseline Y (with tolerance) then X, and merge into horizontal visual lines
-  //    while strictly preventing merges across the two-column central gutter (~0.50 * pageW).
-  normItems.sort((a, b) => {
-    const tol = Math.min(a.fontPx, b.fontPx) * 0.42;
-    if (Math.abs(a.yBaseline - b.yBaseline) > tol) {
-      return a.yBaseline - b.yBaseline;
+  // 2. Snap inline superscripts/subscripts to their host line baseline, bucket into transitive
+  //    visual rows, and merge left-to-right runs while preventing merges across the 2-column gutter.
+  for (const it of normItems) {
+    it.lineY = it.yBaseline;
+    it.baseFontPx = it.fontPx;
+    it.isScriptCandidate = false;
+  }
+
+  normItems.sort((a, b) => a.x - b.x || a.yBaseline - b.yBaseline);
+
+  // Pass 2A-1: Snap script-sized items (e.g. author/affiliation superscripts "1", "1,2,4,*") to nearest host item
+  for (let i = 0; i < normItems.length; i++) {
+    const it = normItems[i];
+    const isPureSupToken = /^[0-9,∗*†‡§*]+$/.test(it.trimmed) && it.trimmed.length <= 16;
+    const minHostRatio = isPureSupToken ? 1.08 : 1.14;
+    const inTopHeaderBand = pageNum === 1 && it.top < pageH * 0.28;
+
+    let bestHost = null;
+    let bestDist = Infinity;
+
+    for (let j = 0; j < normItems.length; j++) {
+      if (i === j) continue;
+      const host = normItems[j];
+      if (host.fontPx < it.fontPx * minHostRatio) continue;
+      if (
+        it.yBaseline < host.yBaseline - host.fontPx * 0.95 ||
+        it.yBaseline > host.yBaseline + host.fontPx * 0.5
+      ) {
+        continue;
+      }
+      if (it.x > host.right + host.fontPx * 3.5 || it.right < host.x - host.fontPx * 2.2) {
+        continue;
+      }
+      const hGap = it.x >= host.right ? it.x - host.right : host.x > it.right ? host.x - it.right : 0;
+      if (
+        !inTopHeaderBand &&
+        ((host.right <= pageW * 0.525 && it.x >= pageW * 0.475) ||
+          (it.right <= pageW * 0.525 && host.x >= pageW * 0.475)) &&
+        hGap > host.fontPx * 0.8
+      ) {
+        continue;
+      }
+      // Prefer host immediately to the left (trailing superscript) or right (leading affiliation superscript)
+      const weightedDist = hGap + Math.abs(it.yBaseline - host.yBaseline) * 0.25;
+      if (weightedDist < bestDist) {
+        bestDist = weightedDist;
+        bestHost = host;
+      }
     }
-    return a.x - b.x;
-  });
+
+    if (bestHost) {
+      it.lineY = bestHost.yBaseline;
+      it.baseFontPx = bestHost.fontPx;
+      it.isScriptCandidate = true;
+    }
+  }
+
+  // Pass 2A-2: Chain multi-piece superscripts (e.g. "1," followed by "*" as separate PDF text items)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < normItems.length; i++) {
+      const it = normItems[i];
+      if (it.isScriptCandidate) continue;
+      if (!/^[0-9,∗*†‡§a-zA-Z+\-()]{1,12}$/.test(it.trimmed)) continue;
+      for (let j = 0; j < normItems.length; j++) {
+        if (i === j) continue;
+        const peer = normItems[j];
+        if (!peer.isScriptCandidate) continue;
+        if (it.fontPx > peer.baseFontPx * 0.92) continue;
+        if (Math.abs(it.yBaseline - peer.yBaseline) > Math.max(it.fontPx, peer.fontPx) * 0.38) continue;
+        if (it.x <= peer.right + peer.fontPx * 1.5 && it.right >= peer.x - peer.fontPx * 1.5) {
+          it.lineY = peer.lineY;
+          it.baseFontPx = peer.baseFontPx;
+          it.isScriptCandidate = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Pass 2B: Transitive row bucketing by lineY followed by strict left-to-right X sort within each row
+  normItems.sort((a, b) => a.lineY - b.lineY || a.x - b.x);
+  let currentRowId = 0;
+  let currentRowY = normItems[0].lineY;
+  let currentRowFont = normItems[0].baseFontPx;
+  normItems[0].rowId = 0;
+
+  for (let i = 1; i < normItems.length; i++) {
+    const it = normItems[i];
+    const rowTol = Math.max(currentRowFont, it.baseFontPx) * 0.45;
+    if (Math.abs(it.lineY - currentRowY) <= rowTol) {
+      it.rowId = currentRowId;
+      if (!it.isScriptCandidate) {
+        currentRowY = currentRowY * 0.7 + it.lineY * 0.3;
+        currentRowFont = Math.max(currentRowFont, it.baseFontPx);
+      }
+    } else {
+      currentRowId++;
+      currentRowY = it.lineY;
+      currentRowFont = it.baseFontPx;
+      it.rowId = currentRowId;
+    }
+  }
+
+  normItems.sort((a, b) => a.rowId - b.rowId || a.x - b.x);
 
   const lines = [];
   for (const run of normItems) {
     const prev = lines[lines.length - 1];
     if (prev) {
-      const maxFont = Math.max(prev.fontPx, run.fontPx);
+      const sameRow = run.rowId === prev.rowId;
+      const maxFont = Math.max(prev.baseFontPx || prev.fontPx, run.baseFontPx || run.fontPx);
       const minFont = Math.min(prev.fontPx, run.fontPx);
-      const baseDiff = Math.abs(run.yBaseline - prev.yBaseline);
-      const isSameBaseline = baseDiff <= maxFont * 0.44;
+      const baseDiff = Math.abs(run.lineY - prev.lineY);
+      const isSameBaseline = sameRow || baseDiff <= maxFont * 0.45;
       const isInlineScript =
-        run.fontPx <= prev.fontPx * 0.86 &&
-        run.top < prev.bottom + prev.fontPx * 0.25 &&
-        run.bottom > prev.top - prev.fontPx * 0.35 &&
-        run.x - prev.right <= prev.fontPx * 0.6;
+        (run.isScriptCandidate || prev.isScriptCandidate || run.fontPx <= prev.fontPx * 0.88) &&
+        run.top < prev.bottom + maxFont * 0.3 &&
+        run.bottom > prev.top - maxFont * 0.4 &&
+        run.x - prev.right <= maxFont * 1.2;
 
       const gap = run.x - prev.right;
-      // Never merge across the central gutter of a 2-column layout
+      const inPage1HeaderBand = pageNum === 1 && run.top < pageH * 0.25;
+      // Never merge across the central gutter of a 2-column body layout
       const crossesCenterGutter =
+        !inPage1HeaderBand &&
         prev.right <= pageW * 0.525 &&
         run.x >= pageW * 0.475 &&
         gap > maxFont * 0.82;
+      const maxAllowedGap = inPage1HeaderBand ? maxFont * 3.2 : maxFont * 1.65;
 
-      if ((isSameBaseline || isInlineScript) && !crossesCenterGutter && gap >= -prev.fontPx * 0.55 && gap <= maxFont * 1.65) {
-        const isSuperscript =
-          run.fontPx <= prev.fontPx * 0.84 &&
-          run.yBaseline < prev.yBaseline - prev.fontPx * 0.14 &&
-          /^[0-9,∗*†‡§a-zA-Z+\-()]{1,8}$/.test(run.trimmed);
+      if (
+        (isSameBaseline || isInlineScript) &&
+        !crossesCenterGutter &&
+        gap >= -maxFont * 0.55 &&
+        gap <= maxAllowedGap
+      ) {
+        const prevIsLeadingSuperscript =
+          !prev.hasMainBaseline &&
+          prev.fontPx <= run.fontPx * 0.9 &&
+          prev.yBaseline < run.yBaseline - run.fontPx * 0.1 &&
+          /^[0-9,∗*†‡§*]{1,10}$/.test(prev.trimmed);
 
-        if (isSuperscript && (pageNum === 1 || /^[0-9,∗*†‡]+$/.test(run.trimmed))) {
-          prev.str = `${prev.str.trimEnd()}$^{${run.trimmed}}$`;
+        const isTrailingSuperscript =
+          prev.hasMainBaseline &&
+          run.fontPx <= prev.fontPx * 0.9 &&
+          run.yBaseline < prev.yBaseline - prev.fontPx * 0.1 &&
+          /^[0-9,∗*†‡§a-zA-Z+\-()]{1,14}$/.test(run.trimmed);
+
+        if (prevIsLeadingSuperscript) {
+          prev.str = `$^{${prev.trimmed}}$ ${run.str.trimStart()}`;
+          prev.yBaseline = run.yBaseline;
+          prev.lineY = run.lineY;
+          prev.fontPx = run.fontPx;
+          prev.baseFontPx = run.baseFontPx || run.fontPx;
+          prev.hasMainBaseline = true;
+        } else if (isTrailingSuperscript && (pageNum === 1 || /^[0-9,∗*†‡§*]+$/.test(run.trimmed))) {
+          if (/\$\^\{[^}]+\}\$$/.test(prev.str)) {
+            prev.str = prev.str.replace(/\$\^\{([^}]+)\}\$$/, `$^{$1${run.trimmed}}$`);
+          } else {
+            prev.str = `${prev.str.trimEnd()}$^{${run.trimmed}}$`;
+          }
         } else {
+          const startsWithClosingPunct = /^[,.;:?!)\]]/.test(run.trimmed);
           const needSpace =
+            !startsWithClosingPunct &&
             gap > minFont * 0.15 &&
             !prev.str.endsWith(' ') &&
             !prev.str.endsWith('-') &&
             !run.str.startsWith(' ');
-          prev.str += (needSpace ? ' ' : '') + run.str;
+          prev.str += (needSpace ? ' ' : '') + (startsWithClosingPunct ? run.str.trimStart() : run.str);
+          if (!run.isScriptCandidate && run.fontPx >= prev.fontPx * 0.92) {
+            prev.yBaseline = run.yBaseline;
+            prev.lineY = run.lineY;
+            prev.fontPx = Math.max(prev.fontPx, run.fontPx);
+            prev.baseFontPx = Math.max(prev.baseFontPx || prev.fontPx, run.baseFontPx || run.fontPx);
+            prev.hasMainBaseline = true;
+          }
         }
         prev.right = Math.max(prev.right, run.right);
         prev.x = Math.min(prev.x, run.x);
@@ -1216,13 +1347,26 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         continue;
       }
     }
-    lines.push({ ...run });
+    const isPureLeadingSup = run.isScriptCandidate && /^[0-9,∗*†‡§*]{1,10}$/.test(run.trimmed);
+    lines.push({ ...run, hasMainBaseline: !isPureLeadingSup });
   }
 
   for (const ln of lines) {
     ln.str = ln.str.replace(/\s+/g, ' ').trim();
   }
-  const cleanLines = lines.filter((ln) => ln.str.length > 0);
+  const cleanLines = lines.filter((ln) => {
+    if (ln.str.length === 0) return false;
+    // Filter out any residual orphan superscript noise line in the Page 1 author band
+    if (
+      pageNum === 1 &&
+      ln.top < pageH * 0.35 &&
+      /^[0-9,∗*†‡§*\s]+$/.test(ln.str) &&
+      ln.str.replace(/\s+/g, '').length <= 20
+    ) {
+      return false;
+    }
+    return true;
+  });
   if (cleanLines.length === 0) return [];
 
   // Compute median body font size
@@ -1498,8 +1642,9 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         colName === 'full' &&
         ln.top < pageH * 0.38 &&
         !SECTION_HEADING_RE.test(s) &&
-        (/\$\^\{[0-9*,†‡a-zA-Z]+\}\$/.test(s) ||
-          /University|Institute|Department|School of|Laboratory|College|Academy|@|Corresponding author/i.test(s) ||
+        (/\$\^\{[0-9*,∗†‡§a-zA-Z+\-()]+\}\$/.test(s) ||
+          /University|Institute|Department|School of|Laboratory|College|Academy|Center for|Centre for|Hospital|@|Corresponding author/i.test(s) ||
+          /\b[A-Z][a-z]+(?:\s+[A-Z]\.)?\s+[A-Z][a-z]+.*,.*\b(?:and\s+)?[A-Z][a-z]+/.test(s) ||
           (outBlocks.length === 1 && outBlocks[0].type === 'heading' && s.length < 160 && !s.endsWith('.')))
       ) {
         return 'author';

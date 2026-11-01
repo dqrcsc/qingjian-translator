@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "青简 · 译读 (QingJian) — 双语精读与智译",
   "short_name": "青简 · 译读",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "青简 · 译读 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。",
   "icons": {
     "16": "icons/icon-16.png",

@@ -828,7 +828,7 @@ export function isAuthorOrAffiliationBlock(text, blockType = '', pageNum = 1) {
   }
   const s = String(text);
   // Count author/affiliation superscripts like $^{1}$, $^{1,*}$, $^{2}$, $^{*}$
-  const supMatches = s.match(/\$\^\{\s*[0-9*,†‡a-zA-Z]+\s*\}\$/g) || [];
+  const supMatches = s.match(/\$\^\{\s*[0-9*,∗†‡§a-zA-Z+\-]+\s*\}\$/g) || [];
   if (supMatches.length >= 2) return true;
   if (
     supMatches.length >= 1 &&
@@ -963,7 +963,7 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   const putMathToken = (latex, isDisplay) => {
     const id = mathTokens.length;
     // Fast-path: pure affiliation/footnote superscript like `^{1,*}` or `^{2}` or `^{*}`
-    const pureSupMatch = !isDisplay && latex.trim().match(/^\^\{\s*([0-9*,†‡a-zA-Z\s-]+)\s*\}$/);
+    const pureSupMatch = !isDisplay && latex.trim().match(/^\^\{\s*([0-9*,∗†‡§a-zA-Z\s+\-]+)\s*\}$/);
     if (pureSupMatch) {
       mathTokens.push(`<sup class="academic-sup">${escapeHtml(pureSupMatch[1].trim())}</sup>`);
     } else {
@@ -999,7 +999,7 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   });
 
   // 2c. Catch bare LaTeX superscripts/subscripts like Word^{1,*} or x_{i} that Gemini occasionally outputs without $...$
-  text = text.replace(/\^\{([0-9*,†‡a-zA-Z+\-]{1,12})\}/g, (_, sup) =>
+  text = text.replace(/\^\{([0-9*,∗†‡§a-zA-Z+\-]{1,14})\}/g, (_, sup) =>
     putMathToken(`^{${sup}}`, false)
   );
 
