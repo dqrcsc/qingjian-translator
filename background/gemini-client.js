@@ -317,10 +317,16 @@ export async function fetchWithTimeoutAndRetry(
         aborted
       ]);
       if (!RETRYABLE_HTTP_STATUS.has(response.status) || attempt === maxRetries) return response;
+      const retryAfterHeader = response.headers?.get?.('retry-after');
+      const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+      var retryWaitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? Math.min(10000, Math.round(retryAfterSec * 1000))
+        : baseDelayMs * Math.pow(2, attempt);
     } catch (err) {
       if (callerSignal?.aborted) throw callerSignal.reason;
       lastError = err;
       if (timedOutByAttempt || attempt === maxRetries) throw err;
+      var retryWaitMs = baseDelayMs * Math.pow(2, attempt);
     } finally {
       clearTimeout(timer);
       controller.signal.removeEventListener('abort', onAbort);
@@ -331,7 +337,7 @@ export async function fetchWithTimeoutAndRetry(
       const delay = setTimeout(() => {
         callerSignal?.removeEventListener('abort', onAbort);
         resolve();
-      }, baseDelayMs * Math.pow(2, attempt));
+      }, retryWaitMs);
       callerSignal?.addEventListener('abort', onAbort, { once: true });
       if (callerSignal?.aborted) onAbort();
     });
@@ -448,10 +454,13 @@ async function callOpenAiCompatibleApi(settings, payload, overrideModelId = '') 
     messages.push({ role: 'user', content: userText });
   }
 
+  const isReasoningModel = /^(o1|o3|o4|gpt-5|deepseek-reasoner)/i.test(activeModel);
   const openAiBody = {
     model: activeModel,
     messages,
-    temperature: Number(payload?.generationConfig?.temperature ?? settings.temperature ?? 0.2),
+    ...(isReasoningModel
+      ? {}
+      : { temperature: Number(payload?.generationConfig?.temperature ?? settings.temperature ?? 0.2) }),
     stream: false
   };
 
@@ -537,11 +546,12 @@ async function callGeminiApi(settings, payload, overrideModelId = '', isRetry = 
     // Auto-heal if the selected model is deprecated/404 and the API suggests a replacement or user has fetched models
     if (response.status === 404 && !isRetry && !settings.documentModelLocked) {
       const suggestedMatch = errDetail.match(/models\/([a-zA-Z0-9._-]+)/);
+      const suggestedModel = suggestedMatch && suggestedMatch[1] !== activeModel ? suggestedMatch[1] : '';
       const firstAvailable =
-        Array.isArray(settings?.availableModels) && settings.availableModels[0]?.id
+        Array.isArray(settings?.availableModels) && settings.availableModels[0]?.id && settings.availableModels[0].id !== activeModel
           ? settings.availableModels[0].id
           : '';
-      const fallbackModel = suggestedMatch ? suggestedMatch[1] : firstAvailable;
+      const fallbackModel = suggestedModel || firstAvailable;
       if (fallbackModel && fallbackModel !== activeModel) {
         console.info(`[QingJian] Auto-switching deprecated model ${activeModel} -> ${fallbackModel}`);
         settings.requestSignal?.throwIfAborted();
@@ -684,19 +694,31 @@ ${JSON.stringify(inputPayload)}`;
     rawOutput = await callGeminiApi(settings, payloadWithSchema);
   } catch (err) {
     if (
-      String(err.message).includes('responseSchema') ||
-      String(err.message).includes('thinking') ||
-      String(err.message).includes('400')
+      /MAX_TOKENS/i.test(err?.message || '') &&
+      items.length > 1 &&
+      !options._isMaxTokensSplitRetry
     ) {
-      const fallbackPayload = {
-        systemInstruction: { parts: [{ text: sysInstruction }] },
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: buildFastGenerationConfig(settings, schema, false)
-      };
-      rawOutput = await callGeminiApi(settings, fallbackPayload);
-    } else {
+      const mid = Math.ceil(items.length / 2);
+      const left = await translateBatchWithGemini(items.slice(0, mid), settings, {
+        ...options,
+        _isMaxTokensSplitRetry: true
+      });
+      const right = await translateBatchWithGemini(items.slice(mid), settings, {
+        ...options,
+        _isMaxTokensSplitRetry: true
+      });
+      return [...left, ...right];
+    }
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) {
       throw err;
     }
+    const dropSchema = /responseSchema/i.test(err?.message || '');
+    const fallbackPayload = {
+      systemInstruction: { parts: [{ text: sysInstruction }] },
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      generationConfig: buildFastGenerationConfig(settings, dropSchema ? null : schema, false)
+    };
+    rawOutput = await callGeminiApi(settings, fallbackPayload);
   }
 
   const parsed = safeParseJson(rawOutput);
@@ -764,38 +786,53 @@ Return a JSON object with:
 - "breakdown": Up to 4 key vocabulary terms, idioms, or grammar structures from the selection, each with {"term", "meaning", "role"}.
 - "example": A natural bilingual example sentence showing how the key expression is used.`;
 
+  const explainSchema = {
+    type: 'OBJECT',
+    properties: {
+      translation: { type: 'STRING' },
+      phonetic: { type: 'STRING' },
+      contextualMeaning: { type: 'STRING' },
+      breakdown: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            term: { type: 'STRING' },
+            meaning: { type: 'STRING' },
+            role: { type: 'STRING' }
+          },
+          required: ['term', 'meaning']
+        }
+      },
+      example: { type: 'STRING' }
+    },
+    required: ['translation', 'contextualMeaning', 'breakdown']
+  };
+
   const payload = {
     systemInstruction: { parts: [{ text: sysInstruction }] },
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.25,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'OBJECT',
-        properties: {
-          translation: { type: 'STRING' },
-          phonetic: { type: 'STRING' },
-          contextualMeaning: { type: 'STRING' },
-          breakdown: {
-            type: 'ARRAY',
-            items: {
-              type: 'OBJECT',
-              properties: {
-                term: { type: 'STRING' },
-                meaning: { type: 'STRING' },
-                role: { type: 'STRING' }
-              },
-              required: ['term', 'meaning']
-            }
-          },
-          example: { type: 'STRING' }
-        },
-        required: ['translation', 'contextualMeaning', 'breakdown']
-      }
-    }
+    generationConfig: buildFastGenerationConfig({ ...settings, temperature: 0.25 }, explainSchema, true)
   };
 
-  const raw = await callGeminiApi(settings, payload);
+  let raw;
+  try {
+    raw = await callGeminiApi(settings, payload);
+  } catch (err) {
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) {
+      throw err;
+    }
+    const dropSchema = /responseSchema/i.test(err?.message || '');
+    raw = await callGeminiApi(settings, {
+      systemInstruction: { parts: [{ text: sysInstruction }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: buildFastGenerationConfig(
+        { ...settings, temperature: 0.25 },
+        dropSchema ? null : explainSchema,
+        false
+      )
+    });
+  }
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length }, settings.requestSignal);
   return safeParseJson(raw);
@@ -807,6 +844,8 @@ Return a JSON object with:
 export async function translateInputTextWithGemini({ text, targetLang }, settings) {
   const outLangCode = targetLang || settings.inputTargetLang || 'en';
   const outLangName = getLanguageEnglishName(outLangCode);
+  const modelId = getActiveModelId(settings).toLowerCase();
+  const isFlash = modelId.includes('flash');
 
   const payload = {
     systemInstruction: {
@@ -818,14 +857,27 @@ export async function translateInputTextWithGemini({ text, targetLang }, setting
     },
     contents: [{ role: 'user', parts: [{ text }] }],
     generationConfig: {
-      temperature: 0.2
+      temperature: 0.2,
+      ...(isFlash ? { thinkingConfig: { thinkingBudget: 0 } } : {})
     }
   };
 
-  const raw = await callGeminiApi(settings, payload);
+  let raw;
+  try {
+    raw = await callGeminiApi(settings, payload);
+  } catch (err) {
+    if (!/thinking|generationConfig/i.test(err?.message || '')) {
+      throw err;
+    }
+    raw = await callGeminiApi(settings, {
+      systemInstruction: payload.systemInstruction,
+      contents: payload.contents,
+      generationConfig: { temperature: 0.2 }
+    });
+  }
   settings.requestSignal?.throwIfAborted();
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length }, settings.requestSignal);
-  return raw.trim().replace(/^["']|["']$/g, '');
+  return raw.trim().replace(/^(["'])(.*)\1$/s, '$2');
 }
 
 /**
@@ -869,17 +921,14 @@ ${JSON.stringify(cues.map((c) => ({ id: c.id, text: c.text })))}`;
   try {
     raw = await callGeminiApi(settings, payload);
   } catch (err) {
-    if (
-      String(err.message).includes('thinking') ||
-      String(err.message).includes('400')
-    ) {
-      raw = await callGeminiApi(settings, {
-        ...payload,
-        generationConfig: buildFastGenerationConfig(settings, schema, false)
-      });
-    } else {
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) {
       throw err;
     }
+    const dropSchema = /responseSchema/i.test(err?.message || '');
+    raw = await callGeminiApi(settings, {
+      ...payload,
+      generationConfig: buildFastGenerationConfig(settings, dropSchema ? null : schema, false)
+    });
   }
   const parsed = safeParseJson(raw);
   const mapById = translationMap(Array.isArray(parsed) ? parsed : [], cues, {
@@ -1114,10 +1163,11 @@ export async function analyzePdfWithGemini(
   try {
     raw = await callGeminiApi(settings, payloadWithFastConfig);
   } catch (err) {
-    if (!/thinking|responseSchema|generationConfig|400/i.test(err?.message || '')) throw err;
+    if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) throw err;
+    const dropSchema = /responseSchema/i.test(err?.message || '');
     const fallbackPayload = {
       ...payloadWithFastConfig,
-      generationConfig: buildFastGenerationConfig(settings, schema, false)
+      generationConfig: buildFastGenerationConfig(settings, dropSchema ? null : schema, false)
     };
     raw = await callGeminiApi(settings, fallbackPayload);
   }
@@ -1161,11 +1211,23 @@ export async function translateImageWithGemini(
         finalBase64 = m[2];
       }
     } else {
+      let parsedImgUrl;
+      try {
+        parsedImgUrl = new URL(imageUrl);
+      } catch {
+        throw new Error('无效的图片链接地址');
+      }
+      if (!['http:', 'https:'].includes(parsedImgUrl.protocol)) {
+        throw new Error('仅支持拉取 HTTP/HTTPS 协议的图片链接');
+      }
       const resp = await fetchWithTimeoutAndRetry(imageUrl, { credentials: 'omit', signal: settings.requestSignal });
       if (!resp.ok) {
         throw new Error(`无法拉取图片数据 (HTTP ${resp.status})`);
       }
-      const contentType = resp.headers.get('content-type') || '';
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      if (contentType.startsWith('text/html') || contentType.startsWith('application/json')) {
+        throw new Error('目标链接返回的不是有效的图片资源');
+      }
       if (contentType.startsWith('image/')) {
         finalMime = contentType.split(';')[0].trim();
       } else if (/\.png(\?|$)/i.test(imageUrl)) {
@@ -1174,6 +1236,9 @@ export async function translateImageWithGemini(
         finalMime = 'image/webp';
       }
       const ab = await resp.arrayBuffer();
+      if (ab.byteLength > 20 * 1024 * 1024) {
+        throw new Error('图片体积超过 20MB 上限，无法进行在线识别');
+      }
       finalBase64 = arrayBufferToBase64InWorker(ab);
     }
   }
@@ -1245,9 +1310,10 @@ Rules:
     raw = await callGeminiApi(settings, payload);
   } catch (err) {
     if (!/thinking|responseSchema|generationConfig/i.test(err?.message || '')) throw err;
+    const dropSchema = /responseSchema/i.test(err?.message || '');
     raw = await callGeminiApi(settings, {
       ...payload,
-      generationConfig: buildFastGenerationConfig(settings, schema, false)
+      generationConfig: buildFastGenerationConfig(settings, dropSchema ? null : schema, false)
     });
   }
 

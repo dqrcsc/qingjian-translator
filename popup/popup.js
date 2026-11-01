@@ -166,16 +166,28 @@ async function initPopup() {
     isActiveTabOnlinePdf = isOnlinePdfUrl(activeTab.url);
     try {
       const urlObj = new URL(activeTab.url);
-      currentHost = urlObj.hostname.toLowerCase();
+      const isHttpTab = urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
+      currentHost = isHttpTab ? urlObj.hostname.toLowerCase() : '';
       currentDomainText.textContent = currentHost || '当前站点';
+      if (autoTranslateDomainCheckbox) {
+        autoTranslateDomainCheckbox.disabled = !currentHost;
+      }
       const domains = (currentSettings.alwaysTranslateDomains || '')
         .split(/\r?\n/)
         .map((d) => d.trim().toLowerCase())
         .filter(Boolean);
-      autoTranslateDomainCheckbox.checked = domains.includes(currentHost);
+      autoTranslateDomainCheckbox.checked = Boolean(
+        currentHost &&
+          domains.some((d) => currentHost === d || currentHost.endsWith('.' + d))
+      );
     } catch {
       currentDomainText.textContent = '当前页面';
+      if (autoTranslateDomainCheckbox) {
+        autoTranslateDomainCheckbox.disabled = true;
+      }
     }
+  } else if (autoTranslateDomainCheckbox) {
+    autoTranslateDomainCheckbox.disabled = true;
   }
   if (autoTranslateAllCheckbox) {
     autoTranslateAllCheckbox.checked = Boolean(currentSettings.autoTranslateAllPages);
@@ -432,16 +444,19 @@ targetLangSelect.addEventListener('change', async () => {
 
 autoTranslateDomainCheckbox.addEventListener('change', async () => {
   if (!currentHost) return;
-  const set = new Set(
-    (currentSettings.alwaysTranslateDomains || '')
-      .split(/\r?\n/)
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean)
-  );
+  const list = (currentSettings.alwaysTranslateDomains || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const set = new Set(list);
   if (autoTranslateDomainCheckbox.checked) {
     set.add(currentHost);
   } else {
-    set.delete(currentHost);
+    for (const d of list) {
+      if (currentHost === d || currentHost.endsWith('.' + d)) {
+        set.delete(d);
+      }
+    }
   }
   currentSettings = await saveSettings({
     alwaysTranslateDomains: Array.from(set).join('\n')
@@ -497,6 +512,7 @@ async function runQuickTranslate() {
 
 quickTranslateBtn.addEventListener('click', runQuickTranslate);
 quickInput.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     runQuickTranslate();

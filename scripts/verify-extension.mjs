@@ -106,10 +106,14 @@ console.log('\n🔍 Running 青简 · 译读 (QingJian) MV3 Extension Verificati
 const manifestPath = path.join(ROOT, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
-check('manifest.json uses manifest_version 3', () => {
+check('manifest.json uses manifest_version 3 and meets Chrome Web Store metadata limits', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.action?.default_popup, 'action.default_popup must be defined');
   assert.equal(manifest.background?.type, 'module');
+  assert.ok(manifest.name && manifest.name.length <= 75, `manifest.name exceeds 75 chars (${manifest.name?.length})`);
+  assert.ok(manifest.short_name && manifest.short_name.length <= 12, `manifest.short_name exceeds 12 chars (${manifest.short_name?.length})`);
+  assert.ok(manifest.description && manifest.description.length <= 132, `manifest.description exceeds 132 chars (${manifest.description?.length})`);
+  assert.ok(fs.existsSync(path.join(ROOT, 'PRIVACY.md')), 'PRIVACY.md must exist for store privacy policy disclosure');
 });
 
 check('All icon files exist and match declared pixel dimensions (16, 48, 128)', () => {

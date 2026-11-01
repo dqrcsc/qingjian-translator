@@ -215,6 +215,7 @@ function stopDocumentTranslations() {
   programmaticScrollTimer = null;
   isProgrammaticRightScroll = false;
   currentDoc.translatingPages?.clear();
+  currentDoc.inFlightPagePromises?.clear();
   currentDoc.lazyScrollEnabled = false;
   currentDoc.lazyScrollTriggered = false;
   lazyPageQueue.length = 0;
@@ -223,7 +224,11 @@ function stopDocumentTranslations() {
   isProcessingLazyQueue = false;
   isExportBatchRunning = false;
   stopRequested = true;
+  if (progressBarWrap) progressBarWrap.hidden = true;
   if (pdfExportConfirmModal) pdfExportConfirmModal.hidden = true;
+  if (typeof renderWorkspaceBlocks === 'function' && currentDoc.loadState === 'ready') {
+    renderWorkspaceBlocks(streamSearchInput?.value?.trim?.() || '');
+  }
   updateDocumentActions();
 }
 
@@ -1601,8 +1606,12 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
           })
           .join('');
 
+        const needsLazyPageTranslation =
+          isPdfLazyMode &&
+          (!currentDoc.translatedPages?.has(pageNum) ||
+            currentDoc.forceRetranslatePages?.has(pageNum));
         return `
-          <article class="paper-sheet-page" data-paper-page="${pageNum}" ${!forExport && currentDoc.forceRetranslatePages?.has(pageNum) ? `data-lazy-page="${pageNum}"` : ''}>
+          <article class="paper-sheet-page" data-paper-page="${pageNum}" ${!forExport && needsLazyPageTranslation ? `data-lazy-page="${pageNum}"` : ''}>
             ${pageFailure ? `<div class="paper-page-failure" role="status">本页重译失败，以下保留上一版内容：${escapeHtml(pageFailure)}${forExport ? '' : ` <button type="button" data-translate-page="${pageNum}">↻ 重试本页</button>`}</div>` : ''}
             <header class="paper-sheet-header">
               <span>${escapeHtml(currentDoc.bookTitle || currentDoc.fileName || 'Academic Paper')}</span>
@@ -1946,6 +1955,7 @@ async function handleFigureImageFile(file, attachToBlockId = null) {
         page: currentPage,
         type: 'figure',
         column: 'full',
+        userAttached: true,
         original: `Figure (${file.name}): ${figureLabels.map((l) => l.original).filter(Boolean).join(' · ') || 'Uploaded Diagram'}`,
         translation:
           data.summaryTranslation ||
@@ -2135,10 +2145,10 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
   if (!isDocumentReady()) return;
   if (currentDoc.failedPages?.has(pageNum) && !retryFailed) return;
   const forceRetranslate = bypassCache || Boolean(currentDoc.forceRetranslatePages?.has(pageNum));
-  if (
-    (currentDoc.translatedPages.has(pageNum) && !forceRetranslate) ||
-    currentDoc.translatingPages.has(pageNum)
-  ) {
+  if (currentDoc.translatingPages.has(pageNum)) {
+    return currentDoc.inFlightPagePromises?.get(pageNum);
+  }
+  if (currentDoc.translatedPages.has(pageNum) && !forceRetranslate) {
     return;
   }
 
@@ -2179,234 +2189,255 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
   const doneBefore = currentDoc.translatedPages.size;
   progressBarFill.style.width = `${Math.min(95, Math.max(12, Math.round(((doneBefore + 0.5) / totalPages) * 100)))}%`;
 
-  try {
-    const settings = await getDocumentTranslationSettings();
-    if (!isCurrent()) return;
-    let pageRender = null;
-    if (currentDoc.pdfDoc) {
-      pageRender = await getOrRenderPdfPage(pageNum);
+  const pageTask = (async () => {
+    try {
+      const settings = await getDocumentTranslationSettings();
       if (!isCurrent()) return;
-      ensureLeftPdfPageRendered(pageNum);
-    }
-
-    const isGeminiProtocol = getActiveProtocol(settings) === 'gemini';
-    const localCandidateBlocks =
-      pageRender && Array.isArray(pageRender.textItems) && pageRender.textItems.length > 0
-        ? extractStructuredPdfPageBlocks(pageRender, pageNum)
-        : [];
-    const hasRichVectorText =
-      Array.isArray(pageRender?.textItems) &&
-      pageRender.textItems.length >= 12 &&
-      localCandidateBlocks.reduce((sum, b) => sum + (b.original?.length || 0), 0) >= 300;
-    const usesGeminiVision = isGeminiProtocol && !hasRichVectorText;
-    let rawBlocks = [];
-
-    if (usesGeminiVision) {
-      const payload = {
-        bypassCache: forceRetranslate,
-        targetLang: settings.targetLang,
-        pageNumber: pageNum,
-        pageHint: `Page ${pageNum} only`
-      };
-
-      if (pageRender && pageRender.jpegBase64) {
-        payload.pageImageBase64 = pageRender.jpegBase64;
-        payload.mimeType = 'image/jpeg';
-        payload.pageMimeType = 'image/jpeg';
-      } else if (currentDoc.pdfArrayBuffer) {
-        payload.pdfBase64 = arrayBufferToBase64(currentDoc.pdfArrayBuffer);
+      let pageRender = null;
+      if (currentDoc.pdfDoc) {
+        pageRender = await getOrRenderPdfPage(pageNum);
+        if (!isCurrent()) return;
+        ensureLeftPdfPageRendered(pageNum);
       }
 
-      const res = await sendModelRequest({
-        type: MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL,
-        payload
-      });
+      const isGeminiProtocol = getActiveProtocol(settings) === 'gemini';
+      const localCandidateBlocks =
+        pageRender && Array.isArray(pageRender.textItems) && pageRender.textItems.length > 0
+          ? extractStructuredPdfPageBlocks(pageRender, pageNum)
+          : [];
+      const hasRichVectorText =
+        Array.isArray(pageRender?.textItems) &&
+        pageRender.textItems.length >= 12 &&
+        localCandidateBlocks.reduce((sum, b) => sum + (b.original?.length || 0), 0) >= 300;
+      const usesGeminiVision = isGeminiProtocol && !hasRichVectorText;
+      let rawBlocks = [];
 
-      if (!isCurrent()) return;
-      if (!res || !res.ok) {
-        throw new Error(res?.error || `第 ${pageNum} 页解析失败`);
-      }
+      if (usesGeminiVision) {
+        const payload = {
+          bypassCache: forceRetranslate,
+          targetLang: settings.targetLang,
+          pageNumber: pageNum,
+          pageHint: `Page ${pageNum} only`
+        };
 
-      rawBlocks = res.data?.blocks || [];
-    } else {
-      // Non-Gemini / OpenAI-compatible text models (e.g., DeepSeek) OR born-digital PDFs with rich vector text:
-      // Reconstruct 2-column academic layout, headings, authors, equations, and figure bounding boxes locally via PDF.js 2D coordinates
-      rawBlocks = localCandidateBlocks;
-      // Only text extracted from this PDF.js page belongs to this page. The
-      // whole-document stream fallback uses estimated page numbers and cannot
-      // safely fill a textless page in the layout-preserving pipeline.
-
-      const translatableEntries = rawBlocks
-        .map((b, idx) => ({ b, idx }))
-        .filter(
-          ({ b }) =>
-            b.type !== 'equation' &&
-            b.type !== 'code' &&
-            typeof b.original === 'string' &&
-            b.original.trim().length > 0
-        );
-
-      const pageBatches = createBatches(
-        translatableEntries,
-        (entry) => entry.b.original,
-        Math.min(settings.batchMaxItems || 10, 3),
-        Math.min(settings.batchMaxChars || 2400, 900)
-      );
-
-      await Promise.all(
-        pageBatches.map(async (batch) => {
+        if (!pageRender?.jpegBase64 && currentDoc.pdfDoc) {
+          pageRender = await getOrRenderPdfPage(pageNum);
           if (!isCurrent()) return;
-          const batchRes = await sendModelRequest({
-            type: MESSAGE_TYPES.TRANSLATE_BATCH,
-            payload: {
-              bypassCache: forceRetranslate,
-              items: batch.map((entry) => ({ id: entry.idx, text: entry.b.original })),
-              targetLang: settings.targetLang,
-              pageTitle: currentDoc.bookTitle || currentDoc.fileName
-            }
-          });
+        }
 
-          if (!isCurrent()) return;
-          if (!batchRes || !batchRes.ok) {
-            throw new Error(batchRes?.error || `第 ${pageNum} 页文本翻译失败`);
-          }
+        if (pageRender && pageRender.jpegBase64) {
+          payload.pageImageBase64 = pageRender.jpegBase64;
+          payload.mimeType = 'image/jpeg';
+          payload.pageMimeType = 'image/jpeg';
+        } else if (
+          !currentDoc.pdfDoc &&
+          (currentDoc.totalPages || 1) <= 1 &&
+          currentDoc.pdfArrayBuffer &&
+          currentDoc.pdfArrayBuffer.byteLength <= 15 * 1024 * 1024
+        ) {
+          payload.pdfBase64 = arrayBufferToBase64(currentDoc.pdfArrayBuffer);
+        } else {
+          throw new Error(`无法渲染第 ${pageNum} 页图像以供视觉识别，请重试`);
+        }
 
-          const returnedList = batchRes.data?.translations || [];
-          for (let i = 0; i < batch.length; i++) {
-            const entry = batch[i];
-            const matched =
-              returnedList.find((tr) => Number(tr.id) === entry.idx) || returnedList[i];
-            if (matched && matched.translation) {
-              entry.b.translation = matched.translation;
-            }
-          }
-        })
-      );
-    }
+        const res = await sendModelRequest({
+          type: MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL,
+          payload
+        });
 
-    if (!isCurrent()) return;
-    if (rawBlocks.length === 0) throw new Error('此页未提取到可翻译内容；扫描件请使用支持视觉的模型。');
-    const newBlocks = [];
+        if (!isCurrent()) return;
+        if (!res || !res.ok) {
+          throw new Error(res?.error || `第 ${pageNum} 页解析失败`);
+        }
 
-    for (let idx = 0; idx < rawBlocks.length; idx++) {
-      const b = rawBlocks[idx];
-      const isFig = b.type === 'figure';
-      const figureBox2d = isFig ? b.figureBox2d || null : null;
-      let imageDataUrl = '';
-      let originalImageDataUrl = '';
-      let isCanvasInpainted = false;
-      let cleanFigureLabels = isFig
-        ? normalizeFigureLabelsToCrop(b.figureLabels || [], figureBox2d)
-        : [];
+        rawBlocks = res.data?.blocks || [];
+      } else {
+        // Non-Gemini / OpenAI-compatible text models (e.g., DeepSeek) OR born-digital PDFs with rich vector text:
+        // Reconstruct 2-column academic layout, headings, authors, equations, and figure bounding boxes locally via PDF.js 2D coordinates
+        rawBlocks = localCandidateBlocks;
+        // Only text extracted from this PDF.js page belongs to this page. The
+        // whole-document stream fallback uses estimated page numbers and cannot
+        // safely fill a textless page in the layout-preserving pipeline.
 
-      if (isFig && pageRender?.canvas && figureBox2d) {
-        const cropObj = cropFigureCanvasObject(pageRender.canvas, figureBox2d);
-        if (cropObj && cropObj.cropCanvas) {
-          originalImageDataUrl = cropObj.originalDataUrl;
-          // 1. Extract exact PDF vector text coordinates inside the figure from PDF.js
-          const vectorGroups = extractFigureVectorTextGroups(
-            pageRender.textItems || [],
-            pageRender.width,
-            pageRender.height,
-            figureBox2d
+        const translatableEntries = rawBlocks
+          .map((b, idx) => ({ b, idx }))
+          .filter(
+            ({ b }) =>
+              b.type !== 'equation' &&
+              b.type !== 'code' &&
+              typeof b.original === 'string' &&
+              b.original.trim().length > 0
           );
 
-          const minVectorGroups = usesGeminiVision ? 2 : 1;
-          if (vectorGroups.length >= minVectorGroups) {
+        const pageBatches = createBatches(
+          translatableEntries,
+          (entry) => entry.b.original,
+          Math.min(settings.batchMaxItems || 10, 3),
+          Math.min(settings.batchMaxChars || 2400, 900)
+        );
+
+        await Promise.all(
+          pageBatches.map(async (batch) => {
+            if (!isCurrent()) return;
             const batchRes = await sendModelRequest({
               type: MESSAGE_TYPES.TRANSLATE_BATCH,
               payload: {
                 bypassCache: forceRetranslate,
-                items: vectorGroups.map((g, gIdx) => ({ id: gIdx, text: g.original })),
+                items: batch.map((entry) => ({ id: entry.idx, text: entry.b.original })),
                 targetLang: settings.targetLang,
                 pageTitle: currentDoc.bookTitle || currentDoc.fileName
               }
             });
+
             if (!isCurrent()) return;
-            if (!batchRes?.ok) throw new Error(batchRes?.error || '图中文字翻译失败');
-            if (Array.isArray(batchRes.data?.translations)) {
-              for (const tr of batchRes.data.translations) {
-                if (vectorGroups[tr.id] && tr.translation) {
-                  vectorGroups[tr.id].translation = tr.translation;
-                }
+            if (!batchRes || !batchRes.ok) {
+              throw new Error(batchRes?.error || `第 ${pageNum} 页文本翻译失败`);
+            }
+
+            const returnedList = batchRes.data?.translations || [];
+            for (let i = 0; i < batch.length; i++) {
+              const entry = batch[i];
+              const matched =
+                returnedList.find((tr) => Number(tr.id) === entry.idx) || returnedList[i];
+              if (matched && matched.translation) {
+                entry.b.translation = matched.translation;
               }
             }
-            const inpainted = renderSeamlessFigureTranslation(
-              cropObj.cropCanvas,
-              vectorGroups
-            );
-            imageDataUrl = inpainted.translatedDataUrl || cropObj.originalDataUrl;
-            originalImageDataUrl = inpainted.originalDataUrl || cropObj.originalDataUrl;
-            cleanFigureLabels = inpainted.labels;
-            isCanvasInpainted = true;
-          } else if (cleanFigureLabels.length > 0) {
-            const inpainted = renderSeamlessFigureTranslation(
-              cropObj.cropCanvas,
-              cleanFigureLabels
-            );
-            imageDataUrl = inpainted.translatedDataUrl || cropObj.originalDataUrl;
-            originalImageDataUrl = inpainted.originalDataUrl || cropObj.originalDataUrl;
-            cleanFigureLabels = inpainted.labels;
-            isCanvasInpainted = true;
-          } else {
-            imageDataUrl = cropObj.originalDataUrl;
-          }
-        }
+          })
+        );
       }
 
-      newBlocks.push({
-        id: allocateBlockId(),
-        page: pageNum,
-        type: b.type || 'paragraph',
-        column: b.column || 'full',
-        original: b.original || '',
-        translation: b.translation || '',
-        figureBox2d,
-        figureLabels: cleanFigureLabels,
-        imageDataUrl,
-        originalImageDataUrl,
-        isCanvasInpainted
-      });
+      if (!isCurrent()) return;
+      if (rawBlocks.length === 0) throw new Error('此页未提取到可翻译内容；扫描件请使用支持视觉的模型。');
+      const newBlocks = [];
+
+      for (let idx = 0; idx < rawBlocks.length; idx++) {
+        const b = rawBlocks[idx];
+        const isFig = b.type === 'figure';
+        const figureBox2d = isFig ? b.figureBox2d || null : null;
+        let imageDataUrl = '';
+        let originalImageDataUrl = '';
+        let isCanvasInpainted = false;
+        let cleanFigureLabels = isFig
+          ? normalizeFigureLabelsToCrop(b.figureLabels || [], figureBox2d)
+          : [];
+
+        if (isFig && pageRender?.canvas && figureBox2d) {
+          const cropObj = cropFigureCanvasObject(pageRender.canvas, figureBox2d);
+          if (cropObj && cropObj.cropCanvas) {
+            originalImageDataUrl = cropObj.originalDataUrl;
+            // 1. Extract exact PDF vector text coordinates inside the figure from PDF.js
+            const vectorGroups = extractFigureVectorTextGroups(
+              pageRender.textItems || [],
+              pageRender.width,
+              pageRender.height,
+              figureBox2d
+            );
+
+            const minVectorGroups = usesGeminiVision ? 2 : 1;
+            if (vectorGroups.length >= minVectorGroups) {
+              const batchRes = await sendModelRequest({
+                type: MESSAGE_TYPES.TRANSLATE_BATCH,
+                payload: {
+                  bypassCache: forceRetranslate,
+                  items: vectorGroups.map((g, gIdx) => ({ id: gIdx, text: g.original })),
+                  targetLang: settings.targetLang,
+                  pageTitle: currentDoc.bookTitle || currentDoc.fileName
+                }
+              });
+              if (!isCurrent()) return;
+              if (!batchRes?.ok) throw new Error(batchRes?.error || '图中文字翻译失败');
+              if (Array.isArray(batchRes.data?.translations)) {
+                for (const tr of batchRes.data.translations) {
+                  if (vectorGroups[tr.id] && tr.translation) {
+                    vectorGroups[tr.id].translation = tr.translation;
+                  }
+                }
+              }
+              const inpainted = renderSeamlessFigureTranslation(
+                cropObj.cropCanvas,
+                vectorGroups
+              );
+              imageDataUrl = inpainted.translatedDataUrl || cropObj.originalDataUrl;
+              originalImageDataUrl = inpainted.originalDataUrl || cropObj.originalDataUrl;
+              cleanFigureLabels = inpainted.labels;
+              isCanvasInpainted = true;
+            } else if (cleanFigureLabels.length > 0) {
+              const inpainted = renderSeamlessFigureTranslation(
+                cropObj.cropCanvas,
+                cleanFigureLabels
+              );
+              imageDataUrl = inpainted.translatedDataUrl || cropObj.originalDataUrl;
+              originalImageDataUrl = inpainted.originalDataUrl || cropObj.originalDataUrl;
+              cleanFigureLabels = inpainted.labels;
+              isCanvasInpainted = true;
+            } else {
+              imageDataUrl = cropObj.originalDataUrl;
+            }
+          }
+        }
+
+        newBlocks.push({
+          id: allocateBlockId(),
+          page: pageNum,
+          type: b.type || 'paragraph',
+          column: b.column || 'full',
+          original: b.original || '',
+          translation: b.translation || '',
+          figureBox2d,
+          figureLabels: cleanFigureLabels,
+          imageDataUrl,
+          originalImageDataUrl,
+          isCanvasInpainted
+        });
+      }
+
+      // Replace any existing blocks on this page (preserving user-attached figures) and sort by page number
+      const filtered = currentDoc.blocks.filter(
+        (b) => Number(b.page) !== pageNum || Boolean(b.userAttached)
+      );
+      currentDoc.blocks = [...filtered, ...newBlocks]
+        .sort((a, b) => (a.page || 1) - (b.page || 1));
+
+      if (!isCurrent()) return;
+      currentDoc.translatedPages.add(pageNum);
+      currentDoc.failedPages?.delete(pageNum);
+      currentDoc.forceRetranslatePages?.delete(pageNum);
+      currentDoc.translatingPages.delete(pageNum);
+
+      renderWorkspaceBlocks(streamSearchInput.value.trim());
+
+      const doneCount = currentDoc.translatedPages.size;
+      progressBarFill.style.width = `${Math.min(100, Math.round((doneCount / totalPages) * 100))}%`;
+      docStatusSubtitle.textContent =
+        doneCount < totalPages
+          ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 向下滚动将自动续译后续页面（省 Token）`
+          : `✓ 全部 ${totalPages} 页翻译完成`;
+    } catch (err) {
+      if (session !== documentSession) return;
+      currentDoc.failedPages ??= new Map();
+      currentDoc.failedPages.set(pageNum, String(err?.message || err));
+      currentDoc.translatingPages.delete(pageNum);
+      docStatusSubtitle.textContent = `⚠️ 第 ${pageNum} 页翻译失败: ${err?.message || err}`;
+      renderWorkspaceBlocks(streamSearchInput.value.trim());
+    } finally {
+      currentDoc.inFlightPagePromises?.delete(pageNum);
+      if (session !== documentSession) return;
+      currentDoc.translatingPages.delete(pageNum);
+      if (!currentDoc.leftPreviewWanted?.has(pageNum)) evictPdfPageRender(currentDoc, pageNum);
+      trimPdfPageRenderCache(currentDoc);
+      updateDocumentActions();
+      if (currentDoc.translatingPages.size === 0 && lazyPageQueue.length === 0) {
+        setTimeout(() => {
+          if (session === documentSession) progressBarWrap.hidden = true;
+        }, 900);
+      }
     }
+  })();
 
-    // Replace any existing blocks on this page and sort by page number
-    const filtered = currentDoc.blocks.filter((b) => Number(b.page) !== pageNum);
-    currentDoc.blocks = [...filtered, ...newBlocks]
-      .sort((a, b) => (a.page || 1) - (b.page || 1));
-
-    if (!isCurrent()) return;
-    currentDoc.translatedPages.add(pageNum);
-    currentDoc.failedPages?.delete(pageNum);
-    currentDoc.forceRetranslatePages?.delete(pageNum);
-    currentDoc.translatingPages.delete(pageNum);
-
-    renderWorkspaceBlocks(streamSearchInput.value.trim());
-
-    const doneCount = currentDoc.translatedPages.size;
-    progressBarFill.style.width = `${Math.min(100, Math.round((doneCount / totalPages) * 100))}%`;
-    docStatusSubtitle.textContent =
-      doneCount < totalPages
-        ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 向下滚动将自动续译后续页面（省 Token）`
-        : `✓ 全部 ${totalPages} 页翻译完成`;
-  } catch (err) {
-    if (session !== documentSession) return;
-    currentDoc.failedPages ??= new Map();
-    currentDoc.failedPages.set(pageNum, String(err?.message || err));
-    currentDoc.translatingPages.delete(pageNum);
-    docStatusSubtitle.textContent = `⚠️ 第 ${pageNum} 页翻译失败: ${err?.message || err}`;
-    renderWorkspaceBlocks(streamSearchInput.value.trim());
-  } finally {
-    if (session !== documentSession) return;
-    currentDoc.translatingPages.delete(pageNum);
-    if (!currentDoc.leftPreviewWanted?.has(pageNum)) evictPdfPageRender(currentDoc, pageNum);
-    trimPdfPageRenderCache(currentDoc);
-    updateDocumentActions();
-    if (currentDoc.translatingPages.size === 0 && lazyPageQueue.length === 0) {
-      setTimeout(() => {
-        if (session === documentSession) progressBarWrap.hidden = true;
-      }, 900);
-    }
-  }
+  currentDoc.inFlightPagePromises ??= new Map();
+  currentDoc.inFlightPagePromises.set(pageNum, pageTask);
+  return pageTask;
 }
 
 startTranslateDocBtn.addEventListener('click', () => {
@@ -2415,6 +2446,7 @@ startTranslateDocBtn.addEventListener('click', () => {
     documentRequests.cancel();
     documentSession++;
     currentDoc.translatingPages.clear();
+    currentDoc.inFlightPagePromises?.clear();
     isTranslating = false;
     isProcessingLazyQueue = false;
     stopRequested = true;
@@ -2422,6 +2454,11 @@ startTranslateDocBtn.addEventListener('click', () => {
     currentDoc.lazyScrollEnabled = false;
     currentDoc.lazyScrollTriggered = false;
     lazyPageObserver?.disconnect();
+    if (progressBarWrap) progressBarWrap.hidden = true;
+    if (typeof renderWorkspaceBlocks === 'function' && currentDoc.loadState === 'ready') {
+      renderWorkspaceBlocks(streamSearchInput?.value?.trim?.() || '');
+    }
+    updateDocumentActions();
     startTranslateDocBtn.textContent = '✦ 继续翻译';
     docStatusSubtitle.textContent = '⏸ 已暂停自动流式翻译（保留已出译文）';
     return;

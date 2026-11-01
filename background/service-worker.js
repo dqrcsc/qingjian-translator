@@ -56,6 +56,44 @@ async function sendMessageToTabSafely(tabId, message) {
   }
 }
 
+async function ensureContentScriptAndSendMessage(tabId, message) {
+  if (!tabId) return null;
+  const res = await sendMessageToTabSafely(tabId, message);
+  if (res) return res;
+  try {
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ['content/content.css']
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['shared/protocol.js', 'shared/request-client.js', 'content/content-main.js']
+    });
+    return await sendMessageToTabSafely(tabId, message);
+  } catch {
+    return null;
+  }
+}
+
+function assertPrivilegedExtensionSender(sender) {
+  const extRoot = chrome.runtime.getURL('');
+  const senderUrl = String(sender?.url || sender?.tab?.url || '');
+  if ((extRoot && (!senderUrl || !senderUrl.startsWith(extRoot))) || /^https?:|^file:|^ftp:/i.test(senderUrl)) {
+    throw new Error('仅允许扩展设置页面或弹窗执行此管理操作');
+  }
+}
+
+function mergeAdminTestSettings(current, payload, signal) {
+  const patch = payload && typeof payload === 'object' ? payload : {};
+  const merged = { ...current, ...patch, requestSignal: signal };
+  const customUrl = typeof patch.apiBaseUrl === 'string' ? patch.apiBaseUrl.trim().replace(/\/+$/, '') : '';
+  const currentUrl = String(current.apiBaseUrl || '').trim().replace(/\/+$/, '');
+  if (customUrl && customUrl !== currentUrl && patch.apiKey === undefined) {
+    merged.apiKey = '';
+  }
+  return merged;
+}
+
 async function updateSiteAutoTranslatePause(url, paused) {
   const settings = await getSettings();
   const data = await setSitePause(url, settings.alwaysTranslateDomains, paused);
@@ -117,7 +155,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     chrome.contextMenus.create({
       id: 'immersive-gemini-translate-pdf-link',
       title: '📄 在新标签页双语翻译此在线 PDF (青简 · 译读)',
-      contexts: ['link', 'page']
+      contexts: ['link', 'page'],
+      targetUrlPatterns: ['*://*/*.pdf*', '*://arxiv.org/pdf/*', '*://arxiv.org/abs/*', '*://openreview.net/pdf*']
     });
     chrome.contextMenus.create({
       id: 'immersive-gemini-explain-selection',
@@ -166,30 +205,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       await openPdfTranslationNewTab(tab.url || info.pageUrl, tab, true);
       return;
     }
-
-    const res = await sendMessageToTabSafely(tab.id, {
+    await ensureContentScriptAndSendMessage(tab.id, {
       type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
     });
-    if (!res) {
-      // Content script might not be injected yet on a pre-existing tab
-      try {
-        await chrome.scripting.insertCSS({
-          target: { tabId: tab.id },
-          files: ['content/content.css']
-        });
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['shared/protocol.js', 'shared/request-client.js', 'content/content-main.js']
-        });
-        await sendMessageToTabSafely(tab.id, {
-          type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
-        });
-      } catch {
-        // ignore restricted browser internal pages (chrome://, edge://, chrome web store)
-      }
-    }
   } else if (info.menuItemId === 'immersive-gemini-explain-selection' && info.selectionText) {
-    await sendMessageToTabSafely(tab.id, {
+    await ensureContentScriptAndSendMessage(tab.id, {
       type: MESSAGE_TYPES.SHOW_PAGE_TOAST,
       payload: {
         mode: 'selection-explain',
@@ -209,11 +229,11 @@ chrome.commands.onCommand.addListener(async (command) => {
       await openPdfTranslationNewTab(tab.url, tab, true);
       return;
     }
-    await sendMessageToTabSafely(tab.id, {
+    await ensureContentScriptAndSendMessage(tab.id, {
       type: MESSAGE_TYPES.TOGGLE_PAGE_TRANSLATION
     });
   } else if (command === 'cycle-translation-style') {
-    await sendMessageToTabSafely(tab.id, {
+    await ensureContentScriptAndSendMessage(tab.id, {
       type: MESSAGE_TYPES.CYCLE_TRANSLATION_STYLE
     });
   }
@@ -435,15 +455,17 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
           break;
         }
         case MESSAGE_TYPES.TEST_API_KEY: {
+          assertPrivilegedExtensionSender(sender);
           const current = await getSettings();
-          const merged = { ...current, ...(message.payload || {}), requestSignal: signal };
+          const merged = mergeAdminTestSettings(current, message.payload, signal);
           const res = await testGeminiConnection(merged);
           sendResponse({ ok: true, data: res });
           break;
         }
         case MESSAGE_TYPES.FETCH_MODELS: {
+          assertPrivilegedExtensionSender(sender);
           const current = await getSettings();
-          const merged = { ...current, ...(message.payload || {}), requestSignal: signal };
+          const merged = mergeAdminTestSettings(current, message.payload, signal);
           const models = await fetchAvailableModels(merged);
           let nextModelId = merged.modelId;
           if (models.length > 0 && !models.some((m) => m.id === nextModelId)) {
@@ -455,6 +477,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
           break;
         }
         case MESSAGE_TYPES.GET_CACHE_STATS: {
+          assertPrivilegedExtensionSender(sender);
           const [cacheStats, usageStats] = await Promise.all([
             getCacheStats(),
             getUsageStats()
@@ -463,6 +486,7 @@ async function dispatchRequest(message, sender, sendResponse, signal) {
           break;
         }
         case MESSAGE_TYPES.CLEAR_CACHE: {
+          assertPrivilegedExtensionSender(sender);
           const res = await clearAllCache();
           sendResponse({ ok: res.cleared, data: res, error: res.cleared ? undefined : '内存缓存已清空，磁盘缓存清理失败，请重试。' });
           break;

@@ -14,6 +14,7 @@ const IDB_PRUNE_BATCH = 1000;
 const memCache = new Map();
 let dbPromise = null;
 let writesSinceLastPrune = 0;
+let prunedInThisSession = false;
 
 function setMemoryEntry(key, translation) {
   memCache.delete(key);
@@ -32,7 +33,19 @@ function openCacheDB() {
         store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      if (db) {
+        db.onversionchange = () => {
+          try { db.close(); } catch {}
+          dbPromise = null;
+        };
+        db.onclose = () => {
+          dbPromise = null;
+        };
+      }
+      resolve(db);
+    };
     req.onerror = () => {
       dbPromise = null;
       reject(req.error);
@@ -127,7 +140,8 @@ export async function setCachedTranslations(entries) {
     });
 
     writesSinceLastPrune += entries.length;
-    if (writesSinceLastPrune >= 80) {
+    if (!prunedInThisSession || writesSinceLastPrune >= 80) {
+      prunedInThisSession = true;
       writesSinceLastPrune = 0;
       pruneIndexedDbIfNeeded(db).catch(() => {});
     }

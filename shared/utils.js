@@ -158,7 +158,7 @@ export function isOnlinePdfUrl(rawUrl) {
     if ((host === 'arxiv.org' || host.endsWith('.arxiv.org')) && path.startsWith('/pdf/')) {
       return true;
     }
-    if (host.includes('openreview.net') && path === '/pdf') {
+    if ((host === 'openreview.net' || host.endsWith('.openreview.net')) && path === '/pdf') {
       return true;
     }
     if (/\.pdf($|\?|#)/i.test(path + u.search)) {

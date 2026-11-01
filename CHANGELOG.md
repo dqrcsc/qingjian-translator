@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.18 — 2026-11-01
+
+本版完成全量代码安全审计修复、Chrome Web Store 合规加固、React/Vue 宿主 DOM 兼容保护、滚动扫描性能优化，以及 Studio 文档工作台与设置页多项边界缺陷修复。
+
+### 商店合规与后台安全加固
+
+- 精简 `manifest.json` 的 `description` 至 124 字符（符合商店 ≤132 字符上限），为 `web_accessible_resources` 启用 `"use_dynamic_url": true`，并新增中英双语 `PRIVACY.md` 隐私与 Limited Use 声明。
+- 在 `service-worker.js` 中新增 `assertPrivilegedExtensionSender` 与 `mergeAdminTestSettings`，拒绝普通网页 Content Script 调用管理接口（`TEST_API_KEY` / `FETCH_MODELS` / `CLEAR_CACHE`），并防止自定义 `apiBaseUrl` 泄露已存储的 `apiKey`。
+- 为快捷键 `Alt+A` / `Alt+S` 补充脚本动态注入兜底（`ensureContentScriptAndSendMessage`）；修正 IndexedDB 连接关闭自动重连与唤醒首次写入淘汰检查。
+- 支持 `Retry-After` 响应头退避，修复 `responseSchema` 回退与 400 重复请求，新增 `MAX_TOKENS` 批次自动对半拆分重试、划词/输入框翻译 `thinkingBudget: 0` 加速、OpenAI 推理模型自动省略 `temperature`，以及图片拉取协议/MIME/20MB 体积校验。
+
+### 网页内容脚本、YouTube 与 Studio 工作台修复
+
+- 网页取消翻译时仅合并扩展自身拆分的 `__igSplitFromPrev` 文本节点，移除 `el.normalize()` 以保护 React/Vue 相邻文本节点引用；引入单次扫描祖先可见性缓存 `activeScanVisibilityCache` 降低滚动扫描布局开销。
+- 补全多语种（日/韩/俄/英）目标语言检测、Alt 悬停翻译容器与可编辑区域过滤、`pageshow` bfcache 恢复清理、YouTube 广告期间暂停正片字幕及十六进制 HTML 实体解码。
+- 在 Studio `translateSinglePdfPage` 中移除多页 PDF 页面渲染缺失时整份上传 `pdfArrayBuffer` 的危险回退；通过 `inFlightPagePromises` 共享在途页面翻译 Promise；保护用户粘贴附图（`userAttached`）；剔除 EPUB 导出中的非法 XML 1.0 控制字符并限制 LaTeX 递归深度。
+- 修复设置页 `temperature = 0` 保存被重置为 `0.2` 的问题，增加恢复默认配置二次确认、Popup 子域名后缀匹配与中文输入法 `isComposing` 回车过滤，并为所有深色页面声明 `color-scheme: dark`。
+
 ## 1.0.17 — 2026-10-31
 
 本版修复高密度学术 PDF 单页翻译触发 45 秒单次尝试超时后重发起重试、最终撞上 90 秒总时间预算报错（`请求已超过总时间预算（90 秒）`）的问题，并将原生矢量文本 PDF 单页拆分为并发小批次翻译以显著降低单页耗时。

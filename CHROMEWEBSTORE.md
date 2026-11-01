@@ -8,7 +8,7 @@
 青简 · 译读 (QingJian) — 双语精读与智译
 
 **Short Description**
-青简 · 译读 (QingJian)：开放多模型（支持 Gemini / DeepSeek / OpenCode Go / OpenAI 兼容协议）的双语对照精读与翻译扩展，支持网页段落对照、贴图原位译文、划词语境精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。
+青简 · 译读 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。
 
 **Detailed Description**
 青简 · 译读 (QingJian) 助您在阅读外文网页、浏览社交媒体推文配图、观看 YouTube 视频以及研读学术论文 PDF 与 EPUB 电子书时获得自然流畅的双语对照阅读体验。
@@ -63,6 +63,8 @@ Translates web pages, webpage images, YouTube video subtitles, and academic/elec
 
 ## Privacy & Data Use
 
+Full Privacy Policy Document: [`PRIVACY.md`](./PRIVACY.md)
+
 ### Data Collection
 
 The extension has no project-operated collection server. It stores settings and caches locally, but sends content to the user-configured AI endpoint to provide translation. The endpoint operator is a recipient of that content. This technical inventory is a submission aid, not a completed Chrome Web Store privacy declaration or approval.
@@ -91,6 +93,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.18 | 2026-11-01 | Full security and correctness audit fixes: CWS metadata & PRIVACY.md compliance, privileged sender verification, React/Vue text node preservation, scan visibility caching, Studio PDF/EPUB hardening, and Options/Popup edge-case fixes. | GitHub release; Chrome Web Store ready |
 | 1.0.17 | 2026-10-31 | Align per-attempt fetch timeout with total request budget, stop retrying timed-out LLM attempts, and split born-digital PDF pages into concurrent small translation batches. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.16 | 2026-10-31 | MV3 Port keepalive and 1-time auto-reconnect for long PDF requests, strict isolation between initial 2-page PDF translation and scroll-triggered lazy loading, and loading placeholder UI polish. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.15 | 2026-10-30 | Semantic paper tables, readable table/equation colors and exports, per-line marker highlighting and session-wide site auto-translation pause. | GitHub release; Chrome Web Store submission not performed |

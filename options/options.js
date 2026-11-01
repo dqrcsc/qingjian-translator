@@ -17,6 +17,7 @@ import {
   getSettings,
   saveSettings,
   resetSettings,
+  onSettingsChanged,
   getProviderDefinition,
   getMergedModelList
 } from '../shared/storage.js';
@@ -249,14 +250,19 @@ async function fillFormFromSettings() {
 function collectFormValues() {
   const pId = providerSelect ? providerSelect.value : activeProviderId;
   const provider = getProviderDefinition(pId);
+  const parsedTemp = Number(temperatureInput.value);
+  let rawBaseUrl = apiBaseUrlInput.value.trim() || provider.defaultBaseUrl;
+  if (rawBaseUrl && !/^https?:\/\//i.test(rawBaseUrl)) {
+    rawBaseUrl = `https://${rawBaseUrl.replace(/^\/+/, '')}`;
+  }
   return {
     providerId: pId,
     apiProtocol: apiProtocolSelect ? apiProtocolSelect.value : provider.protocol,
     apiKey: apiKeyInput.value.trim(),
     modelId: modelIdSelect.value || provider.defaultModel,
     customModelId: customModelIdInput.value.trim(),
-    apiBaseUrl: apiBaseUrlInput.value.trim() || provider.defaultBaseUrl,
-    temperature: Number(temperatureInput.value) || 0.2,
+    apiBaseUrl: rawBaseUrl,
+    temperature: Number.isFinite(parsedTemp) ? Math.min(2, Math.max(0, parsedTemp)) : 0.2,
     targetLang: targetLangSelect.value,
     inputTargetLang: inputTargetLangSelect.value,
     translationStyle: selectedStyleId,
@@ -605,6 +611,13 @@ clearCacheBtn.addEventListener('click', async () => {
 });
 
 resetDefaultBtn.addEventListener('click', async () => {
+  if (
+    typeof window !== 'undefined' &&
+    typeof window.confirm === 'function' &&
+    !window.confirm('确定要恢复默认配置吗？这会清空已保存的 API Key 与自定义设置。')
+  ) {
+    return;
+  }
   invalidateSettingsRequests();
   await resetSettings();
   await fillFormFromSettings();
@@ -614,6 +627,25 @@ resetDefaultBtn.addEventListener('click', async () => {
 openStudioFromOptionsBtn.addEventListener('click', async () => {
   const url = chrome.runtime.getURL('studio/studio.html');
   await chrome.tabs.create({ url });
+});
+
+// Keep external domain/style changes (e.g. from Popup or Floating Ball) synced if not actively editing
+onSettingsChanged((nextSettings) => {
+  if (
+    alwaysTranslateDomainsTextarea &&
+    document.activeElement !== alwaysTranslateDomainsTextarea
+  ) {
+    alwaysTranslateDomainsTextarea.value = nextSettings.alwaysTranslateDomains || '';
+  }
+  if (
+    neverTranslateDomainsTextarea &&
+    document.activeElement !== neverTranslateDomainsTextarea
+  ) {
+    neverTranslateDomainsTextarea.value = nextSettings.neverTranslateDomains || '';
+  }
+  if (nextSettings.translationStyle && nextSettings.translationStyle !== selectedStyleId) {
+    renderStyleCards(nextSettings.translationStyle);
+  }
 });
 
 // Initialize

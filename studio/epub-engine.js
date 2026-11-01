@@ -202,10 +202,16 @@ async function parseEpubWithBudget(arrayBuffer, budget) {
     const href = item.getAttribute('href');
     const mediaType = item.getAttribute('media-type') || '';
     if (id && href) {
+      let decodedHref = href;
+      try {
+        decodedHref = decodeURIComponent(href);
+      } catch {
+        decodedHref = href;
+      }
       manifestMap.set(id, {
         id,
         href,
-        fullPath: resolveRelativePath(opfPath, decodeURIComponent(href)),
+        fullPath: resolveRelativePath(opfPath, decodedHref),
         mediaType
       });
     }
@@ -233,7 +239,7 @@ async function parseEpubWithBudget(arrayBuffer, budget) {
     const doc = domParser.parseFromString(htmlText, 'text/html');
     budget.check();
     const chapterTitle =
-      doc.querySelector('h1, h2, h3, title')?.textContent?.replace(/\s+/g, ' ').trim() ||
+      doc.querySelector('body h1, body h2, body h3, h1, h2, h3, title')?.textContent?.replace(/\s+/g, ' ').trim() ||
       `第 ${cIdx + 1} 章`;
 
     const chapterBlocks = [];
@@ -429,6 +435,9 @@ ${chapters.map((_, i) => `    <itemref idref="ch${i + 1}"/>`).join('\n')}
 
 function escapeXml(str) {
   return String(str || '')
+    // Strip XML 1.0 illegal control characters (e.g. \f form-feed or \x00-\x08 from PDF extraction)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

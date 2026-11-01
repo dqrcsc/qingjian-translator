@@ -24,6 +24,19 @@
     if (ytAudioListenActive) stopYoutubeAudioListen();
     disposeYoutubeTimeline();
   });
+  window.addEventListener('pageshow', (e) => {
+    if (!e?.persisted) return;
+    for (const [id, record] of blockMap) {
+      blockMap.delete(id);
+      if (record.element?.dataset?.igStatus === 'queued') {
+        resetElementTranslationState(record.element);
+      }
+    }
+    pendingParagraphQueue = [];
+    if (isPageTranslated && document.body) {
+      scanAndObserveContainer(document.body);
+    }
+  });
   function sendModelRequest(message) {
     const scope = message.type === 'TRANSLATE_YOUTUBE_CUES' ? subtitleRequests
       : message.type === 'TRANSLATE_YOUTUBE_AUDIO' ? audioRequests
@@ -193,8 +206,11 @@
   function translationConfigSignature(raw = {}) {
     const protocol = globalThis.QingJianSettings.resolveProtocol(raw);
     const model = String(raw.customModelId || '').trim() || String(raw.modelId || '').trim() || String(raw.availableModels?.[0]?.id || '').trim();
+    const rawKey = String(raw.apiKey ?? '');
+    let keyDigest = 0;
+    for (let i = 0; i < rawKey.length; i++) keyDigest = Math.imul(keyDigest ^ rawKey.charCodeAt(i), 16777619) >>> 0;
     return JSON.stringify([raw.providerId ?? 'google', protocol,
-      raw.apiBaseUrl ?? 'https://generativelanguage.googleapis.com/v1beta', raw.apiKey ?? '',
+      raw.apiBaseUrl ?? 'https://generativelanguage.googleapis.com/v1beta', rawKey ? `${rawKey.length}:${keyDigest.toString(16)}` : '',
       protocol === 'gemini' ? model.replace(/^models\//i, '') : model,
       raw.targetLang ?? 'zh-CN', raw.tonePreset ?? 'standard', raw.temperature ?? 0.2,
       raw.customSystemPrompt ?? '', raw.glossaryText ?? 'LLM = 大语言模型\nTransformer = Transformer 架构\nAgent = 智能体\nToken = 词元 (Token)']);
@@ -261,6 +277,22 @@
     const sampleParagraphs = Array.from(document.querySelectorAll('p, h1, h2, article li')).slice(0, 18);
     const sampleText = sampleParagraphs.map((el) => (el.textContent || '').trim()).join(' ');
     if (sampleText.length < 30) return false;
+    const target = String(settings.targetLang || 'zh-CN').toLowerCase();
+    const docLang = (document.documentElement?.getAttribute?.('lang') || '').trim().toLowerCase();
+    if (docLang) {
+      const targetPrimary = target.split('-')[0];
+      const docPrimary = docLang.split('-')[0];
+      if (targetPrimary !== 'zh' && docPrimary === targetPrimary) return false;
+      if (targetPrimary === 'zh' && docPrimary === 'zh') {
+        const isTargetTw = target.includes('tw') || target.includes('hk') || target.includes('hant');
+        const isDocTw = docLang.includes('tw') || docLang.includes('hk') || docLang.includes('hant');
+        if (isTargetTw === isDocTw) return false;
+      }
+    }
+    if (target.startsWith('en') && /\b(the|and|for|that|with|from|this|are|was|have)\b/i.test(sampleText)) {
+      const nonAscii = (sampleText.match(/[^\x00-\x7f]/g) || []).length;
+      if (nonAscii / sampleText.length < 0.1) return false;
+    }
     return !isMostlyTargetLanguage(sampleText, settings.targetLang);
   }
 
@@ -444,7 +476,11 @@
     'input',
     'select',
     'option',
-    '[contenteditable="true"]',
+    '[contenteditable]:not([contenteditable="false"])',
+    '[role="textbox"]',
+    '.cm-editor',
+    '.monaco-editor',
+    '.CodeMirror',
     '[translate="no"]',
     '.notranslate',
     '#movie_player',
@@ -480,6 +516,8 @@
     );
   }
 
+  let activeScanVisibilityCache = null;
+
   /**
    * Accurately detect screen-reader-only, clipped, 1x1px, transparent, or offscreen elements
    * by inspecting both the element and its ancestor chain up to document.body.
@@ -496,11 +534,17 @@
 
     let curr = el;
     while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (curr !== el && activeScanVisibilityCache?.has(curr)) {
+        if (activeScanVisibilityCache.get(curr)) return true;
+        break;
+      }
       if (curr.getAttribute('aria-hidden') === 'true' || curr.hasAttribute('hidden')) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
       const clsAndId = `${curr.className || ''} ${curr.id || ''}`;
       if (/visually-hidden|sr-only|screen-reader|a11y|offscreen/i.test(clsAndId)) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
 
@@ -512,6 +556,7 @@
         parseFloat(style.opacity) < 0.05 ||
         parseFloat(style.textIndent) < -500
       ) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
       // Only check font-size and transparent color on the element itself (and ignore gradient text clip)
@@ -526,12 +571,14 @@
         }
       }
       if (style.display !== 'inline' && style.display !== 'contents') {
-        const cRect = curr.getBoundingClientRect();
+        const cRect = curr === el ? rect : curr.getBoundingClientRect();
         if (cRect.width < 4 || cRect.height < 4) {
+          if (curr !== el) activeScanVisibilityCache?.set(curr, true);
           return true;
         }
       }
       if (style.clip && style.clip !== 'auto' && /0px|1px/.test(style.clip)) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
       if (
@@ -542,6 +589,7 @@
           style.clipPath.includes('circle(0') ||
           style.clipPath.includes('polygon(0'))
       ) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
       if (
@@ -549,8 +597,10 @@
         ((curr.clientWidth > 0 && curr.clientWidth < 4) ||
           (curr.clientHeight > 0 && curr.clientHeight < 4))
       ) {
+        if (curr !== el) activeScanVisibilityCache?.set(curr, true);
         return true;
       }
+      if (curr !== el) activeScanVisibilityCache?.set(curr, false);
       curr = curr.parentElement;
     }
     return false;
@@ -559,10 +609,24 @@
   function isMostlyTargetLanguage(text, targetLang) {
     const clean = text.replace(/\s+/g, '');
     if (clean.length < 2) return true;
-    if (targetLang.startsWith('zh')) {
+    const lang = String(targetLang || 'zh-CN').toLowerCase();
+    if (lang.startsWith('zh')) {
       const cjkMatches = clean.match(/[\u4e00-\u9fa5]/g);
       const ratio = (cjkMatches ? cjkMatches.length : 0) / clean.length;
       return ratio > 0.6;
+    }
+    if (lang.startsWith('ja')) {
+      const kanaMatches = clean.match(/[\u3040-\u30ff]/g);
+      const jaMatches = clean.match(/[\u3040-\u30ff\u4e00-\u9fa5]/g);
+      return Boolean(kanaMatches && kanaMatches.length >= 1 && (jaMatches ? jaMatches.length : 0) / clean.length > 0.5);
+    }
+    if (lang.startsWith('ko')) {
+      const koMatches = clean.match(/[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g);
+      return (koMatches ? koMatches.length : 0) / clean.length > 0.5;
+    }
+    if (lang.startsWith('ru')) {
+      const ruMatches = clean.match(/[\u0400-\u04ff]/g);
+      return (ruMatches ? ruMatches.length : 0) / clean.length > 0.6;
     }
     return false;
   }
@@ -670,23 +734,22 @@
   function isElementTranslatable(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
     if (el.dataset.igStatus) return false;
-    if (el.closest('[data-ig-status]')) return false;
-    if (el.querySelector('[data-ig-status]')) return false;
-    if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
-    if (isIconFontElement(el) || isVisuallyHidden(el)) return false;
+    if (el.isContentEditable) return false;
+    if ((el.textContent || '').trim().length < 2) return false;
 
     const tag = el.tagName.toLowerCase();
     const isExplicitProse = el.matches(EXPLICIT_PROSE_SELECTOR);
-    const isProse = isExplicitProse || isProseBlock(el);
 
-    // Never translate an outer container if it holds nested block elements
-    // (unless it is an explicit tweet/comment text container without nested tweetText)
+    // Cheap structural checks before ancestor/layout inspection
     if (!isExplicitProse && hasBlockChildren(el)) {
       return false;
     }
     if (isExplicitProse && el.querySelector(EXPLICIT_PROSE_SELECTOR)) {
       return false;
     }
+    if (el.closest('[data-ig-status]')) return false;
+    if (el.querySelector('[data-ig-status]')) return false;
+    if (el.closest(SKIP_ANCESTOR_SELECTOR)) return false;
 
     // If a heading or list item has no direct text and wraps a single <a> or <button>,
     // let the inner <a> or <button> be translated so link/button styling stays intact.
@@ -702,6 +765,8 @@
       }
     }
 
+    const isProse = isExplicitProse || isProseBlock(el);
+
     // For non-prose containers (div, span, td, th, a, button),
     // if it has no direct text of its own and wraps child elements, let the inner leaf element be translated instead!
     if (!isProse && el.children.length > 0) {
@@ -710,6 +775,8 @@
         return false;
       }
     }
+
+    if (isIconFontElement(el) || isVisuallyHidden(el)) return false;
 
     const text = extractCleanText(el);
     if (isNonTranslatableTokenOrMetric(text)) return false;
@@ -973,7 +1040,29 @@
       }
       wrapper.remove();
     });
-    el.normalize();
+    // Merge only text nodes that were split by extractParagraphSegmentsFromElement (__igSplitFromPrev),
+    // preserving adjacent text node boundaries owned by host frameworks (React/Vue).
+    function mergeSplitTextNodes(node) {
+      if (!node || !node.childNodes) return;
+      let child = node.firstChild;
+      while (child) {
+        const next = child.nextSibling;
+        if (child.nodeType === 3) {
+          delete child.__igIsParaBreak;
+          if (child.__igSplitFromPrev && child.previousSibling && child.previousSibling.nodeType === 3) {
+            child.previousSibling.nodeValue = (child.previousSibling.nodeValue || '') + (child.nodeValue || '');
+            delete child.__igSplitFromPrev;
+            child.remove();
+          } else {
+            delete child.__igSplitFromPrev;
+          }
+        } else if (child.nodeType === 1) {
+          mergeSplitTextNodes(child);
+        }
+        child = next;
+      }
+    }
+    mergeSplitTextNodes(el);
   }
 
   function restorePlaceholdersToFragment(translatedText, placeholders) {
@@ -1332,13 +1421,18 @@
     }
     uiLeaves.reverse();
 
-    for (const el of [...proseList, ...uiLeaves]) {
-      // A new observation owns the element before any old cleanup frame can run.
-      if (el.dataset.igCleanupSession) resetElementTranslationState(el);
-      if (isElementTranslatable(el)) {
-        el.dataset.igStatus = 'observed';
-        viewportObserver.observe(el);
+    activeScanVisibilityCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+    try {
+      for (const el of [...proseList, ...uiLeaves]) {
+        // A new observation owns the element before any old cleanup frame can run.
+        if (el.dataset.igCleanupSession) resetElementTranslationState(el);
+        if (isElementTranslatable(el)) {
+          el.dataset.igStatus = 'observed';
+          viewportObserver.observe(el);
+        }
       }
+    } finally {
+      activeScanVisibilityCache = null;
     }
 
     // Scan content images (e.g. X.com [data-testid="tweetPhoto"] img, article figures, diagrams)
@@ -1412,6 +1506,7 @@
         if (matchIndex === 0) {
           if (matchLen < val.length) {
             const afterNode = current.splitText(matchLen);
+            afterNode.__igSplitFromPrev = true;
             current.__igIsParaBreak = true;
             current = afterNode;
             continue;
@@ -1421,8 +1516,10 @@
           }
         } else {
           const breakAndAfter = current.splitText(matchIndex);
+          breakAndAfter.__igSplitFromPrev = true;
           if (matchLen < breakAndAfter.nodeValue.length) {
             const afterNode = breakAndAfter.splitText(matchLen);
+            afterNode.__igSplitFromPrev = true;
             breakAndAfter.__igIsParaBreak = true;
             current = afterNode;
             continue;
@@ -1600,7 +1697,13 @@
     if (el.dataset.igCleanupSession) {
       resetElementTranslationState(el);
     }
-    if (isVisuallyHidden(el)) {
+    if (
+      el.isContentEditable ||
+      el.closest?.(SKIP_ANCESTOR_SELECTOR) ||
+      (!el.matches?.(EXPLICIT_PROSE_SELECTOR) && hasBlockChildren(el)) ||
+      el.querySelector?.('[data-ig-status]') ||
+      isVisuallyHidden(el)
+    ) {
       delete el.dataset.igStatus;
       return;
     }
@@ -1765,6 +1868,10 @@
             }`;
             transNode.dataset.igSegId = String(segId);
             transNode.setAttribute('translate', 'no');
+            transNode.setAttribute('dir', 'auto');
+            if (typeof settings !== 'undefined' && settings?.targetLang) {
+              transNode.setAttribute('lang', settings.targetLang);
+            }
             // Keep paragraph layout outside the inline text fragments so marker
             // backgrounds can follow each wrapped line instead of the whole block.
             const transText = document.createElement('font');
@@ -1812,6 +1919,7 @@
           errBadge.textContent = '⚠️ 重试';
           errBadge.title = `${errorMessage} (点击重新翻译)`;
           errBadge.addEventListener('click', (e) => {
+            e.preventDefault?.();
             e.stopPropagation();
             errBadge.remove();
             for (const [id, rec] of blockMap) {
@@ -1976,7 +2084,15 @@
   document.addEventListener(
     'mousemove',
     (e) => {
-      const target = e.target?.closest?.(BLOCK_SELECTOR);
+      let target = e.target?.closest?.(BLOCK_SELECTOR) || null;
+      while (
+        target &&
+        target.dataset?.igStatus !== 'done' &&
+        typeof isElementTranslatable === 'function' &&
+        !isElementTranslatable(target)
+      ) {
+        target = target.parentElement?.closest?.(BLOCK_SELECTOR) || null;
+      }
       if (hoveredElement && hoveredElement !== target) {
         hoveredElement.classList.remove('ig-hover-target-highlight');
       }
@@ -2066,7 +2182,7 @@
         return;
       }
       const active = document.activeElement;
-      if (!active) return;
+      if (!active || active.closest?.('.cm-editor, .monaco-editor, .CodeMirror, pre, code')) return;
       const isInput = active.tagName === 'TEXTAREA' ||
         (active.tagName === 'INPUT' && ['text', 'search', 'url', 'email', ''].includes((active.type || 'text').toLowerCase()));
       const isEditable = active.isContentEditable;
@@ -3061,8 +3177,9 @@
         }
       });
       selectionCardEl.querySelector('[data-copy]')?.addEventListener('click', (ev) => {
-        navigator.clipboard.writeText(d.translation || text);
-        ev.target.textContent = '已复制';
+        Promise.resolve(navigator.clipboard?.writeText?.(d.translation || text))
+          .then(() => { ev.target.textContent = '已复制'; })
+          .catch(() => { ev.target.textContent = '复制失败'; });
       });
     } catch (err) {
       selectionCardEl.innerHTML = `
@@ -3320,14 +3437,18 @@
     ytCurrentVideoId = getCurrentYoutubeVideoId();
     applyYoutubeCssVariables();
 
+    let ytBridgePollCount = 0;
+
     window.addEventListener('yt-navigate-start', () => {
       ytNavigationPending = true;
+      ytBridgePollCount = 0;
       stopYoutubeAudioListen();
       resetYoutubeTranslationSession();
       clearYoutubeSourceCues();
     });
     window.addEventListener('yt-navigate-finish', () => {
       ytNavigationPending = false;
+      ytBridgePollCount = 0;
       syncYoutubeVideoSession();
       requestYoutubeTracksFromBridge();
     });
@@ -3347,7 +3468,16 @@
           ytTranslationSession++;
           ytTranslationBusy = false;
           ytLiveCaptionInFlight.clear();
-          ytCues = cues.map((c) => ({ ...c, translation: '' }));
+          ytCues = cues
+            .filter((c) => c && Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end)))
+            .slice(0, 20000)
+            .map((c, idx) => ({
+              id: Number.isSafeInteger(Number(c.id)) ? Number(c.id) : idx + 1,
+              start: Number(c.start),
+              end: Number(c.end),
+              text: String(c.text || ''),
+              translation: ''
+            }));
           ytCaptionSource = 'track';
           ytVideoTitle = videoTitle || document.title;
           ytInFlightBatchIds.clear();
@@ -3395,7 +3525,11 @@
       }
 
       if (ytNavigationPending) return;
-      if (syncYoutubeVideoSession() || (ytDualActive && ytCues.length === 0)) {
+      if (syncYoutubeVideoSession()) {
+        ytBridgePollCount = 0;
+        requestYoutubeTracksFromBridge();
+      } else if (ytDualActive && ytCues.length === 0 && ytBridgePollCount < 6) {
+        ytBridgePollCount++;
         requestYoutubeTracksFromBridge();
       }
 
@@ -3902,6 +4036,10 @@
     }
 
     const player = document.querySelector('.html5-video-player');
+    if (player?.classList?.contains?.('ad-showing') || player?.classList?.contains?.('ad-interrupting')) {
+      setTimeout(syncYoutubeSubtitlesLoop, 600);
+      return;
+    }
     const video = player ? player.querySelector('video') : document.querySelector('video');
 
     if (ytCues.length > 0 && video) {

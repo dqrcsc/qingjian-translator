@@ -34,6 +34,7 @@
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
       .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)));
   }
 
@@ -433,7 +434,15 @@
     if (typeof url === 'string' && url.includes('/api/timedtext')) {
       const session = captureVideoSession();
       if (isCurrentTrackRequest(session, url)) capturePotFromTimedTextUrl(url);
-      const onLoad = () => handleInterceptedTimedText(url, this.responseText, session);
+      const onLoad = () => {
+        try {
+          if (!this.responseType || this.responseType === 'text') {
+            handleInterceptedTimedText(url, this.responseText, session);
+          }
+        } catch {
+          // ignore non-text responseType access
+        }
+      };
       xhrHandlers.set(this, onLoad);
       this.addEventListener('load', onLoad, { once: true });
     }

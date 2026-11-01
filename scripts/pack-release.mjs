@@ -57,7 +57,7 @@ function collectFiles(relPath, outList = []) {
   if (stat.isDirectory()) {
     const children = fs.readdirSync(fullPath).sort();
     for (const child of children) {
-      if (child.startsWith('.')) continue;
+      if (child.startsWith('.') || /(~|\.swp|\.bak|\.tmp)$/i.test(child)) continue;
       collectFiles(path.posix.join(relPath, child), outList);
     }
   } else if (stat.isFile()) {

@@ -394,10 +394,18 @@ export function renderLatexMathToHtml(latexRaw, displayMode = false) {
   return `<span class="math-expr is-inline">${bodyHtml}</span>`;
 }
 
+const MAX_LATEX_PARSE_DEPTH = 64;
+let activeLatexParseDepth = 0;
+
 function parseLatexFragment(src) {
   if (!src) return '';
-  let out = '';
-  let i = 0;
+  if (activeLatexParseDepth >= MAX_LATEX_PARSE_DEPTH) {
+    return escapeHtml(src);
+  }
+  activeLatexParseDepth++;
+  try {
+    let out = '';
+    let i = 0;
 
   while (i < src.length) {
     // 1. Handle \begin{env}...\end{env} (cases, aligned, matrix, pmatrix, bmatrix, vmatrix)
@@ -771,7 +779,10 @@ function parseLatexFragment(src) {
     i++;
   }
 
-  return out;
+    return out;
+  } finally {
+    activeLatexParseDepth--;
+  }
 }
 
 function renderMathEnvironment(envName, envBody) {
