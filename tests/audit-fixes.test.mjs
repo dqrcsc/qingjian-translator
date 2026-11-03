@@ -403,3 +403,90 @@ test('extractStructuredPdfPageBlocks keeps elevated author & affiliation supersc
   assert.ok(renderedHtml.includes('Jinyoung Jeong<sup class="academic-sup">1</sup>, Joseph B. Choi<sup class="academic-sup">2</sup>'));
   assert.ok(renderedHtml.includes('Stephen S. Baek<sup class="academic-sup">1,2,4,*</sup>'));
 });
+
+test('PDF extraction groups multi-column NeurIPS/arXiv author grids (1706.03762) into a single responsive author card block', () => {
+  const samplePageRender = {
+    width: 1346,
+    height: 1742,
+    figureRegions: [],
+    textItems: [
+      // Vertical side-margin arXiv watermark (rotated)
+      { str: 'arXiv:1706.03762v7 [cs.CL] 2 Aug 2023', x: 64, y: 1110, top: 1066, bottom: 1110, width: 44, height: 44, fontSize: 44, rotated: true },
+      // Top permission notice (2 lines, should be paragraph, not heading)
+      { str: 'Provided proper attribution is provided, Google hereby grants permission to', x: 238, y: 211, top: 190, bottom: 211, width: 870, height: 22, fontSize: 22 },
+      { str: 'reproduce the tables and figures in this paper solely for use in journalistic or scholarly works.', x: 238, y: 235, top: 213, bottom: 235, width: 870, height: 22, fontSize: 22 },
+      // Paper Title
+      { str: 'Attention Is All You Need', x: 454, y: 367, top: 330, bottom: 367, width: 439, height: 37, fontSize: 37 },
+      // Row 1 of 4 authors (y = 485..529)
+      { str: 'Ashish Vaswani', x: 263, y: 485, top: 463, bottom: 485, width: 151, height: 22, fontSize: 22 },
+      { str: '∗', x: 414, y: 477, top: 462, bottom: 477, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Brain', x: 280, y: 507, top: 485, bottom: 507, width: 119, height: 22, fontSize: 22 },
+      { str: 'avaswani@google.com', x: 247, y: 529, top: 509, bottom: 529, width: 193, height: 20, fontSize: 20 },
+
+      { str: 'Noam Shazeer', x: 502, y: 485, top: 463, bottom: 485, width: 135, height: 22, fontSize: 22 },
+      { str: '∗', x: 638, y: 477, top: 462, bottom: 477, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Brain', x: 515, y: 507, top: 485, bottom: 507, width: 119, height: 22, fontSize: 22 },
+      { str: 'noam@google.com', x: 502, y: 529, top: 509, bottom: 529, width: 153, height: 20, fontSize: 20 },
+
+      { str: 'Niki Parmar', x: 747, y: 485, top: 463, bottom: 485, width: 120, height: 22, fontSize: 22 },
+      { str: '∗', x: 866, y: 477, top: 462, bottom: 477, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Research', x: 736, y: 507, top: 485, bottom: 507, width: 150, height: 22, fontSize: 22 },
+      { str: 'nikip@google.com', x: 729, y: 529, top: 509, bottom: 529, width: 163, height: 20, fontSize: 20 },
+
+      { str: 'Jakob Uszkoreit', x: 966, y: 485, top: 463, bottom: 485, width: 155, height: 22, fontSize: 22 },
+      { str: '∗', x: 1121, y: 477, top: 462, bottom: 477, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Research', x: 973, y: 507, top: 485, bottom: 507, width: 150, height: 22, fontSize: 22 },
+      { str: 'usz@google.com', x: 977, y: 529, top: 509, bottom: 529, width: 143, height: 20, fontSize: 20 },
+
+      // Row 2 of 3 authors (y = 585..629), including multi-symbol superscript "∗ †"
+      { str: 'Llion Jones', x: 317, y: 585, top: 563, bottom: 585, width: 109, height: 22, fontSize: 22 },
+      { str: '∗', x: 426, y: 577, top: 562, bottom: 577, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Research', x: 301, y: 607, top: 585, bottom: 607, width: 150, height: 22, fontSize: 22 },
+      { str: 'llion@google.com', x: 294, y: 629, top: 609, bottom: 629, width: 163, height: 20, fontSize: 20 },
+
+      { str: 'Aidan N. Gomez', x: 582, y: 585, top: 563, bottom: 585, width: 156, height: 22, fontSize: 22 },
+      { str: '∗ †', x: 738, y: 577, top: 562, bottom: 577, width: 22, height: 15, fontSize: 15 },
+      { str: 'University of Toronto', x: 576, y: 607, top: 585, bottom: 607, width: 190, height: 22, fontSize: 22 },
+      { str: 'aidan@cs.toronto.edu', x: 569, y: 629, top: 609, bottom: 629, width: 204, height: 20, fontSize: 20 },
+
+      { str: 'Łukasz Kaiser', x: 896, y: 585, top: 563, bottom: 585, width: 136, height: 22, fontSize: 22 },
+      { str: '∗', x: 1032, y: 577, top: 562, bottom: 577, width: 9, height: 15, fontSize: 15 },
+      { str: 'Google Brain', x: 909, y: 607, top: 585, bottom: 607, width: 119, height: 22, fontSize: 22 },
+      { str: 'lukaszkaiser@google.com', x: 851, y: 629, top: 609, bottom: 629, width: 235, height: 20, fontSize: 20 },
+
+      // Row 3 of 1 author (y = 685..707), including multi-symbol superscript "∗ ‡"
+      { str: 'Illia Polosukhin', x: 584, y: 685, top: 663, bottom: 685, width: 152, height: 22, fontSize: 22 },
+      { str: '∗ ‡', x: 736, y: 677, top: 662, bottom: 677, width: 22, height: 15, fontSize: 15 },
+      { str: 'illia.polosukhin@gmail.com', x: 538, y: 707, top: 687, bottom: 707, width: 265, height: 20, fontSize: 20 },
+
+      // Abstract Heading & Body
+      { str: 'Abstract', x: 616, y: 792, top: 766, bottom: 792, width: 102, height: 26, fontSize: 26 },
+      { str: 'The dominant sequence transduction models are based on complex recurrent or convolutional neural networks.', x: 311, y: 837, top: 815, bottom: 837, width: 724, height: 22, fontSize: 22 }
+    ]
+  };
+
+  const blocks = extractStructuredPdfPageBlocks(samplePageRender, 1);
+  // Watermark filtered out
+  assert.equal(blocks.some((b) => b.original.includes('arXiv:1706.03762')), false);
+  // Top permission notice is paragraph, not heading
+  assert.equal(blocks[0].type, 'paragraph');
+  assert.equal(blocks[1].type, 'heading');
+  assert.equal(blocks[1].original, 'Attention Is All You Need');
+  // Single unified author block with all 8 author cards
+  assert.equal(blocks[2].type, 'author');
+  assert.equal(blocks[2].column, 'full');
+  // Page must remain single-column ('full' for all blocks)
+  assert.equal(blocks.every((b) => b.column === 'full'), true);
+
+  const cards = blocks[2].original.split('\n\n');
+  assert.equal(cards.length, 8);
+  assert.equal(cards[0], 'Ashish Vaswani$^{∗}$\nGoogle Brain\navaswani@google.com');
+  assert.equal(cards[5], 'Aidan N. Gomez$^{∗ †}$\nUniversity of Toronto\naidan@cs.toronto.edu');
+  assert.equal(cards[7], 'Illia Polosukhin$^{∗ ‡}$\nillia.polosukhin@gmail.com');
+
+  const renderedHtml = renderRichAcademicHtml(blocks[2].original, { blockType: 'author', pageNum: 1 });
+  assert.ok(renderedHtml.includes('class="paper-author-grid"'));
+  assert.equal((renderedHtml.match(/class="paper-author-card"/g) || []).length, 8);
+  assert.ok(renderedHtml.includes('Aidan N. Gomez<sup class="academic-sup">∗ †</sup>'));
+  assert.ok(renderedHtml.includes('Illia Polosukhin<sup class="academic-sup">∗ ‡</sup>'));
+});

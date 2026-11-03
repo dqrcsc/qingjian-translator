@@ -1583,11 +1583,19 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
             });
             const transHtml = renderBlockTranslation(b, effectiveType);
 
-            // For standalone equations where original and translation are identical formulas, avoid showing two identical equations in bilingual mode
-            const isIdenticalEquation =
-              b.type === 'equation' &&
-              (b.original || '').replace(/\s+/g, '') ===
-                (b.translation || '').replace(/\s+/g, '');
+            // For standalone equations or author blocks where original and translation are effectively identical,
+            // avoid showing two identical blocks stacked in bilingual mode.
+            const normCompare = (str) =>
+              String(str || '')
+                .replace(/\$\^\{\s*([0-9*,∗†‡§a-zA-Z\s+\-]+)\s*\}\$/g, '$1')
+                .replace(/\^\{([0-9*,∗†‡§a-zA-Z\s+\-]+)\}/g, '$1')
+                .replace(/[∗*]/g, '*')
+                .replace(/\s+/g, '')
+                .toLowerCase();
+            const isIdenticalBlock =
+              Boolean(b.translation && b.translation.trim()) &&
+              (b.type === 'equation' || effectiveType === 'author') &&
+              normCompare(b.original) === normCompare(b.translation);
 
             return `
               <div class="paper-block ${blockTypeClass}" data-block-id="${b.id}">
@@ -1596,7 +1604,7 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
                   <button type="button" class="retranslate-mini-btn" data-retrans="${b.id}">↻ 重译</button>
                 </div>
                 ${
-                  isIdenticalEquation
+                  isIdenticalBlock
                     ? ''
                     : `<div class="stream-orig">${origHtml}</div>`
                 }
@@ -1664,6 +1672,13 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
           `
             : '';
 
+        const isAuthor = isAuthorOrAffiliationBlock(
+          b.original || b.translation,
+          b.type,
+          b.page || 1
+        );
+        const effectiveType = isAuthor ? 'author' : b.type;
+
         return `
           <div class="stream-block-card ${b.type === 'heading' ? 'is-heading' : b.type === 'table' ? 'is-table' : b.type === 'equation' ? 'is-equation' : ''}" data-block-id="${b.id}">
             <div class="stream-block-meta">
@@ -1678,10 +1693,10 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
                 : ''
             }
             <div class="stream-orig">${renderRichAcademicHtml(b.original, {
-              blockType: b.type,
+              blockType: effectiveType,
               pageNum: b.page
             })}</div>
-            <div class="stream-trans" id="stream-trans-${b.id}">${renderBlockTranslation(b)}</div>
+            <div class="stream-trans" id="stream-trans-${b.id}">${renderBlockTranslation(b, effectiveType)}</div>
             ${figureLabelsHtml}
           </div>
         `;

@@ -827,8 +827,8 @@ export function isAuthorOrAffiliationBlock(text, blockType = '', pageNum = 1) {
     return false;
   }
   const s = String(text);
-  // Count author/affiliation superscripts like $^{1}$, $^{1,*}$, $^{2}$, $^{*}$
-  const supMatches = s.match(/\$\^\{\s*[0-9*,∗†‡§a-zA-Z+\-]+\s*\}\$/g) || [];
+  // Count author/affiliation superscripts like $^{1}$, $^{1,*}$, $^{2}$, $^{*}$, $^{∗ †}$
+  const supMatches = s.match(/\$\^\{\s*[0-9*,∗†‡§a-zA-Z+\-\s]+\s*\}\$/g) || [];
   if (supMatches.length >= 2) return true;
   if (
     supMatches.length >= 1 &&
@@ -837,6 +837,8 @@ export function isAuthorOrAffiliationBlock(text, blockType = '', pageNum = 1) {
   ) {
     return true;
   }
+  const emailMatches = s.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+  if (emailMatches.length >= 2) return true;
   return false;
 }
 
@@ -844,6 +846,7 @@ export function isAuthorOrAffiliationBlock(text, blockType = '', pageNum = 1) {
  * Pre-formats an Author & Affiliation block so that:
  * 1. When affiliations (`$^{1}$俄亥俄大学... $^{2}$南加州大学... $^{*}$通讯作者...`) are concatenated on the same line
  *    after the author names, automatic line breaks are inserted between the author list, affiliations, and corresponding author note.
+ * 2. Multi-author card grids separated by `\n\n` or standalone email lines preserve card boundaries even if an LLM collapses blank lines.
  */
 function formatAuthorAffiliationStructure(rawText) {
   let s = String(rawText || '').trim();
@@ -863,6 +866,20 @@ function formatAuthorAffiliationStructure(rawText) {
     /([a-zA-Z\u4e00-\u9fa5])\s+(\$\^\{\s*[2-9]\s*\}\$\s*(?:[A-Z][a-z]+|[\u4e00-\u9fa5]))/g,
     '$1 · $2'
   );
+  // When an email address is followed on the same line by spaces and another author/institution token, split into a new card
+  s = s.replace(
+    /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+(?=[A-Z\u0100-\u017F\u4e00-\u9fa5])/g,
+    '$1\n\n'
+  );
+  // If the block has multiple standalone email lines separated only by single '\n' (e.g. if LLM collapsed '\n\n' to '\n'),
+  // ensure a double newline '\n\n' after each standalone email line followed by another line.
+  const emailLineMatches = s.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/gm) || [];
+  if (emailLineMatches.length >= 2) {
+    s = s.replace(
+      /(^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$)\n(?!\n)/gm,
+      '$1\n\n'
+    );
+  }
   return s;
 }
 
@@ -999,7 +1016,7 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   });
 
   // 2c. Catch bare LaTeX superscripts/subscripts like Word^{1,*} or x_{i} that Gemini occasionally outputs without $...$
-  text = text.replace(/\^\{([0-9*,∗†‡§a-zA-Z+\-]{1,14})\}/g, (_, sup) =>
+  text = text.replace(/\^\{([0-9*,∗†‡§a-zA-Z+\-\s]{1,14})\}/g, (_, sup) =>
     putMathToken(`^{${sup}}`, false)
   );
 
@@ -1010,8 +1027,40 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/`([^`\n]+)`/g, '<code class="inline-code-chip">$1</code>');
 
-  // Convert newlines to <br />
-  html = html.replace(/\n/g, '<br />');
+  // Render multi-card author & affiliation grids when separated by blank lines (\n\n)
+  if (isAuthor && /\n{2,}/.test(html)) {
+    const rawCards = html
+      .split(/\n{2,}/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (rawCards.length >= 2) {
+      html = `<div class="paper-author-grid">${rawCards
+        .map((card) => {
+          const cardLines = card
+            .split(/\n/)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .map((line, lineIdx) => {
+              const isEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(line);
+              const cls =
+                lineIdx === 0
+                  ? 'paper-author-name'
+                  : isEmail
+                  ? 'paper-author-email'
+                  : 'paper-author-affil';
+              return `<div class="${cls}">${line}</div>`;
+            })
+            .join('');
+          return `<div class="paper-author-card">${cardLines}</div>`;
+        })
+        .join('')}</div>`;
+    } else {
+      html = html.replace(/\n/g, '<br />');
+    }
+  } else {
+    // Convert newlines to <br />
+    html = html.replace(/\n/g, '<br />');
+  }
 
   // Restore math tokens
   html = html.replace(/\uE000MATH_(\d+)\uE001/g, (_, idx) => mathTokens[Number(idx)] || '');

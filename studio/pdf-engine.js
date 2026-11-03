@@ -390,9 +390,12 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { s
             ? utilTransform(viewport.transform, item.transform)
             : [scale * 10, 0, 0, -scale * 10, 0, 0];
           const fontPx = Math.max(6, Math.hypot(tx[2], tx[3]));
+          const isVertical = Math.abs(tx[1]) > Math.abs(tx[0]) * 1.5;
           const x = tx[4];
           const yBaseline = tx[5];
-          const width = Math.max(fontPx * 0.45, (item.width || 0) * viewport.scale);
+          const width = isVertical
+            ? fontPx
+            : Math.max(fontPx * 0.45, (item.width || 0) * viewport.scale);
           const top = yBaseline - fontPx * 0.84;
           const bottom = yBaseline + fontPx * 0.2;
           textItems.push({
@@ -404,7 +407,8 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { s
             width,
             height: bottom - top,
             yBaseline,
-            fontPx
+            fontPx,
+            rotated: isVertical
           });
         }
       }
@@ -1137,9 +1141,10 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     const yBaseline = Number(it.yBaseline ?? bottom);
 
     // Filter vertical side-margin arXiv stamps or watermarks along extreme edges
-    if (right < pageW * 0.046 || x > pageW * 0.962) continue;
+    if (it.rotated || right < pageW * 0.046 || x > pageW * 0.962) continue;
+    if (x < pageW * 0.085 && /^arXiv:\s*\d{4}\.\d{4,5}/i.test(trimmed)) continue;
     // Filter bare page numbers at extreme top/bottom margins
-    if ((bottom < pageH * 0.042 || top > pageH * 0.955) && /^\d{1,4}$/.test(trimmed)) {
+    if ((bottom < pageH * 0.042 || top > pageH * 0.935) && /^\d{1,4}$/.test(trimmed)) {
       continue;
     }
 
@@ -1169,12 +1174,12 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
 
   normItems.sort((a, b) => a.x - b.x || a.yBaseline - b.yBaseline);
 
-  // Pass 2A-1: Snap script-sized items (e.g. author/affiliation superscripts "1", "1,2,4,*") to nearest host item
+  // Pass 2A-1: Snap script-sized items (e.g. author/affiliation superscripts "1", "1,2,4,*", "∗ †") to nearest host item
   for (let i = 0; i < normItems.length; i++) {
     const it = normItems[i];
-    const isPureSupToken = /^[0-9,∗*†‡§*]+$/.test(it.trimmed) && it.trimmed.length <= 16;
+    const isPureSupToken = /^[0-9,∗*†‡§*\s]+$/.test(it.trimmed) && it.trimmed.length <= 16;
     const minHostRatio = isPureSupToken ? 1.08 : 1.14;
-    const inTopHeaderBand = pageNum === 1 && it.top < pageH * 0.28;
+    const inTopHeaderBand = pageNum === 1 && it.top < pageH * 0.48;
 
     let bestHost = null;
     let bestDist = Infinity;
@@ -1184,15 +1189,24 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       const host = normItems[j];
       if (host.fontPx < it.fontPx * minHostRatio) continue;
       if (
-        it.yBaseline < host.yBaseline - host.fontPx * 0.95 ||
-        it.yBaseline > host.yBaseline + host.fontPx * 0.5
+        it.yBaseline < host.yBaseline - host.fontPx * 0.72 ||
+        it.yBaseline > host.yBaseline + host.fontPx * 0.45
       ) {
         continue;
       }
       if (it.x > host.right + host.fontPx * 3.5 || it.right < host.x - host.fontPx * 2.2) {
         continue;
       }
-      const hGap = it.x >= host.right ? it.x - host.right : host.x > it.right ? host.x - it.right : 0;
+      // A trailing/leading script attaches near host.right or host.x, never in the middle of a wide full-line host on another row
+      if (
+        host.width > host.fontPx * 3.5 &&
+        it.x > host.x + host.fontPx * 1.2 &&
+        it.right < host.right - host.fontPx * 1.2
+      ) {
+        continue;
+      }
+      const edgeGap = Math.min(Math.abs(it.x - host.right), Math.abs(host.x - it.right));
+      const hGap = it.x >= host.right ? it.x - host.right : host.x > it.right ? host.x - it.right : edgeGap;
       if (
         !inTopHeaderBand &&
         ((host.right <= pageW * 0.525 && it.x >= pageW * 0.475) ||
@@ -1201,8 +1215,8 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       ) {
         continue;
       }
-      // Prefer host immediately to the left (trailing superscript) or right (leading affiliation superscript)
-      const weightedDist = hGap + Math.abs(it.yBaseline - host.yBaseline) * 0.25;
+      // Prefer host on the same line (small vertical baseline diff) immediately adjacent to host edge
+      const weightedDist = hGap + Math.abs(it.yBaseline - host.yBaseline) * 1.6;
       if (weightedDist < bestDist) {
         bestDist = weightedDist;
         bestHost = host;
@@ -1216,12 +1230,12 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     }
   }
 
-  // Pass 2A-2: Chain multi-piece superscripts (e.g. "1," followed by "*" as separate PDF text items)
+  // Pass 2A-2: Chain multi-piece superscripts/subscripts (e.g. "1," followed by "*", or "t" followed by "−" and "1")
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < normItems.length; i++) {
       const it = normItems[i];
       if (it.isScriptCandidate) continue;
-      if (!/^[0-9,∗*†‡§a-zA-Z+\-()]{1,12}$/.test(it.trimmed)) continue;
+      if (!/^[0-9,∗*†‡§a-zA-Z+\-\u2212()\s]{1,14}$/.test(it.trimmed)) continue;
       for (let j = 0; j < normItems.length; j++) {
         if (i === j) continue;
         const peer = normItems[j];
@@ -1287,7 +1301,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         prev.right <= pageW * 0.525 &&
         run.x >= pageW * 0.475 &&
         gap > maxFont * 0.82;
-      const maxAllowedGap = inPage1HeaderBand ? maxFont * 3.2 : maxFont * 1.65;
+      const maxAllowedGap = maxFont * 1.45;
 
       if (
         (isSameBaseline || isInlineScript) &&
@@ -1299,13 +1313,13 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
           !prev.hasMainBaseline &&
           prev.fontPx <= run.fontPx * 0.9 &&
           prev.yBaseline < run.yBaseline - run.fontPx * 0.1 &&
-          /^[0-9,∗*†‡§*]{1,10}$/.test(prev.trimmed);
+          /^[0-9,∗*†‡§*\s]{1,12}$/.test(prev.trimmed);
 
         const isTrailingSuperscript =
           prev.hasMainBaseline &&
-          run.fontPx <= prev.fontPx * 0.9 &&
-          run.yBaseline < prev.yBaseline - prev.fontPx * 0.1 &&
-          /^[0-9,∗*†‡§a-zA-Z+\-()]{1,14}$/.test(run.trimmed);
+          run.fontPx <= (prev.baseFontPx || prev.fontPx) * 0.9 &&
+          run.yBaseline < prev.yBaseline - (prev.baseFontPx || prev.fontPx) * 0.1 &&
+          /^[0-9,∗*†‡§a-zA-Z+\-()\s]{1,16}$/.test(run.trimmed);
 
         if (prevIsLeadingSuperscript) {
           prev.str = `$^{${prev.trimmed}}$ ${run.str.trimStart()}`;
@@ -1314,7 +1328,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
           prev.fontPx = run.fontPx;
           prev.baseFontPx = run.baseFontPx || run.fontPx;
           prev.hasMainBaseline = true;
-        } else if (isTrailingSuperscript && (pageNum === 1 || /^[0-9,∗*†‡§*]+$/.test(run.trimmed))) {
+        } else if (isTrailingSuperscript && (pageNum === 1 || /^[0-9,∗*†‡§*\s]+$/.test(run.trimmed))) {
           if (/\$\^\{[^}]+\}\$$/.test(prev.str)) {
             prev.str = prev.str.replace(/\$\^\{([^}]+)\}\$$/, `$^{$1${run.trimmed}}$`);
           } else {
@@ -1347,7 +1361,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         continue;
       }
     }
-    const isPureLeadingSup = run.isScriptCandidate && /^[0-9,∗*†‡§*]{1,10}$/.test(run.trimmed);
+    const isPureLeadingSup = run.isScriptCandidate && /^[0-9,∗*†‡§*\s]{1,12}$/.test(run.trimmed);
     lines.push({ ...run, hasMainBaseline: !isPureLeadingSup });
   }
 
@@ -1359,7 +1373,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     // Filter out any residual orphan superscript noise line in the Page 1 author band
     if (
       pageNum === 1 &&
-      ln.top < pageH * 0.35 &&
+      ln.top < pageH * 0.45 &&
       /^[0-9,∗*†‡§*\s]+$/.test(ln.str) &&
       ln.str.replace(/\s+/g, '').length <= 20
     ) {
@@ -1379,10 +1393,29 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       ? proseFontSamples[Math.floor(proseFontSamples.length * 0.5)]
       : 18;
 
+  // Compute maximum font size in the Page 1 top header band to reliably identify the paper title
+  const topTitleCandidates =
+    pageNum === 1
+      ? cleanLines.filter(
+          (ln) =>
+            ln.top < pageH * 0.32 &&
+            ln.str.length >= 4 &&
+            !/\b(hereby grants permission|all rights reserved|preprint submitted to|journalistic or scholarly)\b/i.test(
+              ln.str
+            )
+        )
+      : [];
+  const maxTopFontPx =
+    topTitleCandidates.length > 0
+      ? Math.max(...topTitleCandidates.map((ln) => ln.fontPx))
+      : medianFontPx * 1.25;
+
   const FIG_CAPTION_RE = /^(Figure|Fig\.|FIG\.|Scheme)\s*(\d+|[A-Z]\d*)\s*[:.]/i;
   const TAB_CAPTION_RE = /^(Table|TABLE|Tab\.)\s*(\d+|[A-Z]\d*|[IVX]+)\s*[:.]/i;
   const SECTION_HEADING_RE =
     /^(Abstract|ABSTRACT|Introduction|Related Work|Background|Preliminary|Preliminaries|Method|Methods|Methodology|Approach|Framework|Architecture|Experiments|Experimental Setup|Evaluation|Results|Analysis|Ablation Study|Discussion|Conclusion|Conclusions|Limitations|Broader Impact|Acknowledgments|Acknowledgements|References|Appendix|Appendices)\b|^(\d+(\.\d+){0,2}|[IVX]+\.)\s+[A-Z][A-Za-z0-9\s\-:,/()&']{1,78}$/;
+  const AUTHOR_AFFIL_KEYWORD_RE =
+    /\$\^\{[0-9*,∗†‡§a-zA-Z+\-()\s]+\}\$|University|Institute|Department|School of|Laboratory|College|Academy|Center for|Centre for|Hospital|Google|Research|Brain|Meta|Microsoft|OpenAI|DeepMind|@|Corresponding author/i;
 
   // 3. Identify solid prose / heading lines (so we can distinguish diagram internal labels from body text)
   const isSolidProseLine = new Array(cleanLines.length).fill(false);
@@ -1459,7 +1492,8 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       if (!capText) {
         capText = cl.str;
       } else if (capText.endsWith('-') && !/--$/.test(capText) && /^[a-z]/.test(cl.str)) {
-        capText = capText.slice(0, -1) + cl.str;
+        const keepHyphen = /\b[A-Z][a-z]+-$/.test(capText) || /^[a-z]+-[a-z]/i.test(cl.str);
+        capText = (keepHyphen ? capText : capText.slice(0, -1)) + cl.str;
       } else {
         capText += ' ' + cl.str;
       }
@@ -1566,11 +1600,190 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     });
   }
 
+  // 4B. Reconstruct Page 1 Author & Affiliation Header Region (supporting both full-width author lists
+  //     and multi-column NeurIPS/ICML/ACL author grids) before 2-column body detection.
+  if (pageNum === 1) {
+    const isTitleCandidate = (ln) =>
+      ln.top < pageH * 0.32 &&
+      ln.fontPx >= Math.max(medianFontPx * 1.18, maxTopFontPx * 0.84) &&
+      !SECTION_HEADING_RE.test(ln.str) &&
+      !/\b(hereby grants permission|all rights reserved|preprint submitted to|journalistic or scholarly)\b/i.test(
+        ln.str
+      );
+
+    let titleBottomY = 0;
+    for (let i = 0; i < cleanLines.length; i++) {
+      if (consumedLineSet.has(i)) continue;
+      if (isTitleCandidate(cleanLines[i])) {
+        titleBottomY = Math.max(titleBottomY, cleanLines[i].bottom);
+      }
+    }
+
+    if (titleBottomY > 0) {
+      let authorLimitY = pageH * 0.54;
+      for (let i = 0; i < cleanLines.length; i++) {
+        if (consumedLineSet.has(i)) continue;
+        const ln = cleanLines[i];
+        if (ln.top <= titleBottomY + 2) continue;
+        if (SECTION_HEADING_RE.test(ln.str) && !ln.str.endsWith('.')) {
+          authorLimitY = Math.min(authorLimitY, ln.top - 2);
+          break;
+        }
+        if (
+          ln.width >= pageW * 0.55 &&
+          ln.str.length >= 68 &&
+          ln.str.endsWith('.') &&
+          !AUTHOR_AFFIL_KEYWORD_RE.test(ln.str)
+        ) {
+          authorLimitY = Math.min(authorLimitY, ln.top - 2);
+          break;
+        }
+      }
+
+      const authorIndices = [];
+      for (let i = 0; i < cleanLines.length; i++) {
+        if (consumedLineSet.has(i)) continue;
+        const ln = cleanLines[i];
+        if (ln.top >= titleBottomY - 2 && ln.bottom <= authorLimitY + 4 && !isTitleCandidate(ln)) {
+          authorIndices.push(i);
+        }
+      }
+
+      if (authorIndices.length > 0) {
+        const authorLines = authorIndices.map((idx) => cleanLines[idx]);
+        // Group author lines into horizontal visual rows
+        authorLines.sort((a, b) => a.top - b.top || a.x - b.x);
+        const visualRows = [];
+        for (const ln of authorLines) {
+          const lastRow = visualRows[visualRows.length - 1];
+          if (
+            lastRow &&
+            Math.abs(ln.yBaseline - lastRow.yBaseline) <= Math.max(ln.fontPx, lastRow.fontPx) * 0.48
+          ) {
+            lastRow.items.push(ln);
+            lastRow.top = Math.min(lastRow.top, ln.top);
+            lastRow.bottom = Math.max(lastRow.bottom, ln.bottom);
+            lastRow.fontPx = Math.max(lastRow.fontPx, ln.fontPx);
+          } else {
+            visualRows.push({
+              yBaseline: ln.yBaseline,
+              top: ln.top,
+              bottom: ln.bottom,
+              fontPx: ln.fontPx,
+              items: [ln]
+            });
+          }
+        }
+        for (const row of visualRows) {
+          row.items.sort((a, b) => a.x - b.x);
+        }
+
+        const isMultiColAuthorGrid = visualRows.some((r) => r.items.length >= 2);
+        let authorOriginal = '';
+
+        if (!isMultiColAuthorGrid) {
+          authorOriginal = visualRows.map((r) => r.items.map((it) => it.str).join(' ')).join('\n');
+        } else {
+          // Cluster multi-column author grid cells vertically (Name -> Affiliation -> Email)
+          const cards = [];
+          let activeBandCards = [];
+          let prevRowBottom = null;
+
+          for (const row of visualRows) {
+            if (prevRowBottom !== null && row.top - prevRowBottom > row.fontPx * 1.15) {
+              activeBandCards = [];
+            }
+            prevRowBottom = row.bottom;
+
+            for (const seg of row.items) {
+              if (seg.width >= pageW * 0.52) {
+                activeBandCards = [];
+                cards.push({
+                  left: seg.x,
+                  right: seg.right,
+                  top: seg.top,
+                  bottom: seg.bottom,
+                  lines: [seg]
+                });
+                continue;
+              }
+
+              const segCenter = (seg.x + seg.right) * 0.5;
+              let bestCard = null;
+              let bestCenterDiff = Infinity;
+
+              for (const card of activeBandCards) {
+                const cardCenter = (card.left + card.right) * 0.5;
+                const cardWidth = card.right - card.left;
+                const centerDiff = Math.abs(segCenter - cardCenter);
+                const overlap = Math.min(seg.right, card.right) - Math.max(seg.x, card.left);
+                const minW = Math.min(seg.width, cardWidth);
+                const maxCenterTol = Math.max(seg.fontPx * 2.6, minW * 0.65);
+
+                if ((centerDiff <= maxCenterTol || overlap >= minW * 0.35) && centerDiff < bestCenterDiff) {
+                  bestCenterDiff = centerDiff;
+                  bestCard = card;
+                }
+              }
+
+              if (bestCard) {
+                bestCard.lines.push(seg);
+                bestCard.left = Math.min(bestCard.left, seg.x);
+                bestCard.right = Math.max(bestCard.right, seg.right);
+                bestCard.bottom = Math.max(bestCard.bottom, seg.bottom);
+              } else {
+                const newCard = {
+                  left: seg.x,
+                  right: seg.right,
+                  top: seg.top,
+                  bottom: seg.bottom,
+                  lines: [seg]
+                };
+                cards.push(newCard);
+                activeBandCards.push(newCard);
+              }
+            }
+          }
+
+          authorOriginal = cards
+            .map((c) => c.lines.map((l) => l.str).join('\n'))
+            .filter(Boolean)
+            .join('\n\n');
+        }
+
+        if (authorOriginal.trim()) {
+          for (const idx of authorIndices) {
+            consumedLineSet.add(idx);
+          }
+          positionedSpecialBlocks.push({
+            top: Math.min(...authorLines.map((l) => l.top)),
+            bottom: Math.max(...authorLines.map((l) => l.bottom)),
+            column: 'full',
+            block: {
+              page: pageNum,
+              type: 'author',
+              column: 'full',
+              original: authorOriginal.trim(),
+              translation: ''
+            }
+          });
+        }
+      }
+    }
+  }
+
   // 5. Assign remaining lines to columns ('full', 'left', 'right')
   const remainingLines = cleanLines.filter((_, idx) => !consumedLineSet.has(idx));
 
-  const leftCandidates = remainingLines.filter((l) => l.right <= pageW * 0.535);
-  const rightCandidates = remainingLines.filter((l) => l.x >= pageW * 0.465);
+  const isCenteredShortLine = (l) =>
+    l.width < pageW * 0.45 && Math.abs((l.x + l.right) * 0.5 - pageW * 0.5) <= pageW * 0.08;
+
+  const leftCandidates = remainingLines.filter(
+    (l) => l.right <= pageW * 0.535 && !isCenteredShortLine(l)
+  );
+  const rightCandidates = remainingLines.filter(
+    (l) => l.x >= pageW * 0.465 && !isCenteredShortLine(l)
+  );
   const specialColBlocks = positionedSpecialBlocks.filter(
     (sb) => sb.column === 'left' || sb.column === 'right'
   );
@@ -1592,13 +1805,32 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
   }
 
   const taggedItems = [];
-  for (const ln of remainingLines) {
+  for (let idx = 0; idx < remainingLines.length; idx++) {
+    const ln = remainingLines[idx];
     let col = 'full';
     if (isTwoColumnPage) {
       if (pageNum === 1 && ln.top < twoColStartY) {
         col = 'full';
+      } else if (isCenteredShortLine(ln) && SECTION_HEADING_RE.test(ln.str)) {
+        col = 'full';
       } else if (ln.right <= pageW * 0.535) {
-        col = 'left';
+        // Keep short trailing last line of a full-width paragraph in 'full' if aligned with preceding 'full' line
+        const prevTagged = taggedItems[taggedItems.length - 1];
+        const hasRightPeerAtSameY = rightCandidates.some(
+          (r) => Math.abs(r.top - ln.top) <= Math.max(r.fontPx, ln.fontPx) * 1.2
+        );
+        if (
+          prevTagged &&
+          prevTagged.kind === 'line' &&
+          prevTagged.column === 'full' &&
+          !hasRightPeerAtSameY &&
+          ln.top - prevTagged.bottom <= ln.fontPx * 0.78 &&
+          Math.abs(ln.x - prevTagged.line.x) <= ln.fontPx * 1.5
+        ) {
+          col = 'full';
+        } else {
+          col = 'left';
+        }
       } else if (ln.x >= pageW * 0.465) {
         col = 'right';
       } else {
@@ -1634,7 +1866,13 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
 
     const classifySingleLine = (ln) => {
       const s = ln.str;
-      if (pageNum === 1 && colName === 'full' && ln.top < pageH * 0.26 && ln.fontPx >= medianFontPx * 1.18) {
+      if (
+        pageNum === 1 &&
+        colName === 'full' &&
+        ln.top < pageH * 0.32 &&
+        ln.fontPx >= Math.max(medianFontPx * 1.18, maxTopFontPx * 0.84) &&
+        !/\b(hereby grants permission|all rights reserved|preprint submitted to|journalistic or scholarly)\b/i.test(s)
+      ) {
         return 'title-heading';
       }
       if (
@@ -1642,7 +1880,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         colName === 'full' &&
         ln.top < pageH * 0.38 &&
         !SECTION_HEADING_RE.test(s) &&
-        (/\$\^\{[0-9*,∗†‡§a-zA-Z+\-()]+\}\$/.test(s) ||
+        (/\$\^\{[0-9*,∗†‡§a-zA-Z+\-()\s]+\}\$/.test(s) ||
           /University|Institute|Department|School of|Laboratory|College|Academy|Center for|Centre for|Hospital|@|Corresponding author/i.test(s) ||
           /\b[A-Z][a-z]+(?:\s+[A-Z]\.)?\s+[A-Z][a-z]+.*,.*\b(?:and\s+)?[A-Z][a-z]+/.test(s) ||
           (outBlocks.length === 1 && outBlocks[0].type === 'heading' && s.length < 160 && !s.endsWith('.')))
@@ -1651,7 +1889,12 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       }
       if (
         (SECTION_HEADING_RE.test(s) && s.length <= 96 && !s.endsWith('.')) ||
-        (ln.fontPx >= medianFontPx * 1.14 && s.length <= 96 && !s.endsWith('.'))
+        (ln.fontPx >= medianFontPx * 1.14 &&
+          s.length <= 96 &&
+          !s.endsWith('.') &&
+          !/^[a-z]/.test(s) &&
+          !/\b(to|or|and|of|in|for|with|by|from|that|which)$/i.test(s) &&
+          !/\b(hereby grants permission|all rights reserved|journalistic or scholarly)\b/i.test(s))
       ) {
         return 'heading';
       }
@@ -1676,7 +1919,8 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
           if (!joined) {
             joined = l.str;
           } else if (joined.endsWith('-') && !/--$/.test(joined) && /^[a-z]/.test(l.str)) {
-            joined = joined.slice(0, -1) + l.str;
+            const keepHyphen = /\b[A-Z][a-z]+-$/.test(joined) || /^[a-z]+-[a-z]/i.test(l.str);
+            joined = (keepHyphen ? joined : joined.slice(0, -1)) + l.str;
           } else {
             joined += ' ' + l.str;
           }
@@ -1746,7 +1990,9 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         ln.x > colMinLeft + ln.fontPx * 0.85 &&
         prev.x <= colMinLeft + prev.fontPx * 0.55 &&
         /[.?!:。？！]$/.test(prev.str);
-      const currIsListBullet = /^([•·▪▸\-*]|\(\d+\)|\[\d+\])\s+/.test(ln.str);
+      const currIsListBullet =
+        /^([•·▪▸\-*]|\(\d+\)|\[\d+\])\s+/.test(ln.str) ||
+        /^\$\^\{[0-9*,∗†‡§*\s]+\}\$\s*/.test(ln.str);
 
       if (isLargeVerticalGap || prevEndedShort || currIsIndented || currIsListBullet) {
         flushLineBuffer();
