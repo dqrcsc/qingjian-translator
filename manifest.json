@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "青简 · 译读 (QingJian) — 双语精读与智译",
-  "short_name": "青简 · 译读",
-  "version": "1.0.20",
-  "description": "青简 · 译读 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。",
+  "name": "青简 · 津梁 (QingJian) — 双语精读与智译",
+  "short_name": "青简 · 津梁",
+  "version": "1.0.21",
+  "description": "青简 · 津梁 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "青简 · 译读 (QingJian) — 双语精读与智译",
+    "default_title": "青简 · 津梁 (QingJian) — 双语精读与智译",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

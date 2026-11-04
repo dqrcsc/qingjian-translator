@@ -1,10 +1,10 @@
-# 隐私政策 / Privacy Policy — 青简 · 译读 (QingJian)
+# 隐私政策 / Privacy Policy — 青简 · 津梁 (QingJian)
 
 > 最后更新 / Last Updated: 2026-10-31
 
 ## 1. 概述 / Overview
 
-**青简 · 译读 (QingJian)** 是一款运行在用户本地浏览器中的开放多模型（BYOK，自带密钥）双语对照阅读与翻译 Chrome 扩展。本项目**不设立、不运营任何开发者后端服务器、中转网关或遥测收集服务**。
+**青简 · 津梁 (QingJian)** 是一款运行在用户本地浏览器中的开放多模型（BYOK，自带密钥）双语对照阅读与翻译 Chrome 扩展。本项目**不设立、不运营任何开发者后端服务器、中转网关或遥测收集服务**。
 
 **QingJian** is a local, Bring-Your-Own-Key (BYOK) bilingual reading and translation Chrome extension. This project **does not operate any developer backend server, proxy gateway, or telemetry collection service**.
 

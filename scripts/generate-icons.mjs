@@ -111,7 +111,7 @@ function mixColor(c1, c2, t) {
 }
 
 /**
- * Evaluates the "青简 · 译读" (QingJian) Celadon Bamboo Slips icon at normalized coordinates (nx, ny) in [-1, 1].
+ * Evaluates the "青简 · 津梁" (QingJian) Celadon Bamboo Slips icon at normalized coordinates (nx, ny) in [-1, 1].
  */
 function sampleQingJianIcon(nx, ny) {
   // 1. Outer Squircle Badge

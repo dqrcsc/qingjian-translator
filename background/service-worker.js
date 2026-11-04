@@ -149,12 +149,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     });
     chrome.contextMenus.create({
       id: 'immersive-gemini-translate-image',
-      title: '🖼️ 识别并原位翻译此图片中的文字 (青简 · 译读)',
+      title: '🖼️ 识别并原位翻译此图片中的文字 (青简 · 津梁)',
       contexts: ['image']
     });
     chrome.contextMenus.create({
       id: 'immersive-gemini-translate-pdf-link',
-      title: '📄 在新标签页双语翻译此在线 PDF (青简 · 译读)',
+      title: '📄 在新标签页双语翻译此在线 PDF (青简 · 津梁)',
       contexts: ['link', 'page'],
       targetUrlPatterns: ['*://*/*.pdf*', '*://arxiv.org/pdf/*', '*://arxiv.org/abs/*', '*://openreview.net/pdf*']
     });

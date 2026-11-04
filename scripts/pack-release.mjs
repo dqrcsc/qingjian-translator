@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Zero-dependency release ZIP packager for 青简 · 译读 (QingJian) Chrome Extension.
+ * Zero-dependency release ZIP packager for 青简 · 津梁 (QingJian) Chrome Extension.
  * Packages only runtime extension files into dist/qingjian-translator-v<version>.zip
  * for GitHub Releases and Chrome Web Store submission.
  */

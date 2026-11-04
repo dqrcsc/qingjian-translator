@@ -1,5 +1,5 @@
 /**
- * Shared constants, styles, provider endpoint templates, and default settings for 青简 · 译读 (QingJian).
+ * Shared constants, styles, provider endpoint templates, and default settings for 青简 · 津梁 (QingJian).
  * Note: QingJian is a pure BYOK (Bring Your Own Key & Model) extension and does NOT ship with
  * hardcoded built-in models. Users configure their own API Key and either pull available models
  * from their provider endpoint or enter their model ID directly.

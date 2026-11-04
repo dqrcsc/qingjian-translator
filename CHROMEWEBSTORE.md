@@ -1,17 +1,17 @@
-# Chrome Web Store Listing — 青简 · 译读 (QingJian) — 双语精读与智译
+# Chrome Web Store Listing — 青简 · 津梁 (QingJian) — 双语精读与智译
 
 > Last Updated: 2026-10-30
 
 ## Store Listing
 
 **Extension Name**
-青简 · 译读 (QingJian) — 双语精读与智译
+青简 · 津梁 (QingJian) — 双语精读与智译
 
 **Short Description**
-青简 · 译读 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。
+青简 · 津梁 (QingJian)：支持 Gemini / DeepSeek / OpenAI 兼容协议的双语精读与翻译扩展，涵盖网页段落对照、贴图译文、划词精解、三击空格速译、YouTube 双语字幕与 PDF/EPUB/MD 文档翻译工作台。
 
 **Detailed Description**
-青简 · 译读 (QingJian) 助您在阅读外文网页、浏览社交媒体推文配图、观看 YouTube 视频以及研读学术论文 PDF 与 EPUB 电子书时获得自然流畅的双语对照阅读体验。
+青简 · 津梁 (QingJian) 助您在阅读外文网页、浏览社交媒体推文配图、观看 YouTube 视频以及研读学术论文 PDF 与 EPUB 电子书时获得自然流畅的双语对照阅读体验。
 
 核心功能亮点：
 1. 纯粹开放多模型自由接入（自带密钥 BYOK，无内置模型绑定）：支持 Google Gemini、DeepSeek、OpenCode Go、OpenRouter、OpenAI、硅基流动、阿里云百炼、Moonshot Kimi、智谱 GLM 及任意兼容接口。支持一键从接口拉取可用模型或手动输入任意模型 ID，各服务商密钥与模型配置独立保存、一键切换。
@@ -23,7 +23,7 @@
 能力边界：配置密钥或拉取模型列表并不能验证模型的翻译、视觉或音频能力。音频仅支持 Gemini 原生音频模型。PDF 版式和图片文字覆盖为尽力还原，不保证像素级一致；EPUB 导出重建文本与目录，不保留原书图片、字体和 CSS。
 
 使用方式：
-第一步：安装扩展后点击浏览器右上角「青简 · 译读」图标进入「设置」，选择您常用的大模型服务商、填入您自己的 API Key，并点击「从接口拉取模型」或手动输入您的模型 ID。
+第一步：安装扩展后点击浏览器右上角「青简 · 津梁」图标进入「设置」，选择您常用的大模型服务商、填入您自己的 API Key，并点击「从接口拉取模型」或手动输入您的模型 ID。
 第二步：浏览任意外文网页时按下快捷键 Alt + A（或点击网页右侧悬浮球）即可开启双语对照阅读；访问在线 PDF 时点击扩展或按 Alt + A 即可在新标签页打开学术论文精读工作台。
 第三步：在支持的 YouTube 视频启用字幕翻译后，可读取可用轨道或已播放字幕；点击弹窗中的「打开文档翻译工作台」即可上传并翻译本地 PDF、EPUB 或 Markdown 文档。
 
@@ -108,4 +108,4 @@ Automatic translation settings can trigger requests without a separate click for
 | 1.0.4 | 2026-10-22 | Multi-item batch placeholder subset retry, upgraded Gemini audio protocol fallback, and rapid page-translation toggle cleanup guards. | Ready |
 | 1.0.3 | 2026-10-21 | Official PDF.js 6.4.299, local worker/assets, end-to-end cancellation and real Chromium regression checks. | Awaiting store review |
 | 1.0.2 | 2026-10-21 | Reliability fixes, regression tests, EPUB navigation, release licensing and corrected data-flow disclosures. See CHANGELOG.md for validation boundaries. | Awaiting browser acceptance / store review |
-| 1.0.0 | 2026-10-21 | Initial public release of 青简 · 译读 (QingJian) featuring Pure Open-Model BYOK AI Engine (Gemini, DeepSeek, OpenCode Go, OpenRouter, OpenAI, SiliconFlow, Qwen, Kimi, GLM), Webpage Bilingual Translation with 6 visual styles, Webpage/X.com Image In-Place OCR Translation, Selection AI Deep Explanation, Triple-Space Input Translation, YouTube Dual Subtitles + Audio Translation, and Academic PDF (Layout-Preserving + Seamless Figure Inpainting + Lazy Loading) / EPUB / Markdown Document Studio. | Ready |
+| 1.0.0 | 2026-10-21 | Initial public release of 青简 · 津梁 (QingJian) featuring Pure Open-Model BYOK AI Engine (Gemini, DeepSeek, OpenCode Go, OpenRouter, OpenAI, SiliconFlow, Qwen, Kimi, GLM), Webpage Bilingual Translation with 6 visual styles, Webpage/X.com Image In-Place OCR Translation, Selection AI Deep Explanation, Triple-Space Input Translation, YouTube Dual Subtitles + Audio Translation, and Academic PDF (Layout-Preserving + Seamless Figure Inpainting + Lazy Loading) / EPUB / Markdown Document Studio. | Ready |

@@ -2740,7 +2740,7 @@
     floatingBallEl.innerHTML = `
       <div class="ig-ball-drawer">
         <div class="ig-drawer-title">
-          <span>青简 · 译读</span>
+          <span>青简 · 津梁</span>
           <span style="font-size:10px;color:#818cf8;">Alt+A</span>
         </div>
         <button class="ig-drawer-toggle" data-action="toggle-page">
@@ -4433,7 +4433,7 @@
     const isTxt = format === 'txt';
     const ext = `${partial ? 'observed-partial' : 'bilingual'}.${isTxt ? 'txt' : 'srt'}`;
     const fileHeader = isTxt
-      ? `# ${baseName} — 双语字幕对照 (青简 · 译读)\n# ${youtubeCoverageText()}\n# 可直接阅读；播放器请使用单独的 .srt 导出\n\n`
+      ? `# ${baseName} — 双语字幕对照 (青简 · 津梁)\n# ${youtubeCoverageText()}\n# 可直接阅读；播放器请使用单独的 .srt 导出\n\n`
       : '';
     const finalPayload = `\uFEFF${fileHeader}${srtContent}`;
 

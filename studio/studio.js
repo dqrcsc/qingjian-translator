@@ -606,7 +606,7 @@ async function handleFileLoaded(file, options = {}) {
       currentDoc.totalPages = Math.max(1, opened.numPages || estimatePdfPageCount(ab));
       currentDoc.pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: 'application/pdf' }));
 
-      document.title = `${name} - 双语 PDF 对照翻译 | 青简 · 译读`;
+      document.title = `${name} - 双语 PDF 对照翻译 | 青简 · 津梁`;
       leftPaneTitle.textContent = `📕 ${name} (共 ${currentDoc.totalPages} 页)`;
       sourceOutlineViewer.hidden = true;
 
@@ -3200,7 +3200,7 @@ function exportTranslatedDocument(format) {
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"/>
-<title>${escapeHtml(currentDoc.bookTitle || baseName)} - 青简 · 译读 保持排版文档</title>
+<title>${escapeHtml(currentDoc.bookTitle || baseName)} - 青简 · 津梁 保持排版文档</title>
 <style>
   body { margin: 0; padding: 24px 16px 60px; background: #cbd5e1; color: #111827; font-family: "Times New Roman", "Noto Serif SC", "Songti SC", Georgia, serif; }
   .export-topbar { position: sticky; top: 0; z-index: 99; max-width: 840px; margin: 0 auto 20px; padding: 10px 18px; border-radius: 10px; background: rgba(15, 23, 42, 0.94); color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 10px 25px rgba(0,0,0,0.25); }
@@ -3257,7 +3257,7 @@ function exportTranslatedDocument(format) {
 <body>
   <input type="checkbox" id="exportModeToggle" ${mode === 'translation-only' ? 'checked' : ''} />
   <div class="export-topbar">
-    <span><b>青简 · 译读</b> · ${escapeHtml(currentDoc.bookTitle || baseName)}</span>
+    <span><b>青简 · 津梁</b> · ${escapeHtml(currentDoc.bookTitle || baseName)}</span>
     <div>
       <label for="exportModeToggle" class="toggle-label">⇄ 切换 纯译文 / 中英双语</label>
     </div>
@@ -3324,7 +3324,7 @@ function loadBuiltInDemo() {
     pdfArrayBuffer: null,
     totalPages: 3,
     bookTitle: 'Hierarchical Knowledge Alignment in Medical Large Language Models',
-    bookAuthor: '青简 · 译读 (QingJian)',
+    bookAuthor: '青简 · 津梁 (QingJian)',
     chapters: [],
     blocks: [
       {

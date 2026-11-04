@@ -100,7 +100,7 @@ function readPngDimensions(filePath) {
   return { width, height };
 }
 
-console.log('\n🔍 Running 青简 · 译读 (QingJian) MV3 Extension Verification Suite...\n');
+console.log('\n🔍 Running 青简 · 津梁 (QingJian) MV3 Extension Verification Suite...\n');
 
 // 1. Manifest V3 & Referenced Files Check
 const manifestPath = path.join(ROOT, 'manifest.json');
