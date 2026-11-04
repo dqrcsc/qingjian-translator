@@ -393,9 +393,12 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { s
           const isVertical = Math.abs(tx[1]) > Math.abs(tx[0]) * 1.5;
           const x = tx[4];
           const yBaseline = tx[5];
+          const rawItemW = (item.width || 0) * viewport.scale;
           const width = isVertical
             ? fontPx
-            : Math.max(fontPx * 0.45, (item.width || 0) * viewport.scale);
+            : rawItemW > 0
+            ? Math.max(fontPx * 0.12, rawItemW)
+            : fontPx * 0.45;
           const top = yBaseline - fontPx * 0.84;
           const bottom = yBaseline + fontPx * 0.2;
           textItems.push({
@@ -1105,7 +1108,8 @@ function computeFigureBox2dInRegion(pageCanvas, pageW, pageH, regionLeft, region
 
   const ymin = Math.max(0, Math.min(970, Math.round((minY / pageH) * 1000) - 6));
   const xmin = Math.max(0, Math.min(970, Math.round((minX / pageW) * 1000) - 6));
-  const ymax = Math.min(1000, Math.max(ymin + 40, Math.round((maxY / pageH) * 1000) + 6));
+  const maxAllowedYmax = Math.max(ymin + 36, Math.floor((y1 / pageH) * 1000) - 12);
+  const ymax = Math.min(1000, maxAllowedYmax, Math.max(ymin + 36, Math.round((maxY / pageH) * 1000) - 2));
   const xmax = Math.min(1000, Math.max(xmin + 60, Math.round((maxX / pageW) * 1000) + 6));
   return [ymin, xmin, ymax, xmax];
 }
@@ -1134,7 +1138,8 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     const fontPx = Math.max(6, Number(it.fontPx ?? it.fontSize ?? it.height) || 16);
     const x = Number(it.x) || 0;
     const top = Number(it.top) || 0;
-    const width = Math.max(fontPx * 0.4, Number(it.width) || trimmed.length * fontPx * 0.5);
+    const rawW = Number(it.width) || 0;
+    const width = rawW > 0 ? Math.max(fontPx * 0.12, rawW) : Math.max(fontPx * 0.4, trimmed.length * fontPx * 0.5);
     const height = Math.max(fontPx * 0.75, Number(it.height) || fontPx);
     const right = Number(it.right ?? x + width);
     const bottom = Number(it.bottom ?? top + height);
@@ -1174,7 +1179,206 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
 
   normItems.sort((a, b) => a.x - b.x || a.yBaseline - b.yBaseline);
 
-  // Pass 2A-1: Snap script-sized items (e.g. author/affiliation superscripts "1", "1,2,4,*", "∗ †") to nearest host item
+  // Pass 2A-0a: Normalize TeX CMEX10 top-hung radical signs ("√") and summation/product/integral signs
+  // whose PDF glyph origin sits at the top bar (~0.75 * fontPx above the math baseline).
+  for (let i = 0; i < normItems.length; i++) {
+    const it = normItems[i];
+    if (it.trimmed === '√' || it.trimmed === '\u221A') {
+      let bestRad = null;
+      let bestDist = Infinity;
+      for (let j = 0; j < normItems.length; j++) {
+        if (i === j) continue;
+        const cand = normItems[j];
+        if (cand.x < it.x - it.fontPx * 0.25 || cand.x > it.right + it.fontPx * 0.65) continue;
+        const dy = cand.yBaseline - it.yBaseline;
+        if (dy < it.fontPx * 0.22 || dy > it.fontPx * 1.15) continue;
+        const dist = Math.abs(cand.x - it.right) + Math.abs(dy - it.fontPx * 0.76) * 0.5;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestRad = cand;
+        }
+      }
+      if (bestRad) {
+        it.yBaseline = bestRad.yBaseline;
+        it.lineY = bestRad.yBaseline;
+        it.top = bestRad.top;
+        it.bottom = bestRad.bottom;
+        it.fontPx = bestRad.fontPx;
+        it.baseFontPx = bestRad.fontPx;
+        it.isRadicalSign = true;
+      }
+      continue;
+    }
+
+    const isBigOpChar =
+      it.trimmed === '∑' ||
+      it.trimmed === '∏' ||
+      it.trimmed === '∫' ||
+      ((it.trimmed === 'P' || it.trimmed === 'X') &&
+        normItems.some(
+          (prev) =>
+            Math.abs(it.x - prev.right) <= it.fontPx * 0.95 &&
+            /=$/.test(prev.trimmed) &&
+            prev.yBaseline - it.yBaseline >= it.fontPx * 0.42 &&
+            prev.yBaseline - it.yBaseline <= it.fontPx * 1.05
+        ));
+    if (isBigOpChar) {
+      const host = normItems.find(
+        (prev) =>
+          prev !== it &&
+          Math.abs(it.x - prev.right) <= it.fontPx * 1.1 &&
+          prev.yBaseline - it.yBaseline >= it.fontPx * 0.42 &&
+          prev.yBaseline - it.yBaseline <= it.fontPx * 1.05
+      );
+      if (host) {
+        if (it.trimmed === 'P' || it.trimmed === 'X') {
+          it.str = '∑';
+          it.trimmed = '∑';
+        }
+        it.yBaseline = host.yBaseline;
+        it.lineY = host.yBaseline;
+        it.top = host.top;
+        it.bottom = host.bottom;
+        it.fontPx = host.fontPx;
+        it.baseFontPx = host.fontPx;
+      }
+    }
+  }
+
+  // Pass 2A-0b: Reconstruct 2D stacked fractions (\frac{num}{den}) sitting between left and right anchors on a main baseline
+  const formatMathSubgroupToLatex = (subItems) => {
+    const sorted = [...subItems].sort((a, b) => a.x - b.x || a.yBaseline - b.yBaseline);
+    const maxSubFont = Math.max(...sorted.map((s) => s.fontPx));
+    const baseItem = sorted.find((s) => s.fontPx >= maxSubFont * 0.92 && !s.isRadicalSign) || sorted[0];
+    const baseY = baseItem.yBaseline;
+    let out = '';
+    let inSqrt = false;
+    for (let k = 0; k < sorted.length; k++) {
+      const s = sorted[k];
+      if (s.isRadicalSign || s.trimmed === '√') {
+        if (inSqrt) out += '}';
+        out += '\\sqrt{';
+        inSqrt = true;
+        continue;
+      }
+      const dy = s.yBaseline - baseY;
+      if (s.fontPx <= maxSubFont * 0.88 && dy < -maxSubFont * 0.1) {
+        out += `^{${s.trimmed}}`;
+      } else if (s.fontPx <= maxSubFont * 0.88 && dy > maxSubFont * 0.1) {
+        out += `_{${s.trimmed}}`;
+      } else {
+        out += s.trimmed;
+      }
+    }
+    if (inSqrt) out += '}';
+    return out;
+  };
+
+  const fractionConsumed = new Set();
+  const synthesizedFractions = [];
+  const byBaseline = [...normItems].sort((a, b) => a.yBaseline - b.yBaseline || a.x - b.x);
+  for (let i = 0; i < byBaseline.length; i++) {
+    const leftAnchor = byBaseline[i];
+    if (fractionConsumed.has(leftAnchor)) continue;
+    // Find nearest rightAnchor on the same main baseline
+    let rightAnchor = null;
+    for (let j = 0; j < byBaseline.length; j++) {
+      if (i === j) continue;
+      const cand = byBaseline[j];
+      if (fractionConsumed.has(cand)) continue;
+      const maxF = Math.max(leftAnchor.fontPx, cand.fontPx);
+      if (Math.abs(cand.yBaseline - leftAnchor.yBaseline) > maxF * 0.22) continue;
+      if (cand.x <= leftAnchor.right + 4 || cand.x - leftAnchor.right > pageW * 0.18) continue;
+      if (!rightAnchor || cand.x < rightAnchor.x) {
+        rightAnchor = cand;
+      }
+    }
+    if (!rightAnchor) continue;
+
+    const yMain = (leftAnchor.yBaseline + rightAnchor.yBaseline) * 0.5;
+    const fontMain = Math.max(leftAnchor.fontPx, rightAnchor.fontPx);
+    const slotLeft = leftAnchor.right - 2;
+    const slotRight = rightAnchor.x + 2;
+
+    const inSlot = normItems.filter(
+      (it) =>
+        !fractionConsumed.has(it) &&
+        it !== leftAnchor &&
+        it !== rightAnchor &&
+        it.x >= slotLeft &&
+        it.right <= slotRight &&
+        it.yBaseline >= yMain - fontMain * 1.45 &&
+        it.yBaseline <= yMain + fontMain * 1.45
+    );
+    if (inSlot.length < 2) continue;
+
+    const hasMidItem = inSlot.some((it) => Math.abs(it.yBaseline - yMain) <= fontMain * 0.22);
+    if (hasMidItem) continue;
+
+    const upperItems = inSlot.filter((it) => it.yBaseline < yMain - fontMain * 0.22);
+    const lowerItems = inSlot.filter((it) => it.yBaseline > yMain + fontMain * 0.22);
+    if (upperItems.length === 0 || lowerItems.length === 0) continue;
+
+    const uLeft = Math.min(...upperItems.map((u) => u.x));
+    const uRight = Math.max(...upperItems.map((u) => u.right));
+    const lLeft = Math.min(...lowerItems.map((l) => l.x));
+    const lRight = Math.max(...lowerItems.map((l) => l.right));
+    const hOverlap = Math.min(uRight, lRight) - Math.max(uLeft, lLeft);
+    const centerDiff = Math.abs((uLeft + uRight) * 0.5 - (lLeft + lRight) * 0.5);
+    if (hOverlap <= 0 && centerDiff > fontMain * 0.85) continue;
+
+    // Distinguish 2D fraction from simultaneous sub/superscript on leftAnchor (like W_i^Q or d_{model}^{-0.5})
+    // and reject distant table cells in adjacent rows
+    const fracLeft = Math.min(uLeft, lLeft);
+    const fracRight = Math.max(uRight, lRight);
+    if (fracLeft - leftAnchor.right > fontMain * 1.35 || rightAnchor.x - fracRight > fontMain * 1.35) {
+      continue;
+    }
+    const isDisplayFracSize =
+      Math.max(...upperItems.map((u) => u.fontPx)) >= fontMain * 0.85 &&
+      Math.max(...lowerItems.map((l) => l.fontPx)) >= fontMain * 0.85;
+    const isPrecededByDelimOrSpace =
+      /[([=+\-\u2212,]$/.test(leftAnchor.trimmed) || fracLeft - leftAnchor.right >= fontMain * 0.24;
+    if (!isDisplayFracSize && !isPrecededByDelimOrSpace) continue;
+
+    const numLatex = formatMathSubgroupToLatex(upperItems);
+    const denLatex = formatMathSubgroupToLatex(lowerItems);
+    const fracStr = `$\\frac{${numLatex}}{${denLatex}}$`;
+    for (const u of upperItems) fractionConsumed.add(u);
+    for (const l of lowerItems) fractionConsumed.add(l);
+
+    const fLeft = Math.min(uLeft, lLeft);
+    const fRight = Math.max(uRight, lRight);
+    const fTop = Math.min(...upperItems.map((u) => u.top));
+    const fBottom = Math.max(...lowerItems.map((l) => l.bottom));
+    synthesizedFractions.push({
+      str: fracStr,
+      trimmed: fracStr,
+      x: fLeft,
+      top: fTop,
+      right: fRight,
+      bottom: fBottom,
+      width: fRight - fLeft,
+      height: fBottom - fTop,
+      yBaseline: yMain,
+      lineY: yMain,
+      fontPx: fontMain,
+      baseFontPx: fontMain,
+      isScriptCandidate: false
+    });
+  }
+
+  if (fractionConsumed.size > 0) {
+    for (let i = normItems.length - 1; i >= 0; i--) {
+      if (fractionConsumed.has(normItems[i])) {
+        normItems.splice(i, 1);
+      }
+    }
+    normItems.push(...synthesizedFractions);
+    normItems.sort((a, b) => a.x - b.x || a.yBaseline - b.yBaseline);
+  }
+
+  // Pass 2A-1: Snap script-sized items (e.g. author/affiliation superscripts "1", "1,2,4,*", "∗ †", math scripts) to nearest host item
   for (let i = 0; i < normItems.length; i++) {
     const it = normItems[i];
     const isPureSupToken = /^[0-9,∗*†‡§*\s]+$/.test(it.trimmed) && it.trimmed.length <= 16;
@@ -1190,7 +1394,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       if (host.fontPx < it.fontPx * minHostRatio) continue;
       if (
         it.yBaseline < host.yBaseline - host.fontPx * 0.72 ||
-        it.yBaseline > host.yBaseline + host.fontPx * 0.45
+        it.yBaseline > host.yBaseline + host.fontPx * 0.48
       ) {
         continue;
       }
@@ -1224,30 +1428,42 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     }
 
     if (bestHost) {
+      it.hostItem = bestHost;
       it.lineY = bestHost.yBaseline;
       it.baseFontPx = bestHost.fontPx;
       it.isScriptCandidate = true;
     }
   }
 
-  // Pass 2A-2: Chain multi-piece superscripts/subscripts (e.g. "1," followed by "*", or "t" followed by "−" and "1")
-  for (let pass = 0; pass < 2; pass++) {
+  // Pass 2A-2: Chain multi-piece superscripts/subscripts (e.g. "1," followed by "*", or "−" + "0" + "." + "5")
+  for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < normItems.length; i++) {
       const it = normItems[i];
       if (it.isScriptCandidate) continue;
-      if (!/^[0-9,∗*†‡§a-zA-Z+\-\u2212()\s]{1,14}$/.test(it.trimmed)) continue;
+      if (!/^[0-9.,∗*†‡§a-zA-Z+\-\u2212=/()\s]{1,18}$/.test(it.trimmed)) continue;
       for (let j = 0; j < normItems.length; j++) {
         if (i === j) continue;
         const peer = normItems[j];
         if (!peer.isScriptCandidate) continue;
         if (it.fontPx > peer.baseFontPx * 0.92) continue;
-        if (Math.abs(it.yBaseline - peer.yBaseline) > Math.max(it.fontPx, peer.fontPx) * 0.38) continue;
+        if (Math.abs(it.yBaseline - peer.yBaseline) > Math.max(it.fontPx, peer.fontPx) * 0.42) continue;
         if (it.x <= peer.right + peer.fontPx * 1.5 && it.right >= peer.x - peer.fontPx * 1.5) {
+          it.hostItem = peer.hostItem || peer;
           it.lineY = peer.lineY;
           it.baseFontPx = peer.baseFontPx;
           it.isScriptCandidate = true;
           break;
         }
+      }
+    }
+  }
+
+  // Propagate top-level host lineY and baseFontPx transitively for nested scripts (e.g. 10000^{2i/d_{model}})
+  for (let pass = 0; pass < 3; pass++) {
+    for (const it of normItems) {
+      if (it.hostItem) {
+        it.lineY = it.hostItem.lineY;
+        it.baseFontPx = it.hostItem.baseFontPx;
       }
     }
   }
@@ -1276,7 +1492,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     }
   }
 
-  normItems.sort((a, b) => a.rowId - b.rowId || a.x - b.x);
+  normItems.sort((a, b) => a.rowId - b.rowId || a.x - b.x || a.yBaseline - b.yBaseline);
 
   const lines = [];
   for (const run of normItems) {
@@ -1289,9 +1505,9 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       const isSameBaseline = sameRow || baseDiff <= maxFont * 0.45;
       const isInlineScript =
         (run.isScriptCandidate || prev.isScriptCandidate || run.fontPx <= prev.fontPx * 0.88) &&
-        run.top < prev.bottom + maxFont * 0.3 &&
-        run.bottom > prev.top - maxFont * 0.4 &&
-        run.x - prev.right <= maxFont * 1.2;
+        run.top < prev.bottom + maxFont * 0.35 &&
+        run.bottom > prev.top - maxFont * 0.45 &&
+        run.x - prev.right <= maxFont * 1.25;
 
       const gap = run.x - prev.right;
       const inPage1HeaderBand = pageNum === 1 && run.top < pageH * 0.25;
@@ -1303,12 +1519,34 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         gap > maxFont * 0.82;
       const maxAllowedGap = maxFont * 1.45;
 
+      // Allow simultaneous superscript & subscript on the same base variable (e.g. W_i^Q, d_{model}^{-0.5})
+      const isSimultaneousScript =
+        sameRow && run.isScriptCandidate && run.x >= prev.x - maxFont * 0.5 && gap < -maxFont * 0.55;
+
+      // Merge right-aligned equation numbers like "(1)", "(2)" onto the same-row display formula
+      const isRightEqTag =
+        (sameRow || baseDiff <= maxFont * 0.35) &&
+        /^\(\d+(?:\.\d+)?[a-z]?\)$/.test(run.trimmed) &&
+        run.x >= pageW * 0.72 &&
+        prev.x >= pageW * 0.21 &&
+        gap > maxAllowedGap;
+
+      if (isRightEqTag) {
+        const tagNum = run.trimmed.slice(1, -1);
+        prev.str = `${prev.str.trimEnd()} \\tag{${tagNum}}`;
+        prev.hasEquationNumber = true;
+        continue;
+      }
+
       if (
         (isSameBaseline || isInlineScript) &&
         !crossesCenterGutter &&
-        gap >= -maxFont * 0.55 &&
+        (gap >= -maxFont * 0.55 || isSimultaneousScript) &&
         gap <= maxAllowedGap
       ) {
+        const hostBaseY = prev.mainYBaseline ?? prev.yBaseline;
+        const hostBaseFont = prev.baseFontPx || prev.fontPx;
+
         const prevIsLeadingSuperscript =
           !prev.hasMainBaseline &&
           prev.fontPx <= run.fontPx * 0.9 &&
@@ -1317,34 +1555,73 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
 
         const isTrailingSuperscript =
           prev.hasMainBaseline &&
-          run.fontPx <= (prev.baseFontPx || prev.fontPx) * 0.9 &&
-          run.yBaseline < prev.yBaseline - (prev.baseFontPx || prev.fontPx) * 0.1 &&
-          /^[0-9,∗*†‡§a-zA-Z+\-()\s]{1,16}$/.test(run.trimmed);
+          run.fontPx <= hostBaseFont * 0.9 &&
+          run.yBaseline < hostBaseY - hostBaseFont * 0.1 &&
+          /^[0-9.,∗*†‡§a-zA-Z+\-\u2212=/()\s]{1,18}$/.test(run.trimmed);
+
+        const isTrailingSubscript =
+          prev.hasMainBaseline &&
+          !isTrailingSuperscript &&
+          run.fontPx <= hostBaseFont * 0.89 &&
+          run.yBaseline > hostBaseY + hostBaseFont * 0.08 &&
+          /^[0-9.,a-zA-Z+\-\u2212=/()\s]{1,18}$/.test(run.trimmed);
 
         if (prevIsLeadingSuperscript) {
           prev.str = `$^{${prev.trimmed}}$ ${run.str.trimStart()}`;
           prev.yBaseline = run.yBaseline;
+          prev.mainYBaseline = run.yBaseline;
           prev.lineY = run.lineY;
           prev.fontPx = run.fontPx;
           prev.baseFontPx = run.baseFontPx || run.fontPx;
           prev.hasMainBaseline = true;
-        } else if (isTrailingSuperscript && (pageNum === 1 || /^[0-9,∗*†‡§*\s]+$/.test(run.trimmed))) {
-          if (/\$\^\{[^}]+\}\$$/.test(prev.str)) {
+        } else if (isTrailingSuperscript) {
+          const isNestedSubInSup =
+            /\$\^\{[^}]+\}\$$/.test(prev.str) &&
+            prev.lastSupFontPx &&
+            run.fontPx <= prev.lastSupFontPx * 0.88 &&
+            run.yBaseline > prev.lastSupY + 1.0;
+          if (isNestedSubInSup) {
+            prev.str = prev.str.replace(/\$\^\{([^}]+)\}\$$/, `$^{$1_{${run.trimmed}}}$`);
+          } else if (/\$\^\{[^}]+\}\$$/.test(prev.str)) {
             prev.str = prev.str.replace(/\$\^\{([^}]+)\}\$$/, `$^{$1${run.trimmed}}$`);
+            prev.lastSupY = run.yBaseline;
+            prev.lastSupFontPx = run.fontPx;
+          } else if (
+            /\$\^\{[^}]+\}\$\$_\{[^}]+\}\$$/.test(prev.str) &&
+            prev.lastSupY &&
+            Math.abs(run.yBaseline - prev.lastSupY) <= 1.8
+          ) {
+            prev.str = prev.str.replace(
+              /\$\^\{([^}]+)\}\$(\$_\{[^}]+\}\$)$/,
+              `$2$^{$1${run.trimmed}}$`
+            );
+            prev.lastSupY = run.yBaseline;
+            prev.lastSupFontPx = run.fontPx;
           } else {
             prev.str = `${prev.str.trimEnd()}$^{${run.trimmed}}$`;
+            prev.lastSupY = run.yBaseline;
+            prev.lastSupFontPx = run.fontPx;
+          }
+        } else if (isTrailingSubscript) {
+          const cleanSub = run.trimmed.replace(/\s+/g, '');
+          if (/\$_\{[^}]+\}\$$/.test(prev.str)) {
+            prev.str = prev.str.replace(/\$_\{([^}]+)\}\$$/, `$_{$1${cleanSub}}$`);
+          } else {
+            prev.str = `${prev.str.trimEnd()}$_{${cleanSub}}$`;
           }
         } else {
           const startsWithClosingPunct = /^[,.;:?!)\]]/.test(run.trimmed);
           const needSpace =
             !startsWithClosingPunct &&
-            gap > minFont * 0.15 &&
+            gap > minFont * 0.14 &&
             !prev.str.endsWith(' ') &&
             !prev.str.endsWith('-') &&
+            !prev.str.endsWith('√') &&
             !run.str.startsWith(' ');
           prev.str += (needSpace ? ' ' : '') + (startsWithClosingPunct ? run.str.trimStart() : run.str);
           if (!run.isScriptCandidate && run.fontPx >= prev.fontPx * 0.92) {
             prev.yBaseline = run.yBaseline;
+            prev.mainYBaseline = run.yBaseline;
             prev.lineY = run.lineY;
             prev.fontPx = Math.max(prev.fontPx, run.fontPx);
             prev.baseFontPx = Math.max(prev.baseFontPx || prev.fontPx, run.baseFontPx || run.fontPx);
@@ -1362,11 +1639,18 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       }
     }
     const isPureLeadingSup = run.isScriptCandidate && /^[0-9,∗*†‡§*\s]{1,12}$/.test(run.trimmed);
-    lines.push({ ...run, hasMainBaseline: !isPureLeadingSup });
+    lines.push({ ...run, mainYBaseline: run.yBaseline, hasMainBaseline: !isPureLeadingSup });
   }
 
   for (const ln of lines) {
-    ln.str = ln.str.replace(/\s+/g, ' ').trim();
+    ln.str = ln.str
+      .replace(/√\s*([a-zA-Z0-9]+(?:\$_\{[^}]+\}\$|\$\^\{[^}]+\}\$)*)/g, (_, rad) => {
+        return `$\\sqrt{${rad.replace(/\$/g, '')}}$`;
+      })
+      .replace(/\bP\s+E(?=\$_\{)/g, 'PE')
+      .replace(/\b([QKV])\s+W(?=\$_\{)/g, '$1W')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
   const cleanLines = lines.filter((ln) => {
     if (ln.str.length === 0) return false;
@@ -1413,7 +1697,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
   const FIG_CAPTION_RE = /^(Figure|Fig\.|FIG\.|Scheme)\s*(\d+|[A-Z]\d*)\s*[:.]/i;
   const TAB_CAPTION_RE = /^(Table|TABLE|Tab\.)\s*(\d+|[A-Z]\d*|[IVX]+)\s*[:.]/i;
   const SECTION_HEADING_RE =
-    /^(Abstract|ABSTRACT|Introduction|Related Work|Background|Preliminary|Preliminaries|Method|Methods|Methodology|Approach|Framework|Architecture|Experiments|Experimental Setup|Evaluation|Results|Analysis|Ablation Study|Discussion|Conclusion|Conclusions|Limitations|Broader Impact|Acknowledgments|Acknowledgements|References|Appendix|Appendices)\b|^(\d+(\.\d+){0,2}|[IVX]+\.)\s+[A-Z][A-Za-z0-9\s\-:,/()&']{1,78}$/;
+    /^(Abstract|ABSTRACT|Introduction|Related Work|Background|Preliminary|Preliminaries|Method|Methods|Methodology|Approach|Framework|Architecture|Experiments|Experimental Setup|Evaluation|Results|Analysis|Ablation Study|Discussion|Conclusion|Conclusions|Limitations|Broader Impact|Acknowledgments|Acknowledgements|References|Appendix|Appendices)(?:\s*[:.—–-])?$|^(\d+(\.\d+){0,2}|[IVX]+\.)\s+[A-Z][A-Za-z0-9\s\-:,/()&']{1,78}$/;
   const AUTHOR_AFFIL_KEYWORD_RE =
     /\$\^\{[0-9*,∗†‡§a-zA-Z+\-()\s]+\}\$|University|Institute|Department|School of|Laboratory|College|Academy|Center for|Centre for|Hospital|Google|Research|Brain|Meta|Microsoft|OpenAI|DeepMind|@|Corresponding author/i;
 
@@ -1472,8 +1756,12 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         break;
       }
       const last = capLines[capLines.length - 1];
+      if (last.width < (capRight - capLeft) * 0.78 && /[.?!)]$/.test(last.str)) break;
       const vGap = cand.top - last.bottom;
       if (vGap < -last.fontPx * 0.25 || vGap > last.fontPx * 0.72) break;
+      if (Math.abs(cand.x - capLeft) > last.fontPx * 3.5 && cand.width < (capRight - capLeft) * 0.45) {
+        break;
+      }
       const horizOverlap = Math.min(capRight, cand.right) - Math.max(capLeft, cand.x);
       if (horizOverlap <= 0) break;
       // Do not merge across columns if caption is single-column
@@ -1561,7 +1849,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
               cx >= figPxLeft - 8 &&
               cx <= figPxRight + 8 &&
               cy >= figPxTop - 8 &&
-              cy <= figPxBottom + 8
+              cy <= Math.max(figPxBottom + 8, figSearchBottom)
             ) {
               consumedLineSet.add(k);
             }
@@ -1598,6 +1886,240 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         translation: ''
       }
     });
+
+    // If this is a Table caption, extract the structured table body immediately below it into a 'table' block
+    if (isTabCap) {
+      const bandLeft = col === 'right' ? pageW * 0.48 : pageW * 0.04;
+      const bandRight = col === 'left' ? pageW * 0.52 : pageW * 0.96;
+      const tableLineIndices = [];
+      let prevTableBottom = capBottom;
+
+      for (let m = i + 1; m < cleanLines.length; m++) {
+        if (consumedLineSet.has(m)) continue;
+        const cand = cleanLines[m];
+        if (cand.top < capBottom - 2) continue;
+        if (
+          FIG_CAPTION_RE.test(cand.str) ||
+          TAB_CAPTION_RE.test(cand.str) ||
+          (SECTION_HEADING_RE.test(cand.str) && !cand.str.endsWith('.'))
+        ) {
+          break;
+        }
+        if (col === 'left' && cand.x >= pageW * 0.52) continue;
+        if (col === 'right' && cand.right <= pageW * 0.48) continue;
+
+        const vGap = cand.top - prevTableBottom;
+        const maxGap = tableLineIndices.length === 0 ? Math.max(medianFontPx * 3.4, 58) : Math.max(medianFontPx * 2.15, 38);
+        if (vGap > maxGap) break;
+
+        // Stop if we hit a full-width body prose line below the table
+        const minProseW = col === 'full' ? pageW * 0.54 : pageW * 0.28;
+        if (
+          cand.width >= minProseW &&
+          cand.str.length >= 56 &&
+          /(?:[a-z]{3,}\s+){5,}/i.test(cand.str)
+        ) {
+          break;
+        }
+
+        tableLineIndices.push(m);
+        prevTableBottom = Math.max(prevTableBottom, cand.bottom);
+      }
+
+      if (tableLineIndices.length >= 2) {
+        const tableTop = Math.min(...tableLineIndices.map((idx) => cleanLines[idx].top));
+        const tableBottom = Math.max(...tableLineIndices.map((idx) => cleanLines[idx].bottom));
+        const tableItems = normItems.filter(
+          (it) =>
+            it.top >= tableTop - 4 &&
+            it.bottom <= tableBottom + 4 &&
+            it.right >= bandLeft &&
+            it.x <= bandRight
+        );
+
+        // Merge intra-cell runs using a tighter horizontal gap threshold so table columns stay separate
+        const cellRuns = [];
+        for (const run of tableItems) {
+          const prev = cellRuns[cellRuns.length - 1];
+          if (prev && run.rowId === prev.rowId) {
+            const maxFont = Math.max(prev.baseFontPx || prev.fontPx, run.baseFontPx || run.fontPx);
+            const minFont = Math.min(prev.fontPx, run.fontPx);
+            const gap = run.x - prev.right;
+            const isSimultaneousScript =
+              run.isScriptCandidate && run.x >= prev.x - maxFont * 0.5 && gap < -maxFont * 0.55;
+            const maxCellGap = maxFont * 0.68;
+
+            if ((gap >= -maxFont * 0.55 || isSimultaneousScript) && gap <= maxCellGap) {
+              const hostBaseY = prev.mainYBaseline ?? prev.yBaseline;
+              const hostBaseFont = prev.baseFontPx || prev.fontPx;
+              const isTrailingSup =
+                prev.hasMainBaseline &&
+                run.fontPx <= hostBaseFont * 0.9 &&
+                run.yBaseline < hostBaseY - hostBaseFont * 0.1 &&
+                /^[0-9.,∗*†‡§a-zA-Z+\-\u2212=/()\s]{1,18}$/.test(run.trimmed);
+              const isTrailingSub =
+                prev.hasMainBaseline &&
+                !isTrailingSup &&
+                run.fontPx <= hostBaseFont * 0.89 &&
+                run.yBaseline > hostBaseY + hostBaseFont * 0.08 &&
+                /^[0-9.,a-zA-Z+\-\u2212=/()\s]{1,18}$/.test(run.trimmed);
+
+              if (isTrailingSup) {
+                if (/\$\^\{[^}]+\}\$$/.test(prev.str)) {
+                  prev.str = prev.str.replace(/\$\^\{([^}]+)\}\$$/, `$^{$1${run.trimmed}}$`);
+                } else {
+                  prev.str = `${prev.str.trimEnd()}$^{${run.trimmed}}$`;
+                }
+              } else if (isTrailingSub) {
+                const cleanSub = run.trimmed.replace(/\s+/g, '');
+                if (/\$_\{[^}]+\}\$$/.test(prev.str)) {
+                  prev.str = prev.str.replace(/\$_\{([^}]+)\}\$$/, `$_{$1${cleanSub}}$`);
+                } else {
+                  prev.str = `${prev.str.trimEnd()}$_{${cleanSub}}$`;
+                }
+              } else {
+                const startsWithClosingPunct = /^[,.;:?!)\]]/.test(run.trimmed);
+                const needSpace =
+                  !startsWithClosingPunct &&
+                  gap > minFont * 0.14 &&
+                  !prev.str.endsWith(' ') &&
+                  !prev.str.endsWith('-') &&
+                  !prev.str.endsWith('√') &&
+                  !run.str.startsWith(' ');
+                prev.str += (needSpace ? ' ' : '') + (startsWithClosingPunct ? run.str.trimStart() : run.str);
+              }
+              prev.right = Math.max(prev.right, run.right);
+              prev.x = Math.min(prev.x, run.x);
+              prev.top = Math.min(prev.top, run.top);
+              prev.bottom = Math.max(prev.bottom, run.bottom);
+              prev.width = prev.right - prev.x;
+              continue;
+            }
+          }
+          cellRuns.push({
+            ...run,
+            mainYBaseline: run.yBaseline,
+            hasMainBaseline: true
+          });
+        }
+
+        // Group cells by rowId
+        const rowMap = new Map();
+        for (const c of cellRuns) {
+          c.str = c.str
+            .replace(/√\s*([a-zA-Z0-9]+(?:\$_\{[^}]+\}\$|\$\^\{[^}]+\}\$)*)/g, (_, rad) => {
+              return `$\\sqrt{${rad.replace(/\$/g, '')}}$`;
+            })
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!c.str) continue;
+          if (!rowMap.has(c.rowId)) {
+            rowMap.set(c.rowId, []);
+          }
+          rowMap.get(c.rowId).push(c);
+        }
+        const rawTableRows = Array.from(rowMap.values()).filter((r) => r.length > 0);
+        for (const r of rawTableRows) {
+          r.sort((a, b) => a.x - b.x);
+        }
+
+        // Build column X-clusters from rows
+        const colClusters = [];
+        const rowsByCellCount = [...rawTableRows].sort((a, b) => b.length - a.length);
+        for (const r of rowsByCellCount) {
+          for (const cell of r) {
+            if (cell.width > (bandRight - bandLeft) * 0.65) continue;
+            const cellCenter = (cell.x + cell.right) * 0.5;
+            let bestCol = null;
+            let bestScore = -Infinity;
+            for (const colC of colClusters) {
+              const overlap = Math.min(cell.right, colC.right) - Math.max(cell.x, colC.left);
+              const minW = Math.max(1, Math.min(cell.width, colC.right - colC.left));
+              const centerDist = Math.abs(cellCenter - colC.center);
+              if (overlap >= minW * 0.25 || centerDist <= Math.max(medianFontPx * 1.6, minW * 0.55)) {
+                const score = overlap - centerDist * 0.5;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestCol = colC;
+                }
+              }
+            }
+            if (bestCol) {
+              bestCol.left = Math.min(bestCol.left, cell.x);
+              bestCol.right = Math.max(bestCol.right, cell.right);
+              bestCol.center = (bestCol.center * bestCol.count + cellCenter) / (bestCol.count + 1);
+              bestCol.count++;
+            } else {
+              colClusters.push({
+                left: cell.x,
+                right: cell.right,
+                center: cellCenter,
+                count: 1
+              });
+            }
+          }
+        }
+        colClusters.sort((a, b) => a.center - b.center);
+
+        if (colClusters.length >= 2 && colClusters.length <= 15) {
+          const numCols = colClusters.length;
+          const gridRows = rawTableRows.map((r) => {
+            const cols = new Array(numCols).fill('');
+            for (const cell of r) {
+              const cellCenter = (cell.x + cell.right) * 0.5;
+              let bestIdx = 0;
+              let bestDist = Infinity;
+              for (let cIdx = 0; cIdx < numCols; cIdx++) {
+                const dist = Math.abs(cellCenter - colClusters[cIdx].center);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestIdx = cIdx;
+                }
+              }
+              cols[bestIdx] = cols[bestIdx] ? `${cols[bestIdx]} ${cell.str}` : cell.str;
+            }
+            return cols;
+          });
+
+          // If the first two rows form a split multi-line header (e.g. Row 0 or Row 1 has empty columns filled by the other), merge them into a single header row
+          if (
+            gridRows.length >= 3 &&
+            (!gridRows[0][0] || !gridRows[1][0] || !gridRows[1][1]) &&
+            (gridRows[0].some((c) => !c) || gridRows[1].some((c) => !c))
+          ) {
+            const mergedHeader = gridRows[0].map((c0, idx) => {
+              const c1 = gridRows[1][idx];
+              if (c0 && c1) return `${c0} ${c1}`;
+              return c0 || c1 || '';
+            });
+            gridRows.splice(0, 2, mergedHeader);
+          }
+
+          const formatRowMd = (cols) =>
+            `| ${cols.map((c) => (c ? c.replace(/\|/g, '\\|') : '-')).join(' | ')} |`;
+          const headerMd = formatRowMd(gridRows[0]);
+          const sepMd = `| ${new Array(numCols).fill('---').join(' | ')} |`;
+          const bodyMd = gridRows.slice(1).map(formatRowMd).join('\n');
+          const tableMarkdown = `${headerMd}\n${sepMd}\n${bodyMd}`;
+
+          for (const idx of tableLineIndices) {
+            consumedLineSet.add(idx);
+          }
+          positionedSpecialBlocks.push({
+            top: tableTop,
+            bottom: tableBottom,
+            column: col,
+            block: {
+              page: pageNum,
+              type: 'table',
+              column: col,
+              original: tableMarkdown,
+              translation: ''
+            }
+          });
+        }
+      }
+    }
   }
 
   // 4B. Reconstruct Page 1 Author & Affiliation Header Region (supporting both full-width author lists
@@ -1779,17 +2301,34 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     l.width < pageW * 0.45 && Math.abs((l.x + l.right) * 0.5 - pageW * 0.5) <= pageW * 0.08;
 
   const leftCandidates = remainingLines.filter(
-    (l) => l.right <= pageW * 0.535 && !isCenteredShortLine(l)
+    (l) =>
+      l.right <= pageW * 0.535 &&
+      !isCenteredShortLine(l) &&
+      (l.width >= pageW * 0.16 || l.str.length >= 14)
   );
   const rightCandidates = remainingLines.filter(
-    (l) => l.x >= pageW * 0.465 && !isCenteredShortLine(l)
+    (l) =>
+      l.x >= pageW * 0.465 &&
+      !isCenteredShortLine(l) &&
+      !/^\(\d+(\.\d+)?[a-z]?\)$/.test(l.str) &&
+      !/\\tag\{/.test(l.str) &&
+      (l.width >= pageW * 0.18 || l.str.length >= 18)
+  );
+  const fullWidthBodyLines = remainingLines.filter(
+    (l) =>
+      (pageNum > 1 || l.top > pageH * 0.35) &&
+      l.x < pageW * 0.36 &&
+      l.right > pageW * 0.64 &&
+      l.width >= pageW * 0.48 &&
+      l.str.length >= 40
   );
   const specialColBlocks = positionedSpecialBlocks.filter(
     (sb) => sb.column === 'left' || sb.column === 'right'
   );
   const isTwoColumnPage =
-    (leftCandidates.length >= 2 && rightCandidates.length >= 2) ||
-    (leftCandidates.length >= 1 && rightCandidates.length >= 1 && specialColBlocks.length >= 1);
+    fullWidthBodyLines.length <= (leftCandidates.length + rightCandidates.length) * 0.6 &&
+    ((leftCandidates.length >= 2 && rightCandidates.length >= 2) ||
+      (leftCandidates.length >= 1 && rightCandidates.length >= 1 && specialColBlocks.length >= 1));
 
   // Find Y coordinate where 2-column body begins on Page 1
   let twoColStartY = 0;
@@ -1898,7 +2437,20 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       ) {
         return 'heading';
       }
+      if (ln.hasEquationNumber) {
+        return 'equation';
+      }
+      const proseWordMatches =
+        s
+          .replace(/\$[^$]+\$/g, ' ')
+          .match(
+            /\b(?!where\b|and\b|with\b|sin\b|cos\b|tan\b|exp\b|log\b|min\b|max\b|lim\b|sup\b|inf\b|det\b|dim\b|ker\b|mod\b|pos\b|head\b|model\b|step\b|num\b|warmup\b|steps\b|lrate\b|drop\b|softmax\b)[a-z]{4,}\b/g
+          ) || [];
+      const isFlushLeftSentenceTail =
+        colSpanW > pageW * 0.5 && ln.x <= colMinLeft + ln.fontPx * 1.25 && s.endsWith('.');
       if (
+        proseWordMatches.length < 2 &&
+        !isFlushLeftSentenceTail &&
         s.length <= 120 &&
         ln.width < colSpanW * 0.84 &&
         (/[=∑∏∫∮∈∉≤≥≈≡≠±×÷→←↔∀∃∇∂√]/.test(s) || /\(\d+(\.\d+)?\)$/.test(s)) &&
@@ -1946,7 +2498,7 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       }
 
       const ln = item.line;
-      const lnType = classifySingleLine(ln);
+      let lnType = classifySingleLine(ln);
 
       if (lineBuffer.length === 0) {
         bufferType = lnType;
@@ -1957,6 +2509,18 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
       const prev = lineBuffer[lineBuffer.length - 1];
       const vGap = ln.top - prev.bottom;
       const maxF = Math.max(prev.fontPx, ln.fontPx);
+
+      // Keep flush-left wrapped tail of an unfinished prose paragraph from splitting into an equation
+      if (
+        bufferType === 'paragraph' &&
+        lnType === 'equation' &&
+        !ln.hasEquationNumber &&
+        !/[:.?!]$/.test(prev.str) &&
+        vGap <= maxF * 0.68 &&
+        ln.x <= colMinLeft + ln.fontPx * 1.35
+      ) {
+        lnType = 'paragraph';
+      }
 
       // Check if wrapped title or section heading continues on next line
       if (

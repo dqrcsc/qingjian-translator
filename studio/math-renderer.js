@@ -380,6 +380,15 @@ export function renderLatexMathToHtml(latexRaw, displayMode = false) {
     tagHtml = `<span class="math-eq-tag">(${escapeHtml(t.trim())})</span>`;
     return '';
   });
+  if (displayMode && !tagHtml) {
+    src = src.replace(/\s+\((\d+(?:\.\d+)?[a-z]?)\)$/, (_, t) => {
+      tagHtml = `<span class="math-eq-tag">(${escapeHtml(t.trim())})</span>`;
+      return '';
+    });
+  }
+
+  // Escape literal underscores inside multi-letter code/variable identifiers (e.g. step_num, warmup_steps)
+  src = src.replace(/([a-zA-Z]{2,})_([a-zA-Z]{2,})/g, '$1\\_$2');
 
   // Strip outer display wrappers if nested
   src = src
@@ -770,8 +779,31 @@ function parseLatexFragment(src) {
       continue;
     }
 
-    // 6. Regular characters (letters in math italic, numbers/punctuation upright)
+    // 6. Regular characters (multi-letter operators/keywords upright, single letters in math italic)
     if (/[a-zA-Z]/.test(ch)) {
+      const rest = src.slice(i);
+      const opMatch = rest.match(
+        /^(Attention|MultiHead|Concat|softmax|LayerNorm|Sublayer|FFN|ReLU|GELU|Swish|Sigmoid|Linear|Dropout|PE|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|exp|log|ln|lg|min|max|lim|sup|inf|det|dim|ker|hom|arg|deg|gcd|Pr|cov|var)(?=[\s(^_.,=+\-*/]|$)/
+      );
+      if (opMatch) {
+        out += `<span class="math-op-fn">${escapeHtml(opMatch[1])}</span>`;
+        i += opMatch[1].length;
+        continue;
+      }
+      const kwMatch = rest.match(/^(where|and|for|if|otherwise)(\s+)/);
+      if (kwMatch) {
+        out += `<span class="math-rm">${escapeHtml(kwMatch[1])}&ensp;</span>`;
+        i += kwMatch[0].length;
+        continue;
+      }
+      const rmTokenMatch = rest.match(
+        /^(head|pos|model|lrate|step|num|warmup|steps)(?=[\s_^),.=+\-*/\\]|$)/
+      );
+      if (rmTokenMatch) {
+        out += `<span class="math-rm">${escapeHtml(rmTokenMatch[1])}</span>`;
+        i += rmTokenMatch[1].length;
+        continue;
+      }
       out += `<var class="math-var">${ch}</var>`;
     } else {
       out += escapeHtml(ch);
@@ -961,15 +993,21 @@ export function renderRichAcademicHtml(rawText, options = {}) {
     text = formatAuthorAffiliationStructure(text);
   }
 
-  // If the entire block is marked `type === 'equation'` and doesn't already wrap in $$...$$ or $...$,
-  // render it directly as a display equation (unless it's a mix of prose and $...$).
-  if (
-    blockType === 'equation' &&
-    !text.includes('$') &&
-    !text.includes('\\(') &&
-    !text.includes('\\[')
-  ) {
-    return renderLatexMathToHtml(text, true);
+  // If the entire block is marked `type === 'equation'` and is a genuine mathematical formula (not a misclassified prose sentence),
+  // unwrap any inline `$` sub-tokens and render it directly as a display equation.
+  if (blockType === 'equation' && !text.startsWith('$$') && !text.startsWith('\\[') && !text.includes('\\(')) {
+    const proseWordsInEq =
+      text
+        .replace(/\$[^$]+\$/g, ' ')
+        .replace(/\\tag\*?\{[^{}]+\}/g, ' ')
+        .match(
+          /\b(?!where\b|and\b|with\b|for\b|if\b|otherwise\b|sin\b|cos\b|tan\b|exp\b|log\b|min\b|max\b|lim\b|sup\b|inf\b|det\b|dim\b|ker\b|mod\b|pos\b|head\b|model\b|step\b|num\b|warmup\b|steps\b|lrate\b|drop\b|softmax\b)[a-z]{4,}\b/g
+        ) || [];
+    const hasCjkInEq = /[\u4e00-\u9fa5]/.test(text);
+    if (!hasCjkInEq && proseWordsInEq.length < 2) {
+      const unwrapped = text.replace(/\$([^$]+)\$/g, '$1');
+      return renderLatexMathToHtml(unwrapped, true);
+    }
   }
 
   // Tokenize math regions first so HTML escaping and markdown rules don't corrupt LaTeX:
@@ -980,9 +1018,14 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   const putMathToken = (latex, isDisplay) => {
     const id = mathTokens.length;
     // Fast-path: pure affiliation/footnote superscript like `^{1,*}` or `^{2}` or `^{*}`
-    const pureSupMatch = !isDisplay && latex.trim().match(/^\^\{\s*([0-9*,∗†‡§a-zA-Z\s+\-]+)\s*\}$/);
+    const pureSupMatch =
+      !isDisplay && latex.trim().match(/^\^\{\s*([0-9.,∗*†‡§a-zA-Z\s+\-\u2212=/()]+)\s*\}$/);
+    const pureSubMatch =
+      !isDisplay && !pureSupMatch && latex.trim().match(/^_\{\s*([0-9.,∗*†‡§a-zA-Z\s+\-\u2212=/()]+)\s*\}$/);
     if (pureSupMatch) {
       mathTokens.push(`<sup class="academic-sup">${escapeHtml(pureSupMatch[1].trim())}</sup>`);
+    } else if (pureSubMatch) {
+      mathTokens.push(`<sub class="academic-sub">${escapeHtml(pureSubMatch[1].trim())}</sub>`);
     } else {
       mathTokens.push(renderLatexMathToHtml(latex, isDisplay));
     }
@@ -1016,8 +1059,11 @@ export function renderRichAcademicHtml(rawText, options = {}) {
   });
 
   // 2c. Catch bare LaTeX superscripts/subscripts like Word^{1,*} or x_{i} that Gemini occasionally outputs without $...$
-  text = text.replace(/\^\{([0-9*,∗†‡§a-zA-Z+\-\s]{1,14})\}/g, (_, sup) =>
+  text = text.replace(/\^\{([0-9.,∗*†‡§a-zA-Z+\-\u2212=/()\s]{1,18})\}/g, (_, sup) =>
     putMathToken(`^{${sup}}`, false)
+  );
+  text = text.replace(/_\{([0-9.,a-zA-Z+\-\u2212=/()\s]{1,18})\}/g, (_, sub) =>
+    putMathToken(`_{${sub}}`, false)
   );
 
   // Escape HTML on the non-math prose

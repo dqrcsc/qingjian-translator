@@ -490,3 +490,89 @@ test('PDF extraction groups multi-column NeurIPS/arXiv author grids (1706.03762)
   assert.ok(renderedHtml.includes('Aidan N. Gomez<sup class="academic-sup">∗ †</sup>'));
   assert.ok(renderedHtml.includes('Illia Polosukhin<sup class="academic-sup">∗ ‡</sup>'));
 });
+
+test('PDF extraction & math renderer preserve paragraph tails with inline equations, narrow glyph spacing, CMEX10 radicals, and 2D stacked fractions (1706.03762 Pages 3-4 regression)', () => {
+  // 1. Page 3 regression: Encoder paragraph tail "layers, produce outputs of dimension d_{model} = 512."
+  //    and narrow glyph "i" in "predictions for position i can depend"
+  const page3Render = {
+    width: 1224,
+    height: 1584,
+    canvas: null,
+    textItems: [
+      { str: '3.1', x: 216, yBaseline: 1030, top: 1010, bottom: 1033, width: 29.8, height: 23, fontPx: 23.9 },
+      { str: 'Encoder and Decoder Stacks', x: 269.8, yBaseline: 1030, top: 1010, bottom: 1033, width: 299.1, height: 23, fontPx: 23.9 },
+      { str: 'Encoder:', x: 216, yBaseline: 1072.8, top: 1055, bottom: 1075, width: 82.9, height: 20, fontPx: 19.9 },
+      { str: 'The encoder is composed of a stack of N = 6 identical layers. To facilitate these residual connections, all sub-', x: 311.6, yBaseline: 1072.8, top: 1055, bottom: 1075, width: 696, height: 20, fontPx: 19.9 },
+      { str: 'layers, produce outputs of dimension ', x: 216, yBaseline: 1094.7, top: 1077, bottom: 1097, width: 300.5, height: 20, fontPx: 19.9 },
+      { str: 'd', x: 516.5, yBaseline: 1094.7, top: 1077, bottom: 1097, width: 10.4, height: 20, fontPx: 19.9 },
+      { str: 'model', x: 526.9, yBaseline: 1097.7, top: 1085, bottom: 1099, width: 40.3, height: 14, fontPx: 13.9 },
+      { str: '=', x: 573.7, yBaseline: 1094.7, top: 1077, bottom: 1097, width: 15.5, height: 20, fontPx: 19.9 },
+      { str: '512.', x: 594.8, yBaseline: 1094.7, top: 1077, bottom: 1097, width: 34.9, height: 20, fontPx: 19.9 },
+      { str: 'Decoder:', x: 216, yBaseline: 1138.9, top: 1121, bottom: 1141, width: 81.2, height: 20, fontPx: 19.9 },
+      { str: 'This masking ensures that the predictions for position', x: 310, yBaseline: 1138.9, top: 1121, bottom: 1141, width: 410, height: 20, fontPx: 19.9 },
+      { str: 'i', x: 725.5, yBaseline: 1138.9, top: 1121, bottom: 1141, width: 6.9, height: 20, fontPx: 19.9 },
+      { str: 'can depend only on known outputs.', x: 737.3, yBaseline: 1138.9, top: 1121, bottom: 1141, width: 270, height: 20, fontPx: 19.9 }
+    ]
+  };
+
+  const p3Blocks = extractStructuredPdfPageBlocks(page3Render, 3);
+  assert.equal(p3Blocks.length, 3);
+  assert.equal(p3Blocks[0].type, 'heading');
+  assert.equal(p3Blocks[1].type, 'paragraph', 'Encoder paragraph tail with d_{model} = 512. must stay in paragraph, not split into equation');
+  assert.match(p3Blocks[1].original, /layers, produce outputs of dimension d\$_\{model\}\$ = 512\.$/);
+  assert.equal(p3Blocks[2].type, 'paragraph');
+  assert.match(p3Blocks[2].original, /predictions for position i can depend/, 'Narrow glyph "i" must preserve space before "can"');
+
+  const encoderHtml = renderRichAcademicHtml(p3Blocks[1].original, { blockType: 'paragraph', pageNum: 3 });
+  assert.ok(encoderHtml.includes('layers, produce outputs of dimension d<sub class="academic-sub">model</sub> = 512.'));
+
+  // 2. Page 4 regression: CMEX10 top-hung radical sign √ and 2D stacked fraction Eq. (1)
+  const page4Render = {
+    width: 1224,
+    height: 1584,
+    canvas: null,
+    textItems: [
+      { str: '3.2.1', x: 216, yBaseline: 794, top: 774, bottom: 797, width: 47.8, height: 23, fontPx: 23.9 },
+      { str: 'Scaled Dot-Product Attention', x: 287.7, yBaseline: 794, top: 774, bottom: 797, width: 311, height: 23, fontPx: 23.9 },
+      { str: 'We call our particular attention "Scaled Dot-Product Attention" (Figure 2). The input consists of', x: 216, yBaseline: 836.3, top: 818, bottom: 838, width: 792, height: 20, fontPx: 19.9 },
+      { str: 'queries and keys of dimension ', x: 216, yBaseline: 858.2, top: 840, bottom: 860, width: 254, height: 20, fontPx: 19.9 },
+      { str: 'd', x: 470, yBaseline: 858.2, top: 840, bottom: 860, width: 10.4, height: 20, fontPx: 19.9 },
+      { str: 'k', x: 480.4, yBaseline: 861.2, top: 848, bottom: 862, width: 7.9, height: 14, fontPx: 13.9 },
+      { str: ', and values of dimension d', x: 489.4, yBaseline: 858.2, top: 840, bottom: 860, width: 214, height: 20, fontPx: 19.9 },
+      { str: 'v', x: 703.4, yBaseline: 861.2, top: 848, bottom: 862, width: 7.4, height: 14, fontPx: 13.9 },
+      { str: '. We compute the dot products of the', x: 712, yBaseline: 858.2, top: 840, bottom: 860, width: 296, height: 20, fontPx: 19.9 },
+      // Line 3 with CMEX10 top-hung √ whose PDF yBaseline (864.5) is near Line 2 (858.2) while radicand d_k is at yBaseline 880.1
+      { str: 'query with all keys, divide each by ', x: 216, yBaseline: 880.1, top: 862, bottom: 882, width: 281.5, height: 20, fontPx: 19.9 },
+      { str: '√', x: 497.5, yBaseline: 864.5, top: 847, bottom: 867, width: 16.6, height: 20, fontPx: 19.9 },
+      { str: 'd', x: 514.1, yBaseline: 880.1, top: 862, bottom: 882, width: 10.4, height: 20, fontPx: 19.9 },
+      { str: 'k', x: 524.5, yBaseline: 883.1, top: 870, bottom: 884, width: 7.9, height: 14, fontPx: 13.9 },
+      { str: ', and apply a softmax function.', x: 533.5, yBaseline: 880.1, top: 862, bottom: 882, width: 252, height: 20, fontPx: 19.9 },
+      // Display Equation (1): Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V (1)
+      { str: 'Attention(', x: 458.2, yBaseline: 961.5, top: 944, bottom: 964, width: 85.8, height: 20, fontPx: 19.9 },
+      { str: 'Q, K, V', x: 544.0, yBaseline: 961.5, top: 944, bottom: 964, width: 69.5, height: 20, fontPx: 19.9 },
+      { str: ') = softmax(', x: 613.5, yBaseline: 961.5, top: 944, bottom: 964, width: 101.4, height: 20, fontPx: 19.9 },
+      { str: 'QK', x: 717.3, yBaseline: 948.1, top: 930, bottom: 950, width: 33.9, height: 20, fontPx: 19.9 },
+      { str: 'T', x: 751.2, yBaseline: 940.9, top: 928, bottom: 942, width: 10.1, height: 14, fontPx: 13.9 },
+      { str: '√', x: 720.2, yBaseline: 960.9, top: 943, bottom: 963, width: 16.6, height: 20, fontPx: 19.9 },
+      { str: 'd', x: 736.8, yBaseline: 976.4, top: 958, bottom: 978, width: 10.4, height: 20, fontPx: 19.9 },
+      { str: 'k', x: 747.2, yBaseline: 979.4, top: 966, bottom: 980, width: 7.9, height: 14, fontPx: 13.9 },
+      { str: ')V', x: 763.7, yBaseline: 961.5, top: 944, bottom: 964, width: 22.9, height: 20, fontPx: 19.9 },
+      { str: '(1)', x: 983.5, yBaseline: 961.5, top: 944, bottom: 964, width: 24.5, height: 20, fontPx: 19.9 }
+    ]
+  };
+
+  const p4Blocks = extractStructuredPdfPageBlocks(page4Render, 4);
+  assert.equal(p4Blocks.every((b) => b.column === 'full'), true, 'Page 4 must remain single-column');
+  assert.equal(p4Blocks.some((b) => b.original === '√'), false, 'CMEX10 √ must not become an orphan block');
+  assert.equal(p4Blocks.length, 3);
+  assert.equal(p4Blocks[0].type, 'heading');
+  assert.equal(p4Blocks[1].type, 'paragraph');
+  assert.match(p4Blocks[1].original, /divide each by \$\\sqrt\{d_\{k\}\}\$, and apply a softmax function\./);
+  assert.equal(p4Blocks[2].type, 'equation');
+  assert.equal(p4Blocks[2].original, 'Attention(Q, K, V) = softmax($\\frac{QK^{T}}{\\sqrt{d_{k}}}$)V \\tag{1}');
+
+  const eq1Html = renderRichAcademicHtml(p4Blocks[2].original, { blockType: 'equation', pageNum: 4 });
+  assert.ok(eq1Html.includes('class="math-frac"'), 'Equation (1) must render a stacked .math-frac fraction');
+  assert.ok(eq1Html.includes('class="math-sqrt"'), 'Equation (1) denominator must render .math-sqrt');
+  assert.ok(eq1Html.includes('<span class="math-eq-tag">(1)</span>'), 'Equation (1) must render right-aligned equation tag (1)');
+});

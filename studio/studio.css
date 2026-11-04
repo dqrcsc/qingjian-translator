@@ -1226,6 +1226,14 @@ body {
   margin-left: 1px;
 }
 
+.academic-sub {
+  font-size: 0.74em;
+  line-height: 0;
+  vertical-align: sub;
+  color: #374151;
+  margin-left: 1px;
+}
+
 /* Academic Equation Block & Inline/Display Mathematical Typesetting */
 .paper-equation-block {
   margin: 14px 0;
