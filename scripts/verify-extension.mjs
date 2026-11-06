@@ -106,6 +106,15 @@ console.log('\n🔍 Running 青简 · 津梁 (QingJian) MV3 Extension Verificati
 const manifestPath = path.join(ROOT, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
+check('Release versions match across manifest, package and lockfile', () => {
+  const read = name => JSON.parse(fs.readFileSync(path.join(ROOT, name), 'utf8'));
+  const version = read('manifest.json').version;
+  const pkg = read('package.json'), lock = read('package-lock.json');
+  assert.equal(pkg.version, version);
+  assert.equal(lock.version, version);
+  assert.equal(lock.packages[''].version, version);
+});
+
 check('manifest.json uses manifest_version 3 and meets Chrome Web Store metadata limits', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.action?.default_popup, 'action.default_popup must be defined');

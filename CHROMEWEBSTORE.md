@@ -20,7 +20,7 @@
 4. YouTube 视频双语字幕与实验性音频切片听译：自动锁定视频原声字幕轨道并展示上下双语字幕，支持展开右侧同步滚动的双语字幕时间轴、点击跳转视频进度、一键导出双语字幕文件，并提供无字幕视频音频切片听译功能（仅 Gemini 原生音频模型，每 7 秒切片，另需接口响应时间）。
 5. 学术论文 PDF 与多格式文档翻译工作台：支持在线 PDF 链接（如 arXiv 论文）直连与本地上传，提供左侧原版 PDF 联动预览、右侧保持论文单/双栏与数学公式排版、论文插图文字区域覆盖与原位中文重绘（效果依赖识别与背景）、按需滚动懒加载翻译（节省 Token），并支持导出保持排版的纯译文或双语 PDF、双语 EPUB 电子书、Markdown 与 HTML 文档。
 
-能力边界：配置密钥或拉取模型列表并不能验证模型的翻译、视觉或音频能力。音频仅支持 Gemini 原生音频模型。PDF 版式和图片文字覆盖为尽力还原，不保证像素级一致；EPUB 导出重建文本与目录，不保留原书图片、字体和 CSS。
+能力边界：配置密钥或拉取模型列表并不能验证模型的翻译、视觉或音频能力。音频仅支持 Gemini 原生音频模型。两种协议对丰富文字层 PDF 优先本地提取并分批文本翻译；Gemini 仅在文字层不足时回退视觉分析，OpenAI 路径不自动做扫描件 OCR。公式、表格、PDF 版式和图片文字覆盖为尽力还原，不保证像素级一致；EPUB 导出重建文本与目录，不保留原书图片、字体和 CSS。
 
 使用方式：
 第一步：安装扩展后点击浏览器右上角「青简 · 津梁」图标进入「设置」，选择您常用的大模型服务商、填入您自己的 API Key，并点击「从接口拉取模型」或手动输入您的模型 ID。
@@ -93,6 +93,11 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.23 | 2026-11-06 | Preserve rotated PDF text and Method table headers, deduplicate local formulas, restore academic HTML styles, and add real PDF entry/export regressions. | GitHub release; Chrome Web Store submission not performed |
+| 1.0.22 | 2026-11-04 | Reconstruct stacked fractions, radicals, inline equation tails and regular tables. | GitHub release |
+| 1.0.21 | 2026-11-04 | Rename the product to 青简 · 津梁. | GitHub release |
+| 1.0.20 | 2026-11-03 | Author cards and side-margin arXiv watermark filtering. | GitHub release |
+| 1.0.19 | 2026-11-01 | Keep elevated author and affiliation superscripts on their host baseline. | GitHub release |
 | 1.0.18 | 2026-11-01 | Full security and correctness audit fixes: CWS metadata & PRIVACY.md compliance, privileged sender verification, React/Vue text node preservation, scan visibility caching, Studio PDF/EPUB hardening, and Options/Popup edge-case fixes. | GitHub release; Chrome Web Store ready |
 | 1.0.17 | 2026-10-31 | Align per-attempt fetch timeout with total request budget, stop retrying timed-out LLM attempts, and split born-digital PDF pages into concurrent small translation batches. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.16 | 2026-10-31 | MV3 Port keepalive and 1-time auto-reconnect for long PDF requests, strict isolation between initial 2-page PDF translation and scroll-triggered lazy loading, and loading placeholder UI polish. | GitHub release; Chrome Web Store submission not performed |
