@@ -2398,7 +2398,10 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
           type: b.type || 'paragraph',
           column: b.column || 'full',
           original: b.original || '',
-          translation: b.translation || '',
+          // Locally extracted formulas/code are preserved, not sent for translation.
+          // Store that identity so bilingual rendering and exports do not duplicate
+          // them or label them as untranslated.
+          translation: b.translation || ((b.type === 'equation' || b.type === 'code') ? b.original || '' : ''),
           figureBox2d,
           figureLabels: cleanFigureLabels,
           imageDataUrl,
@@ -3232,7 +3235,201 @@ function exportTranslatedDocument(format) {
   .math-frac .math-num { border-bottom: 1px solid currentColor; padding: 0 2px 1px; line-height: 1.1; }
   .math-frac.is-binom .math-num { border-bottom: none; }
   .math-frac .math-den { padding: 1px 2px 0; line-height: 1.1; }
-  .academic-sup { font-size: 0.75em; line-height: 0; vertical-align: super; color: #4f46e5; }
+.paper-author-grid {
+  display: flex;
+  flex-wrap: wrap;
+  flex-wrap: balance;
+  justify-content: center;
+  gap: 14px 24px;
+  margin: 4px 0;
+}
+
+.paper-author-card {
+  flex: 0 1 180px;
+  min-inline-size: 0;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.paper-author-name {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #111827;
+}
+
+.paper-author-affil {
+  font-size: 12.5px;
+  color: #374151;
+}
+
+.paper-author-email {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  color: #4b5563;
+  overflow-wrap: anywhere;
+}
+
+.academic-sup {
+  font-size: 0.74em;
+  line-height: 0;
+  vertical-align: super;
+  color: #374151;
+  font-weight: 600;
+  margin-left: 1px;
+}
+
+.academic-sub {
+  font-size: 0.74em;
+  line-height: 0;
+  vertical-align: sub;
+  color: #374151;
+  margin-left: 1px;
+}
+
+.math-var {
+  font-style: italic;
+  font-family: "Times New Roman", Georgia, serif;
+}
+
+.math-rm {
+  font-style: normal;
+  font-family: "Times New Roman", "Noto Serif SC", Georgia, serif;
+}
+
+.math-it {
+  font-style: italic;
+}
+
+.math-bf {
+  font-weight: 700;
+  font-style: normal;
+}
+
+.math-tt,
+.inline-code-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  background: rgba(148, 163, 184, 0.16);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.math-bb,
+.math-cal {
+  font-style: normal;
+  font-weight: 500;
+}
+
+.math-op-fn {
+  font-style: normal;
+  font-family: "Times New Roman", Georgia, serif;
+  margin: 0 1.5px;
+}
+
+.math-sqrt {
+  display: inline-flex;
+  align-items: baseline;
+  vertical-align: baseline;
+}
+
+.math-sqrt-idx {
+  font-size: 0.65em;
+  margin-right: -2px;
+  vertical-align: super;
+}
+
+.math-sqrt-sign {
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+.math-sqrt-body {
+  border-top: 1px solid currentColor;
+  padding: 0 2px;
+}
+
+.math-subsup {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  vertical-align: middle;
+  font-size: 0.72em;
+  line-height: 1.05;
+  margin-left: 1px;
+}
+
+.math-subsup .math-sup,
+.math-subsup .math-sub {
+  font-size: 1em;
+  line-height: 1.05;
+  vertical-align: baseline;
+}
+
+.math-sup {
+  font-size: 0.74em;
+  line-height: 0;
+  vertical-align: super;
+}
+
+.math-sub {
+  font-size: 0.74em;
+  line-height: 0;
+  vertical-align: sub;
+}
+
+.math-overline {
+  text-decoration: overline;
+}
+
+.math-underline {
+  text-decoration: underline;
+}
+
+.math-overscript,
+.math-underscript {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  line-height: 1.05;
+}
+
+.math-over-top,
+.math-under-bot {
+  font-size: 0.7em;
+}
+
+.math-cases {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 3px;
+}
+
+.math-cases-brace {
+  font-size: 1.8em;
+  font-weight: 300;
+  margin-right: 4px;
+  line-height: 1;
+}
+
+.math-matrix {
+  display: inline-table;
+  vertical-align: middle;
+  border-collapse: collapse;
+}
+
+.math-matrix-row {
+  display: table-row;
+}
+
+.math-matrix-cell {
+  display: table-cell;
+  padding: 2px 6px;
+  text-align: left;
+}
+
+
 /* Shared semantic table layout; scrolling preserves columns on narrow viewports. */
 .academic-table-scroll { max-width: 100%; overflow-x: auto; text-indent: 0; }
 .academic-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.92em; line-height: 1.55; color: inherit; }

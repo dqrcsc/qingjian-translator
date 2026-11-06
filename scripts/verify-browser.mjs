@@ -34,6 +34,7 @@ import { verifyContentConfigLinksBrowser } from './verify-content-config-links-b
 import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-browser.mjs';
 import { verifyMarkerBrowser } from './verify-marker-browser.mjs';
 import { verifyAcademicTableBrowser } from './verify-academic-table-browser.mjs';
+import { verifyVectorAcademicBrowser } from './verify-vector-academic-browser.mjs';
 import { verifySitePauseBrowser } from './verify-site-pause-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
@@ -292,6 +293,7 @@ try {
     ['Document roundtrip and empty subtitles', verifyDocumentRoundtripBrowser],
     ['Multiline marker paint', verifyMarkerBrowser],
     ['Academic table layout and readable colors', verifyAcademicTableBrowser],
+    ['Vector PDF formulas, tables and exports', verifyVectorAcademicBrowser],
     ['Session-wide site pause', verifySitePauseBrowser]
   ]) {
     stage = label;

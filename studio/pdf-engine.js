@@ -1146,7 +1146,9 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     const yBaseline = Number(it.yBaseline ?? bottom);
 
     // Filter vertical side-margin arXiv stamps or watermarks along extreme edges
-    if (it.rotated || right < pageW * 0.046 || x > pageW * 0.962) continue;
+    if (right < pageW * 0.046 || x > pageW * 0.962) continue;
+    // Rotation is also produced by a legitimate page /Rotate entry. It is not
+    // evidence of a watermark; only discard identifiable margin stamps below.
     if (x < pageW * 0.085 && /^arXiv:\s*\d{4}\.\d{4,5}/i.test(trimmed)) continue;
     // Filter bare page numbers at extreme top/bottom margins
     if ((bottom < pageH * 0.042 || top > pageH * 0.935) && /^\d{1,4}$/.test(trimmed)) {
@@ -1898,10 +1900,16 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
         if (consumedLineSet.has(m)) continue;
         const cand = cleanLines[m];
         if (cand.top < capBottom - 2) continue;
+        // A table header such as "Method" is also a section-heading keyword.
+        // Keep it when this baseline contains separated cells in the table band.
+        const rowRuns = normItems.filter(it => it.rowId === cand.rowId &&
+          it.x >= bandLeft && it.right <= bandRight);
+        const hasSeparatedCells = rowRuns.some((run, idx) => idx > 0 &&
+          run.x - rowRuns[idx - 1].right > medianFontPx * 2);
         if (
           FIG_CAPTION_RE.test(cand.str) ||
           TAB_CAPTION_RE.test(cand.str) ||
-          (SECTION_HEADING_RE.test(cand.str) && !cand.str.endsWith('.'))
+          (SECTION_HEADING_RE.test(cand.str) && !cand.str.endsWith('.') && !hasSeparatedCells)
         ) {
           break;
         }

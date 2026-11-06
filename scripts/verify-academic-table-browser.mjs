@@ -9,6 +9,7 @@ export async function verifyAcademicTableBrowser(context, sw) {
   const original='Method | Fixed grid | Mass balance | No global solve | Large time step | Multi-cell transport mechanism\nLocal explicit | ✓ | ✓ | ✓ | Limited | Sequential accumulation of small steps\nImplicit | ✓ | Varies by method | — | ✓ | Global coupled-system solve\nSemi-Lagrangian | Varies by method | Varies by method | Varies by method | ✓ | Flow-following trajectory tracing\nLarge-time-step Godunov | ✓ | ✓ | ✓ | ✓ | Hand-designed multi-cell wave propagation\n**CFL-conditioned attention** | ✓ | ✓ | ✓ | ✓ | Learned selection conditioned on CFL-based transport scale';
   const translation='| 方法 | 固定网格 | 质量守恒 | 无全局求解 | 大时间步长 | 多网格输运机制 |\n| :--- | :---: | :---: | :---: | :---: | :--- |\n| 局部显式波捕捉 | ✓ | ✓ | ✓ | 受限 | 小步长依序累积 |\n| 隐式格式 | ✓ | 视具体方法而定 | — | ✓ | 全局耦合系统求解 |\n| 半拉格朗日法 | 视具体方法而定 | 视具体方法而定 | 视具体方法而定 | ✓ | 沿流动的轨迹追踪 |\n| 大时间步长 Godunov | ✓ | ✓ | ✓ | ✓ | 人工设计的多网格波传播 |\n| **基于 CFL 条件的注意力机制** | ✓ | ✓ | ✓ | ✓ | 基于 CFL 输运尺度的条件依赖模型选择 |';
   const equation='$$\\frac{\\partial u}{\\partial t}+\\frac{\\partial f(u)}{\\partial x}=0\\tag{1}$$';
+  const authors='Alice$^{1}$\nInstitute A\nalice@example.org\n\nBob$^{2}$\nInstitute B\nbob@example.org';
   const server=http.createServer(async(req,res)=>{
     const cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*'};
     if(req.method==='OPTIONS'){res.writeHead(204,cors);res.end();return;}
@@ -17,7 +18,7 @@ export async function verifyAcademicTableBrowser(context, sw) {
       const body=JSON.parse(Buffer.concat(parts)),prompt=body.contents[0].parts.map(p=>p.text||'').join('');
       assert.match(prompt,/complete Markdown pipe tables/);calls.push(body);
       const page=Number(prompt.match(/academic page \(Page (\d+)/)?.[1]||1);
-      const blocks=[{page,type:'table',original,translation},{page,type:'equation',original:equation,translation:equation}];
+      const blocks=[{page,type:'author',original:authors,translation:authors},{page,type:'table',original,translation},{page,type:'equation',original:equation,translation:equation}];
       res.writeHead(200,{...cors,'Content-Type':'application/json'});res.end(JSON.stringify({candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text:JSON.stringify(blocks)}]}}]}));
     }catch(e){errors.push(e.message);res.writeHead(400,cors);res.end('{}');}
   });
@@ -54,6 +55,8 @@ export async function verifyAcademicTableBrowser(context, sw) {
     await first.screenshot({path:new URL('../dist/browser-verification/academic-table.png',import.meta.url).pathname});
     check('Paper tables use readable grey originals and muted teal translations; identical formulas appear once in teal with fraction structure intact');
 
+    assert.equal(await first.locator('.paper-author-grid').evaluate(el=>getComputedStyle(el).display),'flex');
+    assert.equal(await first.locator('.paper-author-card').count(),2);
     const before=calls.length;
     await page.locator('#layoutStyleSelect').selectOption('card-stream');
     for(const mode of ['bilingual','translation-only']){
@@ -94,6 +97,8 @@ export async function verifyAcademicTableBrowser(context, sw) {
     await fs.writeFile(new URL('../dist/browser-verification/academic-table.html',import.meta.url),html);
     const exported=await createPage();await exported.setContent(html);
     const sheet=exported.locator('.paper-sheet-page').first();
+    assert.equal(await sheet.locator('.paper-author-grid').evaluate(el=>getComputedStyle(el).display),'flex');
+    assert.equal(await sheet.locator('.paper-author-card').count(),2);
     await verifyGrid(sheet.locator('.stream-trans .academic-table'));
     assert.equal(await color(sheet.locator('.paper-table-block .stream-trans')),'rgb(51, 95, 101)');
     assert.equal(await color(sheet.locator('.paper-equation-block .math-expr')),'rgb(51, 95, 101)');
@@ -106,6 +111,8 @@ export async function verifyAcademicTableBrowser(context, sw) {
     assert.equal(await color(sheet.locator('.paper-equation-block .math-expr')),'rgb(51, 95, 101)');
     assert.equal(await sheet.locator('.math-frac .math-num').first().evaluate(el=>getComputedStyle(el).borderBottomWidth),'1px');
     assert.equal(await sheet.locator('.paper-table-block .stream-trans').evaluate(el=>getComputedStyle(el).textIndent),'0px');
+    assert.equal(await sheet.locator('.paper-author-grid').evaluate(el=>getComputedStyle(el).display),'flex');
+    check('Native Gemini author cards retain responsive grid styling in the workspace and actual HTML export, including print media');
     await exported.emulateMedia({media:'screen'});
     await sheet.screenshot({path:new URL('../dist/browser-verification/academic-table-export.png',import.meta.url).pathname});
     check('Actual downloaded HTML retains semantic tables, alignment, equation colors and pure-translation behavior under screen and print media');

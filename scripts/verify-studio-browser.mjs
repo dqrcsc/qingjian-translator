@@ -146,6 +146,8 @@ export async function verifyStudioBrowser(context, sw) {
     const page2Before = await studio.locator('[data-paper-page="2"] [data-block-id]').evaluateAll(elements =>
       elements.map(el => ({ id: el.dataset.blockId, text: el.textContent })));
     assert.ok(page2Before.length > 0);
+    assert.match(page2Before.map(block => block.text).join(' '), /Rotated page/,
+      'A /Rotate 90 page must retain its original text, not be discarded as a watermark');
     await studio.locator('#jumpPageInput').fill('1');
     await studio.locator('#translateSinglePageBtn').click();
     await studio.waitForFunction(() => document.querySelector('#docStatusSubtitle').textContent.includes('全部 2 页翻译完成'));
