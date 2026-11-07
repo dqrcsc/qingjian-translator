@@ -31,3 +31,14 @@ test('ragged or ambiguous table output keeps all text without fabricating a grid
 test('ordinary prose containing pipes is not reinterpreted as a table',()=>{
  assert(!renderRichAcademicHtml('A | B\n1 | 2',{blockType:'paragraph'}).includes('<table'));
 });
+
+test('equation commands are not mistaken for prose; wrapped and bare formulas both render', () => {
+  for (const formula of [String.raw`\frac{a}{b}+\sqrt{c}`, String.raw`$$\frac{a}{b}+\sqrt{c}$$`]) {
+    const html = renderRichAcademicHtml(formula,{blockType:'equation'});
+    assert.match(html,/math-frac/); assert.match(html,/math-sqrt/);
+  }
+  assert.match(renderRichAcademicHtml(String.raw`\begin{pmatrix}a & b \\ c & d\end{pmatrix}`,{blockType:'equation'}),/math-matrix/);
+  for (const prose of ['This sentence contains ordinary words.', '中文公式说明，不应当作裸数学表达式']) {
+    assert.equal(renderRichAcademicHtml(prose,{blockType:'equation'}),prose);
+  }
+});

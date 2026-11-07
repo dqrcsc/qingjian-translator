@@ -27,3 +27,23 @@ test('Method table headers remain cells; subsequent prose stays outside the stru
   assert.match(blocks.at(-1).original, /^After the table/);
   assert.equal(blocks.at(-1).type, 'paragraph');
 });
+
+test('blank data/header cells never merge independent rows or invent dash values', () => {
+  for (const cells of [
+    [['Method','Score','Cost'],['Alpha','','4'],['Beta','24','8']],
+    [['Method','Score','Cost'],['','12','4'],['Beta','24','8']],
+    [['','Score','Cost'],['Alpha','12','4'],['Beta','24','8']],
+    [['Method','Score','Cost'],['Alpha','12',''],['Beta','—','8']],
+    [['Method','','Cost'],['','Score',''],['Alpha','12','4'],['Beta','24','8']]
+  ]) {
+    const textItems = [item('Table 1: Comparison of methods.', 180, 325, 150)];
+    cells.forEach((row,r) => row.forEach((str,c) => {
+      if (str) textItems.push(item(str,[90,270,440][c],365+r*24,str.length*5));
+    }));
+    textItems.push(item('After the table, ordinary text remains outside the table.',70,520,420));
+    const table = extractStructuredPdfPageBlocks({width:600,height:800,textItems},2).find(b=>b.type==='table');
+    assert.ok(table, JSON.stringify(cells));
+    const rows = table.original.split('\n').filter((_,i)=>i!==1).map(line=>line.split('|').slice(1,-1).map(c=>c.trim()));
+    assert.deepEqual(rows,cells);
+  }
+});

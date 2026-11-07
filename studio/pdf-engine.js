@@ -2089,22 +2089,10 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
             return cols;
           });
 
-          // If the first two rows form a split multi-line header (e.g. Row 0 or Row 1 has empty columns filled by the other), merge them into a single header row
-          if (
-            gridRows.length >= 3 &&
-            (!gridRows[0][0] || !gridRows[1][0] || !gridRows[1][1]) &&
-            (gridRows[0].some((c) => !c) || gridRows[1].some((c) => !c))
-          ) {
-            const mergedHeader = gridRows[0].map((c0, idx) => {
-              const c1 = gridRows[1][idx];
-              if (c0 && c1) return `${c0} ${c1}`;
-              return c0 || c1 || '';
-            });
-            gridRows.splice(0, 2, mergedHeader);
-          }
-
+          // Empty cells are data, not evidence of a split header. Keep each
+          // extracted row intact rather than silently moving values into headers.
           const formatRowMd = (cols) =>
-            `| ${cols.map((c) => (c ? c.replace(/\|/g, '\\|') : '-')).join(' | ')} |`;
+            `| ${cols.map((c) => (c ? c.replace(/\|/g, '\\|') : '')).join(' | ')} |`;
           const headerMd = formatRowMd(gridRows[0]);
           const sepMd = `| ${new Array(numCols).fill('---').join(' | ')} |`;
           const bodyMd = gridRows.slice(1).map(formatRowMd).join('\n');

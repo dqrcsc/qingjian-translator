@@ -1,3 +1,4 @@
+import { installPdfRequestScopes } from './pdf-request-scope-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,6 +21,7 @@ function harness() {
     docStatusSubtitle: { textContent: '' }, progressBarWrap: {}, progressBarFill: { style: {} }, streamSearchInput: { value: '' },
     renderWorkspaceBlocks: () => errors.push(ctx.docStatusSubtitle.textContent), evictPdfPageRender() {}, trimPdfPageRenderCache() {}, updateDocumentActions() {}, setTimeout() {}, pdfModeSelect: null,
   });
+  installPdfRequestScopes(ctx);
   vm.runInContext(section('function queueLazyPageTranslation(', '\n/**\n * Translates a single PDF page') +
     section('async function translateSinglePdfPage(', '\nstartTranslateDocBtn.addEventListener(') +
     section('function getTranslatedPagesSet(', '\nfunction formatPageListSummary('), ctx);
@@ -92,4 +94,16 @@ test('lazy page queue stops draining remaining pages when a queued page fails an
   assert.equal(h.doc.failedPages.has(3), false, 'page 3 must not be attempted after page 2 fails');
   assert.equal(h.ctx.lazyPageQueue.length, 0, 'lazy queue must be cleared after failure');
   assert.equal(h.calls.length, 1);
+});
+
+test('retiring an old page task cannot remove the new document page promise', async () => {
+  const h=harness(), held=h.hold();
+  const old=h.ctx.translateSinglePdfPage(2);
+  for(let i=0;i<10;i++)await Promise.resolve();
+  h.ctx.documentSession++;
+  const replacement=Promise.resolve('new page');
+  h.doc.inFlightPagePromises.set(2,replacement);
+  held.resolve();await old;
+  assert.equal(h.doc.inFlightPagePromises.get(2),replacement);
+  assert.equal(h.ctx.documentPageRequests.size,0);
 });

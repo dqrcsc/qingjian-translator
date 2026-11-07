@@ -8,9 +8,9 @@ export function normalizeRequestBudgetSeconds(value) {
 
 // One controller for the complete request, also registered in the port scope's
 // controller map so bulk cancellation can remove all waiters before releasing slots.
-export function createRequestBudget(timeoutMs = DEFAULT_REQUEST_BUDGET_SECONDS * 1000) {
+export function createRequestBudget(timeoutMs = DEFAULT_REQUEST_BUDGET_SECONDS * 1000, elapsedMs = 0) {
   const controller = new AbortController();
-  const startedAt = performance.now();
+  const startedAt = performance.now() - Math.max(0, Number(elapsedMs) || 0);
   let timer;
   const configure = durationMs => {
     clearTimeout(timer);

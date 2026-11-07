@@ -35,6 +35,7 @@ import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-brow
 import { verifyMarkerBrowser } from './verify-marker-browser.mjs';
 import { verifyAcademicTableBrowser } from './verify-academic-table-browser.mjs';
 import { verifyVectorAcademicBrowser } from './verify-vector-academic-browser.mjs';
+import { verifyV124IntegrityBrowser } from './verify-v124-integrity-browser.mjs';
 import { verifySitePauseBrowser } from './verify-site-pause-browser.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH
@@ -294,7 +295,8 @@ try {
     ['Multiline marker paint', verifyMarkerBrowser],
     ['Academic table layout and readable colors', verifyAcademicTableBrowser],
     ['Vector PDF formulas, tables and exports', verifyVectorAcademicBrowser],
-    ['Session-wide site pause', verifySitePauseBrowser]
+    ['Session-wide site pause', verifySitePauseBrowser],
+    ['v1.0.24 PDF and rule integrity', verifyV124IntegrityBrowser]
   ]) {
     stage = label;
     await resetSitePause();

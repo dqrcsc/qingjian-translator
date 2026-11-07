@@ -74,7 +74,7 @@
               const nextConn = connect();
               startKeepalive(nextConn);
               for (const entry of retryable) {
-                nextConn.postMessage({ requestId: entry.requestId, message: entry.message });
+                nextConn.postMessage({ requestId: entry.requestId, message: entry.message, startedAt: entry.startedAt });
               }
               return;
             } catch (err) {
@@ -101,11 +101,12 @@
       request(message) {
         return new Promise(resolve => {
           const requestId = ++nextId;
-          pending.set(requestId, { resolve, requestId, message, retried: false });
+          const startedAt = Date.now();
+          pending.set(requestId, { resolve, requestId, message, startedAt, retried: false });
           try {
             const conn = connect();
             startKeepalive(conn);
-            conn.postMessage({ requestId, message });
+            conn.postMessage({ requestId, message, startedAt });
           } catch (err) {
             disconnect();
             finishAll({ ok: false, error: err?.message || String(err) });

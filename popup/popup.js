@@ -176,6 +176,8 @@ async function initPopup() {
         .split(/\r?\n/)
         .map((d) => d.trim().toLowerCase())
         .filter(Boolean);
+      const inherited = domains.filter(d => currentHost.endsWith('.' + d));
+      if (inherited.length) currentDomainText.textContent = `${currentHost}（继承 ${inherited.join('、')}；取消将影响其子站点）`;
       autoTranslateDomainCheckbox.checked = Boolean(
         currentHost &&
           domains.some((d) => currentHost === d || currentHost.endsWith('.' + d))

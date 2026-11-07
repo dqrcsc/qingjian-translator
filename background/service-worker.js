@@ -609,7 +609,12 @@ chrome.runtime.onConnect.addListener(port => {
       port.postMessage({ requestId, response: { ok: false, error: '不支持的可取消请求' } });
       return;
     }
-    const budget = createRequestBudget();
+    // Replayed port messages retain the logical start time, including queue and
+    // settings waits. Initial allowance is the maximum supported configuration;
+    // dispatchMessage narrows it to the configured budget without resetting it.
+    const elapsedMs = Number.isFinite(packet.startedAt) && packet.startedAt > 0
+      ? Math.max(0, Date.now() - packet.startedAt) : 0;
+    const budget = createRequestBudget(300000, elapsedMs);
     const controller = budget.controller;
     controllers.set(requestId, controller);
     syncKeepalive();

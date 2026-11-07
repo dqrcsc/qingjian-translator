@@ -2767,7 +2767,7 @@
         <div class="ig-drawer-checks">
           <label class="ig-drawer-check-label">
             <input type="checkbox" class="ig-check-domain" />
-            <span>自动翻译此网站网页</span>
+            <span data-domain-rule-label>自动翻译此网站网页</span>
           </label>
           <label class="ig-drawer-check-label">
             <input type="checkbox" class="ig-check-global" />
@@ -2849,7 +2849,9 @@
         await saveSiteAutoTranslatePause(false);
         if (!isPageTranslated && !isOnlinePdfPage()) enablePageTranslation();
       } else {
-        set.delete(host);
+        for (const domain of set) {
+          if (host === domain || host.endsWith('.' + domain)) set.delete(domain);
+        }
       }
       const nextDomains = Array.from(set).join('\n');
       settings.alwaysTranslateDomains = nextDomains;
@@ -2957,6 +2959,12 @@
 
     if (domainCheckEl) {
       domainCheckEl.checked = isCurrentDomainInAlwaysList();
+      const inherited = parseDomainList(settings.alwaysTranslateDomains).filter(d =>
+        window.location.hostname.toLowerCase().endsWith('.' + d));
+      const label = domainCheckEl.parentElement.querySelector('[data-domain-rule-label]');
+      if (label) label.textContent = inherited.length
+        ? `自动翻译（继承 ${inherited.join('、')}；取消将移除该规则并影响其子站点）`
+        : '自动翻译此网站网页';
     }
     if (globalCheckEl) {
       globalCheckEl.checked = Boolean(settings.autoTranslateAllPages);

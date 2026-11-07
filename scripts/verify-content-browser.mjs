@@ -80,6 +80,9 @@ export async function verifyContentBrowser(context, sw) {
     cdp.on('Runtime.exceptionThrown', ({ exceptionDetails }) => errors.push(exceptionDetails.exception?.description || exceptionDetails.text));
     await cdp.send('Runtime.enable');
     await page.goto(url);
+    // Subtitle polling intentionally pauses in hidden tabs. Tests exercising
+    // playback/retry must own the foreground rather than inherit tab focus.
+    await page.bringToFront();
     let world;
     await wait(async () => {
       for (const candidate of contexts.filter(item => !item.auxData?.isDefault)) {
@@ -424,7 +427,15 @@ export async function verifyContentBrowser(context, sw) {
       subtitleMode = '503';
       const transientStart = subtitleCalls.length;
       await fixture.page.locator('.ig-yt-translation-error button').click();
-      await fixture.page.locator('.ig-yt-translation-error').filter({ hasText: '已暂停' }).waitFor({ timeout: 16000 });
+      try {
+        await fixture.page.locator('.ig-yt-translation-error').filter({ hasText: '已暂停' }).waitFor({ timeout: 16000 });
+      } catch (error) {
+        console.error('Subtitle retry diagnostic', { live,
+          attempts: subtitleCalls.slice(transientStart).map(call => call.at),
+          visibility: await fixture.page.evaluate(() => document.visibilityState),
+          state: await fixture.page.locator('.ig-yt-line-trans').textContent() });
+        throw error;
+      }
       assert.equal(subtitleCalls.length - transientStart, 9, '3 session attempts × 3 bounded HTTP attempts');
       const attempts = subtitleCalls.slice(transientStart);
       assert.ok(attempts[3].at - attempts[2].at >= 900, 'first session retry waits at least ~1s');

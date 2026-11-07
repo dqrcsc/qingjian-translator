@@ -453,3 +453,49 @@ test('unexpected worker port disconnect reconnects once automatically and ignore
   assert.equal(failed.error, '请求连接已关闭');
   assert.equal(attempts, 2);
 });
+
+test('automatic port replay keeps the logical start time and only receives remaining budget', async () => {
+  const nativeNow = Date.now, nativeTimeout = globalThis.setTimeout;
+  const delays = []; let offset = 0, calls = 0;
+  await saveSettings({requestBudgetSeconds:30,enableCache:false});
+  Date.now = () => nativeNow() + offset;
+  globalThis.setTimeout = (callback,ms,...args) => {
+    if (ms>1000) delays.push(ms);
+    return nativeTimeout(callback,ms>1000 ? 150 : ms,...args);
+  };
+  globalThis.fetch = (_url,init) => new Promise((_resolve,reject) => {
+    calls++;
+    init.signal.addEventListener('abort',()=>reject(init.signal.reason),{once:true});
+  });
+  try {
+    const pending = scope().request(batch('reconnect-remaining-budget'));
+    await until(()=>calls===1);
+    offset=25000;
+    lastConnectedPair.server.disconnect();
+    await until(()=>calls===2);
+    const result = await pending;
+    assert.equal(result.timedOut,true);
+    assert.equal(calls,2);
+    assert.ok(delays.some(ms=>ms>29000&&ms<=30000),'first dispatch has configured budget');
+    assert.ok(delays.some(ms=>ms>4000&&ms<=5000),'replay must have only five seconds remaining');
+  } finally {
+    Date.now=nativeNow;globalThis.setTimeout=nativeTimeout;
+    await saveSettings({requestBudgetSeconds:90,enableCache:true});
+  }
+});
+
+test('port replay after deadline expires before dispatching another model request', async () => {
+  const nativeNow=Date.now; let offset=0,calls=0;
+  await saveSettings({requestBudgetSeconds:30});
+  Date.now=()=>nativeNow()+offset;
+  globalThis.fetch=(_url,init)=>new Promise((_resolve,reject)=>{
+    calls++;init.signal.addEventListener('abort',()=>reject(init.signal.reason),{once:true});
+  });
+  try {
+    const pending=scope().request(batch('expired-replay'));
+    await until(()=>calls===1);
+    offset=31000;lastConnectedPair.server.disconnect();
+    const result=await pending;
+    assert.equal(result.timedOut,true);assert.equal(calls,1);
+  } finally {Date.now=nativeNow;await saveSettings({requestBudgetSeconds:90});}
+});

@@ -193,6 +193,13 @@ function setDocumentLoadState(state) {
 }
 
 const documentRequests = globalThis.QingJianRequests.createScope();
+const documentPageRequests = new Set();
+function cancelDocumentRequests() {
+  documentRequests.cancel();
+  for (const scope of documentPageRequests) scope.cancel();
+  documentPageRequests.clear();
+}
+
 const sendModelRequest = async message => {
   const doc = currentDoc, session = documentSession;
   await getDocumentTranslationSettings();
@@ -209,7 +216,7 @@ configNotice.innerHTML = '<span data-config-message></span> <button type="button
 progressBarWrap.before(configNotice);
 
 function stopDocumentTranslations() {
-  documentRequests.cancel();
+  cancelDocumentRequests();
   documentSession++;
   clearTimeout(programmaticScrollTimer);
   programmaticScrollTimer = null;
@@ -336,7 +343,7 @@ configNotice.querySelector('[data-config-restore]').addEventListener('click', ()
   docStatusSubtitle.textContent = '已恢复上一版译文；继续翻译将使用该版原配置。';
 }));
 window.addEventListener('pagehide', () => {
-  documentRequests.cancel();
+  cancelDocumentRequests();
   disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
 });
@@ -348,7 +355,7 @@ function beginDocumentSession() {
   clearTimeout(programmaticScrollTimer);
   programmaticScrollTimer = null;
   isProgrammaticRightScroll = false;
-  documentRequests.cancel();
+  cancelDocumentRequests();
   disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
   if (currentDoc.pdfBlobUrl) URL.revokeObjectURL(currentDoc.pdfBlobUrl);
@@ -711,7 +718,7 @@ async function handleFileLoaded(file, options = {}) {
     // A timed-out open may resolve just after cancellation; it still owns a worker.
     if (pendingPdfOpen) void pendingPdfOpen.then(opened => opened.pdfDoc?.destroy()).catch(() => {});
     if (session !== documentSession) return;
-    documentRequests.cancel();
+    cancelDocumentRequests();
     disposePdfPreviewResources(currentDoc);
     void currentDoc.pdfDoc?.destroy().catch(() => {});
     currentDoc.pdfDoc = null;
@@ -1300,12 +1307,13 @@ function renderFigure2DCanvasHtml(b) {
           `
               : ''
           }
+          ${b.originalImageDataUrl ? `<button type="button" data-retry-figure="${b.id}">↻ ${b.figureTranslationPending ? '重试图中文字' : '重译图中文字'}</button>` : ''}
           <button type="button" class="retranslate-mini-btn" data-retrans="${b.id}" title="重新翻译下方图注">
             ↻ 重译图注
           </button>
         </div>
       </div>
-      ${b.figureTranslationPending ? `<div class="untranslated-label" role="status">图中文字尚未完成重译${b.figureTranslationError ? `：${escapeHtml(b.figureTranslationError)}` : ''}；点击顶部开始翻译可继续。</div>` : ''}
+      ${b.figureTranslationPending ? `<div class="untranslated-label" role="status">图中文字尚未完成重译${b.figureTranslationError ? `：${escapeHtml(b.figureTranslationError)}` : ''}；可在图上重试；文字模式也可点击顶部开始翻译。</div>` : ''}
       ${
         hasBgImg || labels.length > 0
           ? `
@@ -1360,7 +1368,8 @@ function updateProgressCounterBadge() {
     (!pdfModeSelect || pdfModeSelect.value === 'gemini-multimodal')
   ) {
     const donePages = currentDoc.translatedPages?.size || 0;
-    progressCounterBadge.textContent = `${donePages} / ${currentDoc.totalPages || 1} 页`;
+    const pendingFigures = currentDoc.blocks.filter(b => b.figureTranslationPending).length;
+    progressCounterBadge.textContent = `${donePages} / ${currentDoc.totalPages || 1} 页${pendingFigures ? ` · ${pendingFigures} 幅图待处理` : ''}`;
   } else {
     const translatedCount = currentDoc.blocks.filter((b) => Boolean(b.translation) && !b.figureTranslationPending).length;
     progressCounterBadge.textContent = `${translatedCount} / ${currentDoc.blocks.length} 段`;
@@ -1738,6 +1747,12 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
     });
   });
 
+  bilingualStreamContainer.querySelectorAll('[data-retry-figure]').forEach(btn => {
+    const block = currentDoc.blocks.find(item => item.id === Number(btn.dataset.retryFigure));
+    btn.disabled = Boolean(block && figureRetranslations.has(block));
+    btn.addEventListener('click', () => { if (block) void retryFigureTranslation(block); });
+  });
+
   // Bind attach figure screenshot button
   bilingualStreamContainer.querySelectorAll('[data-attach-fig]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1827,6 +1842,29 @@ async function loadImageToCanvas(dataUrl) {
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
+}
+
+const figureRetranslations = new WeakSet();
+async function retryFigureTranslation(block) {
+  if (!isDocumentReady() || figureRetranslations.has(block)) return;
+  const doc = currentDoc, session = documentSession, signal = documentRequests.signal;
+  const isCurrent = () => doc === currentDoc && session === documentSession && !signal.aborted && doc.blocks.includes(block);
+  figureRetranslations.add(block);
+  renderWorkspaceBlocks(streamSearchInput.value.trim());
+  try {
+    const settings = await getDocumentTranslationSettings();
+    await retranslateDocumentFigure(block, settings, isCurrent);
+    if (isCurrent()) docStatusSubtitle.textContent = '✓ 此图文字处理完成';
+  } catch (error) {
+    if (isCurrent()) {
+      block.figureTranslationPending = true;
+      block.figureTranslationError = String(error?.message || error);
+      docStatusSubtitle.textContent = '⚠️ 图中文字处理失败，已保留原图，可重试';
+    }
+  } finally {
+    figureRetranslations.delete(block);
+    if (isCurrent()) renderWorkspaceBlocks(streamSearchInput.value.trim());
+  }
 }
 
 async function retranslateDocumentFigure(block, settings, isCurrent) {
@@ -2175,7 +2213,14 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
     currentDoc.forceRetranslatePages ??= new Set();
     currentDoc.forceRetranslatePages.add(pageNum);
   }
-  const isCurrent = () => session === documentSession && !stopRequested;
+  const pageRequests = globalThis.QingJianRequests.createScope();
+  const pageSignal = pageRequests.signal;
+  documentPageRequests.add(pageRequests);
+  const isCurrent = () => session === documentSession && !stopRequested && !pageSignal.aborted;
+  const sendPageRequest = message => {
+    if (!isCurrent()) throw new DOMException('页面翻译已取消', 'AbortError');
+    return pageRequests.request({ ...message, documentConfig: currentDoc.translationConfig });
+  };
   currentDoc.translatingPages.add(pageNum);
   const totalPages = Math.max(1, currentDoc.totalPages || 1);
 
@@ -2255,7 +2300,7 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
           throw new Error(`无法渲染第 ${pageNum} 页图像以供视觉识别，请重试`);
         }
 
-        const res = await sendModelRequest({
+        const res = await sendPageRequest({
           type: MESSAGE_TYPES.ANALYZE_PDF_MULTIMODAL,
           payload
         });
@@ -2294,7 +2339,7 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
         await Promise.all(
           pageBatches.map(async (batch) => {
             if (!isCurrent()) return;
-            const batchRes = await sendModelRequest({
+            const batchRes = await sendPageRequest({
               type: MESSAGE_TYPES.TRANSLATE_BATCH,
               payload: {
                 bypassCache: forceRetranslate,
@@ -2333,6 +2378,8 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
         let imageDataUrl = '';
         let originalImageDataUrl = '';
         let isCanvasInpainted = false;
+        let figureTranslationPending = false;
+        let figureTranslationError = '';
         let cleanFigureLabels = isFig
           ? normalizeFigureLabelsToCrop(b.figureLabels || [], figureBox2d)
           : [];
@@ -2351,7 +2398,7 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
 
             const minVectorGroups = usesGeminiVision ? 2 : 1;
             if (vectorGroups.length >= minVectorGroups) {
-              const batchRes = await sendModelRequest({
+              const batchRes = await sendPageRequest({
                 type: MESSAGE_TYPES.TRANSLATE_BATCH,
                 payload: {
                   bypassCache: forceRetranslate,
@@ -2388,10 +2435,41 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
               isCanvasInpainted = true;
             } else {
               imageDataUrl = cropObj.originalDataUrl;
+              // A text-rich page can still contain a raster chart. Try only the
+              // cropped figure; unsupported vision/failure must remain visible.
+              try {
+                const match = originalImageDataUrl.match(/^data:(image\/[^;,]+);base64,(.+)$/);
+                if (!match) throw new Error('原图数据不可用');
+                const response = await sendPageRequest({ type: MESSAGE_TYPES.TRANSLATE_IMAGE,
+                  payload: { imageBase64: match[2], mimeType: match[1], targetLang: settings.targetLang,
+                    pageTitle: currentDoc.bookTitle || currentDoc.fileName } });
+                if (!isCurrent()) return;
+                if (!response?.ok) throw new Error(response?.error || '图中文字识别失败');
+                cleanFigureLabels = normalizeFigureLabelsToCrop(response.data?.regions || [], [0, 0, 1000, 1000]);
+                if (cleanFigureLabels.length) {
+                  const rendered = renderSeamlessFigureTranslation(cropObj.cropCanvas, cleanFigureLabels);
+                  if (!rendered.translatedDataUrl || rendered.labels.length !== cleanFigureLabels.length) {
+                    throw new Error('图中文字覆盖不完整');
+                  }
+                  imageDataUrl = rendered.translatedDataUrl;
+                  cleanFigureLabels = rendered.labels;
+                  isCanvasInpainted = true;
+                }
+              } catch (error) {
+                if (!isCurrent()) return;
+                figureTranslationPending = true;
+                figureTranslationError = String(error?.message || error);
+              }
             }
+            cropObj.cropCanvas.width = 0;
+            cropObj.cropCanvas.height = 0;
           }
         }
 
+        if (isFig && !imageDataUrl) {
+          figureTranslationPending = true;
+          figureTranslationError = '未能提取图像，请附图后重试';
+        }
         newBlocks.push({
           id: allocateBlockId(),
           page: pageNum,
@@ -2406,7 +2484,9 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
           figureLabels: cleanFigureLabels,
           imageDataUrl,
           originalImageDataUrl,
-          isCanvasInpainted
+          isCanvasInpainted,
+          figureTranslationPending,
+          figureTranslationError
         });
       }
 
@@ -2427,20 +2507,25 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
 
       const doneCount = currentDoc.translatedPages.size;
       progressBarFill.style.width = `${Math.min(100, Math.round((doneCount / totalPages) * 100))}%`;
-      docStatusSubtitle.textContent =
-        doneCount < totalPages
+      const pendingFigures = currentDoc.blocks.filter(block => block.figureTranslationPending).length;
+      docStatusSubtitle.textContent = pendingFigures
+        ? `⚠️ 正文已处理 ${doneCount} / ${totalPages} 页；${pendingFigures} 幅图中文字尚未完成，可在图上重试`
+        : doneCount < totalPages
           ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 向下滚动将自动续译后续页面（省 Token）`
           : `✓ 全部 ${totalPages} 页翻译完成`;
     } catch (err) {
-      if (session !== documentSession) return;
+      pageRequests.cancel();
+      if (session !== documentSession || stopRequested) return;
       currentDoc.failedPages ??= new Map();
       currentDoc.failedPages.set(pageNum, String(err?.message || err));
       currentDoc.translatingPages.delete(pageNum);
       docStatusSubtitle.textContent = `⚠️ 第 ${pageNum} 页翻译失败: ${err?.message || err}`;
       renderWorkspaceBlocks(streamSearchInput.value.trim());
     } finally {
-      currentDoc.inFlightPagePromises?.delete(pageNum);
+      pageRequests.cancel();
+      documentPageRequests.delete(pageRequests);
       if (session !== documentSession) return;
+      currentDoc.inFlightPagePromises?.delete(pageNum);
       currentDoc.translatingPages.delete(pageNum);
       if (!currentDoc.leftPreviewWanted?.has(pageNum)) evictPdfPageRender(currentDoc, pageNum);
       trimPdfPageRenderCache(currentDoc);
@@ -2461,7 +2546,7 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
 startTranslateDocBtn.addEventListener('click', () => {
   if (!isDocumentReady()) return;
   if (isTranslating || isProcessingLazyQueue) {
-    documentRequests.cancel();
+    cancelDocumentRequests();
     documentSession++;
     currentDoc.translatingPages.clear();
     currentDoc.inFlightPagePromises?.clear();
@@ -2903,7 +2988,7 @@ function refreshPdfExportModalEstimate() {
     if (pdfTokenWarnBody) {
       pdfTokenWarnBody.innerHTML = `
         • <b>导出范围</b>：${formatPageListSummary(targetPages)}（共 ${targetPages.length} 页）<br/>
-        • <b>导出样式</b>：<b>${modeLabel}</b>（完整保留论文多页排版、数学公式与原位汉化图表，图片跨页不截断）<br/>
+        • <b>导出样式</b>：<b>${modeLabel}</b>（按当前重排结果导出，尽力保留公式、表格与译图；未处理内容保留提示，不保证原版式无损还原）<br/>
         • <b>额外 Token 消耗</b>：<b>0 Token</b>（所有目标页面均已就绪，点击下方按钮立即导出）
       `;
     }
@@ -2954,7 +3039,7 @@ function closePdfExportModal() {
   if (isExportBatchRunning) {
     abortExportBatchMode = 'cancel';
     stopRequested = true;
-    documentRequests.cancel();
+    cancelDocumentRequests();
   }
   if (pdfExportConfirmModal) {
     pdfExportConfirmModal.hidden = true;
@@ -2982,7 +3067,7 @@ abortAndExportDoneBtn?.addEventListener('click', () => {
   if (isExportBatchRunning) {
     abortExportBatchMode = 'export-done';
     stopRequested = true;
-    documentRequests.cancel();
+    cancelDocumentRequests();
   }
 });
 
@@ -3565,7 +3650,7 @@ function loadBuiltInDemo() {
           {
             box_2d: [520, 180, 760, 820],
             original: 'Layout-Preserving Bilingual Paper View & In-Place Image Overlay',
-            translation: '保持原文排版的论文仿真页与贴图原位译文覆盖层'
+            translation: '论文重排仿真页与贴图原位译文覆盖层'
           }
         ]
       },
@@ -3671,7 +3756,7 @@ function loadBuiltInDemo() {
   };
 
   docStatusSubtitle.textContent =
-    '已加载「保持原文排版 + 图表内文字原位翻译」示例论文（可在顶部切换「保持排版」与「卡片流」）';
+    '已加载「论文重排 + 图表内文字原位翻译」示例论文（可在顶部切换「保持排版」与「卡片流」）';
   setDocumentLoadState('ready');
   renderWorkspaceBlocks();
 }

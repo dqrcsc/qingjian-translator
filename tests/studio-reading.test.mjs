@@ -1,3 +1,4 @@
+import { installPdfRequestScopes } from './pdf-request-scope-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -63,6 +64,7 @@ test('loading and failed imports block actual translation/export handlers, then 
     readBoundedFile: async file => file.arrayBuffer ? file.arrayBuffer() : new TextEncoder().encode(await file.text()).buffer,
     getDocumentTranslationSettings: async () => { requests++; return {}; }, downloadBlob: () => downloads++
   });
+  installPdfRequestScopes(ctx);
   vm.runInContext(readiness + identities + start + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks(') +
     section('function parseMarkdownToBlocks(', '\nfunction parseHtmlDocumentToBlocks(') +
     section('function exportTranslatedDocument(', '\n// ============================================================================'), ctx);
@@ -109,6 +111,7 @@ for (const protocol of ['openai', 'gemini']) {
           : { translations: req.payload.items.map(item => ({ id: item.id, translation: 'translated ' + item.text })) } };
       }
     });
+    installPdfRequestScopes(ctx);
     vm.runInContext(readiness + identities + section('async function translateSinglePdfPage(', '\nstartTranslateDocBtn.addEventListener('), ctx);
     fail = true; await ctx.translateSinglePdfPage(3);
     assert.equal(ctx.currentDoc.forceRetranslatePages.has(3), true);
@@ -134,6 +137,7 @@ test('completed PDF retranslation retains force intent for pages beyond the firs
     seen.push({ page, forced: ctx.currentDoc.forceRetranslatePages.has(page) });
     ctx.currentDoc.translatedPages.add(page); ctx.currentDoc.forceRetranslatePages.delete(page);
   };
+  installPdfRequestScopes(ctx);
   vm.runInContext(readiness + start, ctx);
   await ctx.startDocumentTranslation();
   assert.deepEqual(seen, [{ page: 1, forced: true }, { page: 2, forced: true }]);
@@ -161,6 +165,7 @@ test('startDocumentTranslation keeps lazyScrollEnabled off during initial pages 
       ctx.currentDoc.failedPages.set(page, '请求连接已关闭');
     }
   };
+  installPdfRequestScopes(ctx);
   vm.runInContext(readiness + start, ctx);
 
   await ctx.startDocumentTranslation();
@@ -222,6 +227,7 @@ test('dense born-digital PDF page uses fast parallel small batches instead of a 
         };
       }
     });
+    installPdfRequestScopes(ctx);
     vm.runInContext(readiness + identities + section('async function translateSinglePdfPage(', '\nstartTranslateDocBtn.addEventListener('), ctx);
     await ctx.translateSinglePdfPage(1);
     assert.ok(requests.length >= 3, `${protocol}: 7 dense paragraphs should split into >=3 small batches`);
@@ -276,6 +282,7 @@ test('PDF opening that completes after the import deadline destroys its retired 
     readBoundedFile: async () => new TextEncoder().encode('%PDF-1.7').buffer,
     openPdfDocument: () => new Promise(resolve => { resolveOpen = resolve; })
   });
+  installPdfRequestScopes(ctx);
   vm.runInContext(readiness + section('async function handleFileLoaded(', '\nfunction parseMarkdownToBlocks('), ctx);
   try {
     await ctx.handleFileLoaded({ name: 'late-worker.pdf' }, { session: 1, budget });

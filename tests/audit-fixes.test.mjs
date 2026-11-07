@@ -1,3 +1,4 @@
+import { installPdfRequestScopes } from './pdf-request-scope-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -280,6 +281,7 @@ test('translateSinglePdfPage shares in-flight promise for concurrent callers and
     }
   });
 
+  installPdfRequestScopes(ctx);
   vm.runInContext(readiness + identities + translatePageFn, ctx);
 
   const p1 = ctx.translateSinglePdfPage(1);

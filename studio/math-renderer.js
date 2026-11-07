@@ -1000,6 +1000,8 @@ export function renderRichAcademicHtml(rawText, options = {}) {
       text
         .replace(/\$[^$]+\$/g, ' ')
         .replace(/\\tag\*?\{[^{}]+\}/g, ' ')
+        .replace(/\\(?:begin|end)\{[a-zA-Z*]+\}/g, ' ')
+        .replace(/\\[a-zA-Z]+\*?/g, ' ') // LaTeX commands are not prose words.
         .match(
           /\b(?!where\b|and\b|with\b|for\b|if\b|otherwise\b|sin\b|cos\b|tan\b|exp\b|log\b|min\b|max\b|lim\b|sup\b|inf\b|det\b|dim\b|ker\b|mod\b|pos\b|head\b|model\b|step\b|num\b|warmup\b|steps\b|lrate\b|drop\b|softmax\b)[a-z]{4,}\b/g
         ) || [];

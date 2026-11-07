@@ -1,3 +1,4 @@
+import { installPdfRequestScopes } from './pdf-request-scope-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -295,6 +296,7 @@ function studioContext() {
     renderWorkspaceBlocks() {}, streamSearchInput: { value: '' }, lazyPageQueue: [], setTimeout() {}
   });
   vm.runInContext(studioSource.slice(studioSource.indexOf('function allocateBlockId('), studioSource.indexOf('const blockTranslationVersions')), ctx);
+  installPdfRequestScopes(ctx);
   vm.runInContext(sourceFunction(studioSource, 'translateSinglePdfPage', '\nstartTranslateDocBtn.addEventListener'), ctx);
   return { ctx, requested, respond: value => reply(value) };
 }

@@ -91,7 +91,7 @@
       <div id="dropzoneCard" class="dropzone-card">
         <div class="dropzone-icon">📄</div>
         <h2>拖拽文档到此处，选择本地文件，或直接输入在线 PDF 链接</h2>
-        <p>支持<b>保持原文论文排版（保留原图 + 图内文字原位译文）</b>与<b>滚动按需流式翻译（省 Token）</b>；也可直接 <code>Ctrl+V</code> 粘贴截图译图</p>
+        <p>支持<b>论文尽力重排（保留原图，覆盖识别到的图中文字）</b>与<b>滚动按需分批翻译（减少初始请求）</b>；也可直接 <code>Ctrl+V</code> 粘贴截图译图</p>
 
         <div class="format-badges">
           <span class="fmt-badge">📕 在线 / 本地 PDF (尽力重排 + 图中文字覆盖)</span>
@@ -102,7 +102,7 @@
 
         <div class="dropzone-cta-row">
           <label for="fileInput" class="primary-action-btn large-btn">📂 选择本地文件上传</label>
-          <button id="emptyDemoBtn" class="secondary-action-btn large-btn">✨ 预览「保持原文排版 + 原图译字」示例论文</button>
+          <button id="emptyDemoBtn" class="secondary-action-btn large-btn">✨ 预览「论文重排 + 原图译字」示例论文</button>
           <button id="loadDemoDocBtn" class="ghost-btn large-btn">🌐 试试在线 arXiv PDF 翻译</button>
         </div>
       </div>
@@ -202,7 +202,7 @@
         <div class="pdf-export-modal-header">
           <div>
             <h3 id="pdfExportModalTitle">📄 导出保持排版 PDF — 翻译进度与 Token 消耗确认</h3>
-            <p class="pdf-export-modal-sub">支持保留原论文排版、数学公式与原位汉化图表，导出多页完整 PDF</p>
+            <p class="pdf-export-modal-sub">按当前重排结果导出公式、表格与译图；未处理页面或图中文字会保留提示，请对照原 PDF</p>
           </div>
           <button type="button" id="closePdfExportModalBtn" class="icon-only-btn" title="关闭">✕</button>
         </div>
