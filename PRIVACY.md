@@ -25,7 +25,7 @@ All API keys, provider configurations, domain rules, and translation caches are 
 ## 3. 数据传输与第三方服务 / Off-Device Transmission & Third-Party Services
 
 当您主动触发翻译功能（如开启网页双语翻译、Alt 悬停段落翻译、划词精解、三击空格输入框翻译、网页图片翻译、YouTube 双语字幕/音频听译、或文档工作台翻译），或当您开启了自动翻译规则并访问匹配页面时：
-- 扩展会从您的浏览器直接向**您所配置的 AI 模型接口地址**（例如 Google Gemini、DeepSeek、OpenAI、OpenRouter 或您自建的兼容接口）发送待翻译的文本、图片、PDF 页面或音频片段，并在请求头中附带您的 API Key 以完成身份验证。
+- 扩展会从您的浏览器直接向**您所配置的 AI 模型接口地址**（例如 Google Gemini、DeepSeek、OpenAI、OpenRouter 或您自建的兼容接口）发送待翻译的文本、图片、PDF 页面或音频片段，并通过认证请求头（OpenAI 兼容协议）或 URL 的 `key` 查询参数（Gemini 原生协议）携带您的 API Key 完成身份验证。
 - 在 YouTube 页面启用双语字幕时，扩展会在页面上下文读取或请求当前视频对应的 YouTube 字幕轨道资源。
 - 在打开在线 PDF 链接翻译时，浏览器工作台会直接从目标 PDF 链接下载文档字节流并在本地通过内置 PDF.js 解析。
 

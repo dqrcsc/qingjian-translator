@@ -93,6 +93,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.24 | 2026-11-07 | Preserve blank PDF table cells, render bare formulas, recover raster figure OCR, cancel failed page batches, retain reconnect budgets, and align inherited site rules and capability wording. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.23 | 2026-11-06 | Preserve rotated PDF text and Method table headers, deduplicate local formulas, restore academic HTML styles, and add real PDF entry/export regressions. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.22 | 2026-11-04 | Reconstruct stacked fractions, radicals, inline equation tails and regular tables. | GitHub release |
 | 1.0.21 | 2026-11-04 | Rename the product to 青简 · 津梁. | GitHub release |
