@@ -91,9 +91,9 @@ export async function verifyV125Browser(context, sw) {
     assert.match(await page.locator('#bilingualStreamContainer').textContent(),/PageSentinel9/);
     check('Actual PDF export confirmation completes all 9 pages beyond the reading window, reaches print with every page, and restores filtered card reading');
     const web=await newPage();const prose='The bank handles money. '.repeat(60)+'The river bank was flooded after the storm.';
-    await web.route('https://selection.audit.example/**',r=>r.fulfill({contentType:'text/html',body:`<!doctype html><p id="para">${prose}</p>`}));await web.goto('https://selection.audit.example/article');await web.waitForTimeout(300);
+    await web.route('https://selection.audit.example/**',r=>r.fulfill({contentType:'text/html',body:`<!doctype html><p id="para">${prose}</p>`}));await web.goto('https://selection.audit.example/article');await web.locator('.ig-sel-trigger').waitFor({state:'attached'});
     await web.evaluate(()=>{const n=document.querySelector('#para').firstChild,p=n.textContent.lastIndexOf('bank'),r=document.createRange();r.setStart(n,p);r.setEnd(n,p+4);getSelection().removeAllRanges();getSelection().addRange(r);document.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:100,clientY:100}));});
-    await web.locator('.ig-sel-trigger').dispatchEvent('mousedown');await web.locator('.ig-sel-card').getByText('河岸',{exact:true}).first().waitFor();
+    await web.locator('.ig-sel-trigger').click();await web.locator('.ig-sel-card').getByText('河岸',{exact:true}).first().waitFor();
     const selection=calls.findLast(c=>c.prompt.includes('Selected Text:'));assert.ok(selection.prompt.includes('The river bank was flooded'));const surrounding=selection.prompt.split('Surrounding Context Paragraph: """')[1].split('"""')[0];assert.ok(surrounding.length<=600);
     check('Actual selection at the end of a long paragraph with repeated bank uses its own surrounding sentence in the HTTP prompt');
     const yt=await newPage();await yt.route('https://www.youtube.com/**',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><title>Long complete track</title><div id="movie_player" class="html5-video-player"><video></video><div class="ytp-right-controls"></div></div>'}));await yt.goto('https://www.youtube.com/watch?v=v125-track');await yt.locator('.ig-yt-timeline-panel').waitFor();
