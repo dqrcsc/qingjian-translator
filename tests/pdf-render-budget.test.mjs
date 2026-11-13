@@ -49,7 +49,12 @@ test('uncancellable late page acquisitions and hung cancellation cannot grow wit
   for (const phase of ['page', 'text']) {
     const h = harness({ phase, neverCancel: true });
     for (let i = 0; i < 2; i++) { const c = new AbortController(); const task = h.render(h.doc, i+1, 2, { signal:c.signal }); await tick(); c.abort(); await assert.rejects(task); }
-    await assert.rejects(h.render(h.doc, 3), /取页任务仍在结束/);
+    const waiting = new AbortController();
+    const replacement = h.render(h.doc, 3, 2, { signal: waiting.signal });
+    await tick();
+    assert.ok(h.canvases.length <= 2, 'waiting must not admit more worker jobs');
+    waiting.abort();
+    await assert.rejects(replacement, { name: 'AbortError' });
     assert.ok(h.canvases.length <= 2);
   }
 });
@@ -63,4 +68,17 @@ test('completed text cancellation releases the pending-work lease for subsequent
   assert.equal(h.canvases.length, 4);
   assert.equal(h.cleanup, 4);
   assert.ok(h.canvases.every(canvas => canvas.width === 0));
+});
+
+test('replacement after rapid navigation waits for an old acquisition then renders without false page failure', async () => {
+  const h=harness(), pending=[];
+  const doc={getPage:()=>new Promise(resolve=>pending.push(resolve))};
+  for(let n=1;n<=2;n++){
+    const controller=new AbortController(),task=h.render(doc,n,2,{signal:controller.signal});
+    await tick();controller.abort();await assert.rejects(task,{name:'AbortError'});
+  }
+  const replacement=h.render(doc,9);await tick();assert.equal(pending.length,2);
+  pending[0](h.page);await tick();assert.equal(pending.length,3);
+  pending[2](h.page);const result=await replacement;assert.ok(result.width>0);
+  pending[1](h.page);await tick();assert.equal(h.cleanup,3);
 });

@@ -338,7 +338,12 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { s
   // even after their callers have aborted; late page objects are cleaned below.
   let pending = pendingPdfPages.get(pdfDoc);
   if (!pending) pendingPdfPages.set(pdfDoc, pending = new Set());
-  if (pending.size >= PDF_RENDER_LIMITS.maxPendingPages) throw new Error('PDF 取页任务仍在结束，请稍后重试');
+  // A cancelled preview may still hold an acquisition/worker lease. Hand the
+  // slot to its replacement after settlement, without starting detached work.
+  while (pending.size >= PDF_RENDER_LIMITS.maxPendingPages) {
+    await waitForPdfWork(Promise.race([...pending].map(task => task.catch(() => {}))), signal);
+    signal?.throwIfAborted();
+  }
   const acquisition = Promise.resolve().then(() => pdfDoc.getPage(pageNumber));
   pending.add(acquisition);
   void acquisition.then(page => { if (signal?.aborted) page.cleanup?.(); }, () => {}).finally(() => pending.delete(acquisition));
@@ -347,7 +352,7 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNumber, scale = 2.0, { s
   const onAbort = () => {
     renderTask?.cancel();
     // Keep a lease until underlying cancelled work actually settles. New work
-    // is rejected rather than accumulating detached worker jobs indefinitely.
+    // waits rather than accumulating detached worker jobs indefinitely.
     const draining = Promise.allSettled([renderTask?.promise, cancelText()]);
     pending.add(draining);
     void draining.finally(() => pending.delete(draining));
