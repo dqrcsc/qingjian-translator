@@ -281,10 +281,39 @@ const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
 const KNOWN_TEXT_ONLY_MODEL_RE =
   /(^|\/)(deepseek-(chat|reasoner)|qwen-(plus|turbo|max)|glm-4-(air|flash))$/i;
 
+export const RESPONSE_BYTE_LIMITS = Object.freeze({ json: 8 * 1024 * 1024, image: 20 * 1024 * 1024 });
+
+export async function readResponseBytes(response, maxBytes) {
+  const fail = () => { const error = new Error(`响应体超过 ${maxBytes / 1024 / 1024} MiB 字节预算，已停止下载`); error.name = 'ResponseLimitError'; return error; };
+  const declared = response.headers?.get('content-length');
+  if (declared && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    throw fail();
+  }
+  if (!response.body) return new ArrayBuffer(0);
+  const reader = response.body.getReader();
+  const chunks = []; let total = 0, complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { complete = true; break; }
+      total += value.byteLength;
+      if (total > maxBytes) throw fail();
+      chunks.push(value);
+    }
+    const body = new Uint8Array(total); let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return body.buffer;
+  } finally {
+    if (!complete) void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export async function fetchWithTimeoutAndRetry(
   url,
   init = {},
-  { timeoutMs = 45000, maxRetries = 2, baseDelayMs = 600 } = {}
+  { timeoutMs = 45000, maxRetries = 2, baseDelayMs = 600, maxResponseBytes = RESPONSE_BYTE_LIMITS.json } = {}
 ) {
   const callerSignal = init.signal;
   let lastError;
@@ -309,7 +338,7 @@ export async function fetchWithTimeoutAndRetry(
       const response = await Promise.race([
         (async () => {
           const res = await fetch(url, { ...init, signal: controller.signal });
-          const body = await res.arrayBuffer();
+          const body = await readResponseBytes(res, maxResponseBytes);
           return new Response([204, 205, 304].includes(res.status) ? null : body, {
             status: res.status, statusText: res.statusText, headers: res.headers
           });
@@ -325,6 +354,7 @@ export async function fetchWithTimeoutAndRetry(
     } catch (err) {
       if (callerSignal?.aborted) throw callerSignal.reason;
       lastError = err;
+      if (err?.name === 'ResponseLimitError') { controller.abort(err); throw err; }
       if (timedOutByAttempt || attempt === maxRetries) throw err;
       var retryWaitMs = baseDelayMs * Math.pow(2, attempt);
     } finally {
@@ -1220,7 +1250,7 @@ export async function translateImageWithGemini(
       if (!['http:', 'https:'].includes(parsedImgUrl.protocol)) {
         throw new Error('仅支持拉取 HTTP/HTTPS 协议的图片链接');
       }
-      const resp = await fetchWithTimeoutAndRetry(imageUrl, { credentials: 'omit', signal: settings.requestSignal });
+      const resp = await fetchWithTimeoutAndRetry(imageUrl, { credentials: 'omit', signal: settings.requestSignal }, { maxResponseBytes: RESPONSE_BYTE_LIMITS.image });
       if (!resp.ok) {
         throw new Error(`无法拉取图片数据 (HTTP ${resp.status})`);
       }

@@ -1241,7 +1241,7 @@ function renderTocSidebar() {
         revealDocumentBlock(Number(blockId));
         return;
       }
-      scrollLeftPdfToPage(pageNum);
+      navigateToPdfPage(pageNum);
       suppressLazyObserverBriefly(800);
       const targetEl = bilingualStreamContainer.querySelector(
         `[data-block-id="${blockId}"]`
@@ -1378,13 +1378,13 @@ function updateProgressCounterBadge() {
 
 const DOCUMENT_READING_PAGE_SIZE = 100;
 
-function documentReadingRange(total, requestedPage = 0) {
-  const pages = Math.max(1, Math.ceil(total / DOCUMENT_READING_PAGE_SIZE));
+function documentReadingRange(total, requestedPage = 0, pageSize = DOCUMENT_READING_PAGE_SIZE) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.max(0, Math.min(pages - 1, Math.floor(Number(requestedPage) || 0)));
-  return { page, pages, start: page * DOCUMENT_READING_PAGE_SIZE, end: Math.min(total, (page + 1) * DOCUMENT_READING_PAGE_SIZE) };
+  return { page, pages, start: page * pageSize, end: Math.min(total, (page + 1) * pageSize) };
 }
 
-function selectDocumentReadingWindow(blocks, filterKeyword, selectedChapter) {
+function selectDocumentReadingWindow(blocks, filterKeyword, selectedChapter, unit = '段', pageSize = DOCUMENT_READING_PAGE_SIZE) {
   const key = JSON.stringify([filterKeyword.toLowerCase(), selectedChapter]);
   if (currentDoc.readingWindowKey !== key) {
     currentDoc.readingWindowKey = key;
@@ -1392,12 +1392,12 @@ function selectDocumentReadingWindow(blocks, filterKeyword, selectedChapter) {
     bilingualStreamContainer.scrollTop = 0;
     sourceOutlineViewer.scrollTop = 0;
   }
-  const range = documentReadingRange(blocks.length, currentDoc.readingWindowPage);
+  const range = documentReadingRange(blocks.length, currentDoc.readingWindowPage, pageSize);
   currentDoc.readingWindowPage = range.page;
   const pager = document.getElementById('documentReadingPager');
   if (pager) {
     pager.hidden = false;
-    pager.querySelector('[data-reading-status]').textContent = `第 ${range.page + 1} / ${range.pages} 组 · ${blocks.length ? range.start + 1 : 0}–${range.end} / ${blocks.length} 段`;
+    pager.querySelector('[data-reading-status]').textContent = `第 ${range.page + 1} / ${range.pages} 组 · ${blocks.length ? range.start + 1 : 0}–${range.end} / ${blocks.length} ${unit}`;
     const input = pager.querySelector('[data-reading-page]');
     input.value = String(range.page + 1);
     input.max = String(range.pages);
@@ -1415,7 +1415,7 @@ function revealDocumentBlock(blockId) {
   const chapter = currentDoc.fileType === 'epub' && epubChapterSelect.value !== 'all' ? Number(epubChapterSelect.value) : null;
   const scoped = chapter === null ? currentDoc.blocks : currentDoc.blocks.filter(item => item.chapterIndex === chapter);
   currentDoc.readingWindowKey = JSON.stringify(['', chapter]);
-  currentDoc.readingWindowPage = Math.floor(scoped.indexOf(block) / DOCUMENT_READING_PAGE_SIZE);
+  currentDoc.readingWindowPage = currentDoc.fileType === 'pdf' ? Math.floor(((block.page || 1) - 1) / 8) : Math.floor(scoped.indexOf(block) / DOCUMENT_READING_PAGE_SIZE);
   renderWorkspaceBlocks();
   bilingualStreamContainer.querySelector(`[data-block-id="${blockId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
@@ -1492,6 +1492,18 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
     rightPaneTitle.textContent = isPaperLayout ? '📄 保持排版' : '✦ 卡片流';
   }
 
+  // Reading mounts a bounded group of PDF pages. The model and exports stay complete.
+  let pdfReadingPages = null;
+  if (!forExport && currentDoc.fileType === 'pdf') {
+    const pageNumbers = filterKeyword
+      ? [...new Set(visibleBlocks.map(block => Number(block.page) || 1))].sort((a, b) => a - b)
+      : Array.from({ length: currentDoc.totalPages || 1 }, (_, i) => i + 1);
+    const oldKey = currentDoc.readingWindowKey;
+    pdfReadingPages = new Set(selectDocumentReadingWindow(pageNumbers, filterKeyword, null, '页', 8));
+    if (oldKey !== currentDoc.readingWindowKey) prevScrollTop = 0;
+    visibleBlocks = visibleBlocks.filter(block => pdfReadingPages.has(Number(block.page) || 1));
+  }
+
   if (isPaperLayout) {
     const pagesMap = new Map();
     for (const b of visibleBlocks) {
@@ -1511,7 +1523,7 @@ function renderWorkspaceBlocks(filterKeyword = '', { allChapters = false, forceP
       (!pdfModeSelect || pdfModeSelect.value === 'gemini-multimodal') &&
       !filterKeyword;
 
-    const pageNumbersToRender = isPdfLazyMode
+    const pageNumbersToRender = pdfReadingPages ? [...pdfReadingPages] : isPdfLazyMode
       ? Array.from({ length: totalPages }, (_, idx) => idx + 1)
       : Array.from(pagesMap.keys()).sort((a, b) => a - b);
 
@@ -2511,7 +2523,7 @@ async function translateSinglePdfPage(pageNum, { bypassCache = false, retryFaile
       docStatusSubtitle.textContent = pendingFigures
         ? `⚠️ 正文已处理 ${doneCount} / ${totalPages} 页；${pendingFigures} 幅图中文字尚未完成，可在图上重试`
         : doneCount < totalPages
-          ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 向下滚动将自动续译后续页面（省 Token）`
+          ? `✓ 已完成 ${doneCount} / ${totalPages} 页 · 组内滚动按需续译；使用页码或分组控件阅读后续页`
           : `✓ 全部 ${totalPages} 页翻译完成`;
     } catch (err) {
       pageRequests.cancel();
@@ -2572,6 +2584,15 @@ startTranslateDocBtn.addEventListener('click', () => {
 function navigateToPdfPage(pageNum) {
   const clamped = Math.max(1, Math.min(currentDoc.totalPages || 999, Number(pageNum) || 1));
   scrollLeftPdfToPage(clamped);
+  if (currentDoc.fileType === 'pdf') {
+    const key = JSON.stringify(['', null]), group = Math.floor((clamped - 1) / 8);
+    const needsRender = Boolean(streamSearchInput.value) || currentDoc.readingWindowKey !== key || currentDoc.readingWindowPage !== group;
+    streamSearchInput.value = '';
+    currentDoc.readingWindowKey = key;
+    currentDoc.readingWindowPage = group;
+    // Enter followed by input blur must not replace the button receiving the next click.
+    if (needsRender) renderWorkspaceBlocks();
+  }
   suppressLazyObserverBriefly(800);
   const sheet = bilingualStreamContainer.querySelector(`[data-paper-page="${clamped}"]`);
   if (sheet) {
@@ -2584,7 +2605,7 @@ function navigateToPdfPage(pageNum) {
 
 if (jumpPageInput) {
   jumpPageInput.addEventListener('change', () => {
-    scrollLeftPdfToPage(Number(jumpPageInput.value) || 1);
+    navigateToPdfPage(Number(jumpPageInput.value) || 1);
   });
   jumpPageInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -3262,6 +3283,19 @@ function exportTranslatedDocument(format) {
     .replace(/^\(\d+\)\s*/g, '')
     .replace(/[\\/:*?"<>|]/g, '_');
   const mode = getExportViewMode();
+  let coverage = '';
+  if (currentDoc.fileType === 'pdf' && ['md', 'epub'].includes(format)) {
+    if (!currentDoc.blocks.length) {
+      docStatusSubtitle.textContent = '尚无可导出的 PDF 内容，请先翻译所需页面；不会自动发起翻译。';
+      return;
+    }
+    const present = new Set(currentDoc.blocks.map(block => Number(block.page) || 1));
+    const missing = Array.from({ length: currentDoc.totalPages || 1 }, (_, i) => i + 1)
+      .filter(page => !present.has(page) || currentDoc.failedPages?.has(page) || currentDoc.forceRetranslatePages?.has(page));
+    const pendingFigures = currentDoc.blocks.filter(block => block.figureTranslationPending).length;
+    coverage = `PDF 导出范围：共 ${currentDoc.totalPages || 1} 页；未处理或失败页：${missing.length ? missing.join(', ') : '无'}。${pendingFigures ? `另有 ${pendingFigures} 幅图中文字待处理。` : ''}`;
+    docStatusSubtitle.textContent = coverage;
+  }
 
   if (format === 'pdf-translation-only') {
     openPdfExportConfirmModal('translation-only');
@@ -3279,7 +3313,7 @@ function exportTranslatedDocument(format) {
       if (mode === 'translation-only') return b.translation || `【未翻译，显示原文】\n${b.original}`;
       return `${b.original}\n\n> ${b.translation || ''}`;
     });
-    const blob = new Blob([`\uFEFF${mdLines.join('\n\n')}`], { type: 'text/markdown;charset=utf-8' });
+    const blob = new Blob([`\uFEFF${coverage ? coverage + '\n\n' : ''}${mdLines.join('\n\n')}`], { type: 'text/markdown;charset=utf-8' });
     downloadBlob(blob, `${baseName}.bilingual.md`);
   } else if (format === 'html') {
     // Export full Layout-Preserving HTML (including translated figures, formulas, and 1-click Pure/Bilingual toggle)
@@ -3556,6 +3590,7 @@ function exportTranslatedDocument(format) {
       translation: block.translation || (block.type === 'code' || block.type === 'equation'
         ? block.original : `【未翻译，显示原文】\n${block.original}`)
     })) };
+    if (coverage) exportDoc.blocks.unshift({ type: 'paragraph', original: coverage, translation: coverage, chapterIndex: 0 });
     const blob = buildBilingualEpubBlob(exportDoc, mode);
     downloadBlob(blob, `${baseName}.bilingual.epub`);
   } else if (format === 'txt' || format === 'srt') {

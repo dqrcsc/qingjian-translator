@@ -3062,6 +3062,27 @@
   // 7. Selection AI Contextual Deep Explanation
   // ============================================================================
 
+  function selectionContextParagraph(selection, block, limit = 600) {
+    if (!block || !selection.rangeCount) return selection.toString();
+    const range = selection.getRangeAt(0);
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let node, text = '', start = null, end = null;
+    while ((node = walker.nextNode())) {
+      if (node.parentElement?.closest('.ig-trans-node, .ig-ui-root, script, style')) continue;
+      const offset = text.length;
+      text += node.textContent;
+      if (node === range.startContainer) start = offset + range.startOffset;
+      if (node === range.endContainer) end = offset + range.endOffset;
+    }
+    if (start === null || end === null) {
+      // Element-boundary/cross-block selections still carry their own context.
+      return range.toString().slice(0, limit);
+    }
+    const spare = Math.max(0, limit - (end - start));
+    const from = Math.max(0, Math.min(start - Math.floor(spare / 2), text.length - limit));
+    return text.slice(from, Math.max(end, from + limit)).trim();
+  }
+
   document.addEventListener('mouseup', (e) => {
     if (!settings.enableSelectionTooltip) return;
     setTimeout(() => {
@@ -3075,7 +3096,7 @@
       const anchorEl = sel.anchorNode?.parentElement;
       const contextBlock = anchorEl?.closest?.(BLOCK_SELECTOR) || anchorEl;
       const contextParagraph = contextBlock
-        ? extractCleanText(contextBlock).slice(0, 600)
+        ? selectionContextParagraph(sel, contextBlock)
         : selectedText;
 
       const x = Math.min(window.innerWidth - 48, Math.max(12, e.clientX + 10));
@@ -3478,7 +3499,6 @@
           ytLiveCaptionInFlight.clear();
           ytCues = cues
             .filter((c) => c && Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end)))
-            .slice(0, 20000)
             .map((c, idx) => ({
               id: Number.isSafeInteger(Number(c.id)) ? Number(c.id) : idx + 1,
               start: Number(c.start),

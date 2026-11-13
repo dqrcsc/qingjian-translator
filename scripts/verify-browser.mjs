@@ -35,6 +35,7 @@ import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-brow
 import { verifyMarkerBrowser } from './verify-marker-browser.mjs';
 import { verifyAcademicTableBrowser } from './verify-academic-table-browser.mjs';
 import { verifyVectorAcademicBrowser } from './verify-vector-academic-browser.mjs';
+import { verifyV125Browser } from './verify-v125-browser.mjs';
 import { verifyV124IntegrityBrowser } from './verify-v124-integrity-browser.mjs';
 import { verifySitePauseBrowser } from './verify-site-pause-browser.mjs';
 
@@ -71,7 +72,7 @@ let stage = 'launch';
 const watchdog = setTimeout(() => {
   console.error(`Browser verification timed out at: ${stage}`);
   void context?.close();
-}, 240000);
+}, 300000);
 async function until(predicate, label) {
   const deadline = Date.now() + 15000;
   while (!predicate()) {
@@ -296,7 +297,8 @@ try {
     ['Academic table layout and readable colors', verifyAcademicTableBrowser],
     ['Vector PDF formulas, tables and exports', verifyVectorAcademicBrowser],
     ['Session-wide site pause', verifySitePauseBrowser],
-    ['v1.0.24 PDF and rule integrity', verifyV124IntegrityBrowser]
+    ['v1.0.24 PDF and rule integrity', verifyV124IntegrityBrowser],
+    ['v1.0.25 content boundaries and resources', verifyV125Browser]
   ]) {
     stage = label;
     await resetSitePause();

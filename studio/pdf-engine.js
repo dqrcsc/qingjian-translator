@@ -1036,7 +1036,7 @@ export function normalizeFigureLabelsToCrop(figureLabels, figureBox2d) {
     }
   }
 
-  return cleaned.slice(0, 16);
+  return cleaned;
 }
 
 /**
@@ -1733,6 +1733,18 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     }
   }
 
+  // Numbered display equations are body content, not labels of the next figure.
+  // Include vertically stacked numerator/denominator glyphs in the protected band.
+  for (const equation of cleanLines.filter(line => line.hasEquationNumber)) {
+    for (let i = 0; i < cleanLines.length; i++) {
+      if (Math.abs(cleanLines[i].yBaseline - equation.yBaseline) <= equation.fontPx * 1.5) {
+        isSolidProseLine[i] = true;
+      }
+    }
+  }
+  const hasTwoColumnBody = cleanLines.filter(line => line.str.length >= 36 && line.right < pageW * 0.55).length >= 2 &&
+    cleanLines.filter(line => line.str.length >= 36 && line.x > pageW * 0.45).length >= 2;
+
   // 4. Detect Figure Captions, pair each with its visual figureBox2d above it, and consume internal diagram lines
   const consumedLineSet = new Set();
   const positionedSpecialBlocks = []; // Array of { top, bottom, column, block }
@@ -1792,9 +1804,9 @@ export function extractStructuredPdfPageBlocks(pageRender, pageNumber = 1) {
     const capCenter = (capLeft + capRight) * 0.5;
     const isCenteredOnPage = Math.abs(capCenter - pageW * 0.5) <= pageW * 0.085;
     let col = 'full';
-    if (!isCenteredOnPage && capRight <= pageW * 0.54) {
+    if (hasTwoColumnBody && !isCenteredOnPage && capRight <= pageW * 0.54) {
       col = 'left';
-    } else if (!isCenteredOnPage && capLeft >= pageW * 0.46) {
+    } else if (hasTwoColumnBody && !isCenteredOnPage && capLeft >= pageW * 0.46) {
       col = 'right';
     }
 
