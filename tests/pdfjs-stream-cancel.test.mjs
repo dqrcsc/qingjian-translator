@@ -15,7 +15,12 @@ for (const file of ['pdf.mjs', 'pdf.worker.mjs']) {
     assert.equal(createHash('sha256').update(patchPdfjsStream(source, { reverse: true })).digest('hex'), inventory.files[file].upstreamSha256);
     const section = source.slice(source.indexOf('const CallbackKind ='), source.indexOf('\n;//', source.indexOf('class MessageHandler {')));
     const exception = class extends Error {};
-    const ctx = vm.createContext({ AbortController, ReadableStream, Error, Promise,
+    // The full legacy bundle installs Promise.try; this isolated section omits
+    // that bootstrap. Supply the same synchronous-call semantics on Node 22.
+    class HandlerPromise extends Promise {
+      static try(fn, ...args) { return new this(resolve => resolve(fn(...args))); }
+    }
+    const ctx = vm.createContext({ AbortController, ReadableStream, Error, Promise: HandlerPromise,
       AbortException: exception, InvalidPDFException: exception, PasswordException: exception,
       ResponseException: exception, UnknownErrorException: exception,
       assert, util_assert: assert, unreachable: message => { throw new Error(message); } });
