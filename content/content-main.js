@@ -3217,7 +3217,9 @@
           <button class="ig-icon-btn" data-close="1">✕</button>
         </div>
         <div style="color:#f87171;font-size:12.5px;">⚠️ ${escapeText(err?.message || '请求失败')}</div>
+        <button class="ig-icon-btn" data-selection-retry="1">重新尝试</button>
       `;
+      selectionCardEl.querySelector('[data-selection-retry]')?.addEventListener('click', () => openSelectionExplanationCard({ text, contextParagraph, x, y }));
       selectionCardEl.querySelector('[data-close]')?.addEventListener('click', () => {
         selectionRequests.cancel();
         selectionCardEl.style.display = 'none';
@@ -3389,7 +3391,7 @@
     ytLastRenderedSig = '';
     ytFailureCount++;
     const permanent = /\b(?:400|401|402|403|404|422)\b|未配置|不支持|invalid.*(?:key|model)|unauthorized|permission.denied/i.test(message);
-    ytTranslationStopped = ytNeedsRefresh || permanent || ytFailureCount >= 3;
+    ytTranslationStopped = ytNeedsRefresh || error?.retryable === false || permanent || ytFailureCount >= 3;
     ytRetryAt = Date.now() + 1000 * (2 ** (ytFailureCount - 1));
     if (!ytErrorEl || ytErrorEl.isConnected === false) {
       ytErrorEl = document.createElement('div');
@@ -3517,6 +3519,12 @@
           const curTime = video ? video.currentTime : 0;
           prefetchYoutubeCuesAround(curTime);
         }
+      } else if (event.data.type === 'YT_CAPTION_DOWNLOAD_FAILED') {
+        if (event.data.payload?.videoId !== getCurrentYoutubeVideoId() || ytCaptionSource === 'track') return;
+        mountYoutubePlayerUI();
+        recordYoutubeTranslationFailure({ error: event.data.payload.error, retryable: false });
+        const button = ytErrorEl?.querySelector('button');
+        button?.addEventListener('click', () => window.postMessage({ source: 'IG_YT_CONTENT_SCRIPT', type: 'REQUEST_YT_TRACKS', retry: true }, '*'));
       } else if (event.data.type === 'YT_NO_CAPTIONS_AVAILABLE') {
         if (event.data.payload?.videoId && event.data.payload.videoId !== getCurrentYoutubeVideoId()) return;
         ytVideoTitle = event.data.payload?.videoTitle || document.title;

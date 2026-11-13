@@ -1,13 +1,13 @@
 // Original vector PDF. Real PDF.js glyph coordinates exercise extraction before
 // translation; the mock model must not manufacture formulas or table structure.
-export function makeAcademicPdfFixture({ blankScore = false, rasterJpeg = null, withFormula = !rasterJpeg } = {}) {
+export function makeAcademicPdfFixture({ blankScore = false, rasterJpeg = null, withFormula = !rasterJpeg, sparse = false } = {}) {
   const ops = [];
   const text = (x, y, value, size = 10, font = 'F1') => {
     const escaped = value.replace(/[\\()]/g, '\\$&');
     ops.push(`BT /${font} ${size} Tf 1 0 0 1 ${x} ${800-y} Tm (${escaped}) Tj ET`);
   };
   text(70, 65, 'Vector academic regression', 16);
-  for (let i=0;i<(rasterJpeg && !withFormula ? 12 : 5);i++) {
+  for (let i=0;i<(sparse ? 0 : rasterJpeg && !withFormula ? 12 : 5);i++) {
     text(70, 105+i*(rasterJpeg && !withFormula ? 10 : 16), 'This paragraph preserves the original scientific context and the reading order of this page.');
   }
   if (withFormula) {

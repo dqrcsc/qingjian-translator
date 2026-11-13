@@ -331,7 +331,7 @@ export async function verifyReadingStudioBrowser(context, sw) {
       const printPages = async scope => {
         await page.evaluate(() => {
           globalThis.__readingPrintedPages = null;
-          window.print = () => { globalThis.__readingPrintedPages = [...document.querySelectorAll('#bilingualStreamContainer [data-paper-page]')]
+          window.print = () => { globalThis.__readingPrintedPages = [...document.querySelectorAll('#documentPrintSnapshot [data-paper-page]')]
             .filter(node => getComputedStyle(node).display !== 'none').map(node => Number(node.dataset.paperPage)); };
         });
         await page.locator('#exportMenuBtn').click();
@@ -419,17 +419,17 @@ export async function verifyReadingStudioBrowser(context, sw) {
       // Exercise the real print-export controls; observe print DOM without opening an OS print dialog.
       await page.evaluate(() => {
         window.print = () => { globalThis.__readingPrint = {
-          blocks: document.querySelectorAll('#bilingualStreamContainer [data-block-id]').length,
+          blocks: document.querySelectorAll('#documentPrintSnapshot [data-block-id]').length,
           layout: document.querySelector('#layoutStyleSelect').value,
           mode: document.querySelector('#viewModeSelect').value,
-          originalDisplay: getComputedStyle(document.querySelector('#bilingualStreamContainer .stream-orig')).display
+          originalDisplay: getComputedStyle(document.querySelector('#documentPrintSnapshot .stream-orig')).display
         }; };
       });
       await page.locator('#exportMenuBtn').click();
       await page.locator('[data-export="pdf-bilingual"]').click();
       await page.locator('#confirmPdfExportBtn').click();
       await page.waitForFunction(() => Boolean(globalThis.__readingPrint));
-      assert.deepEqual(await page.evaluate(() => __readingPrint), { blocks: 2, layout: 'paper-layout', mode: 'bilingual', originalDisplay: 'block' });
+      assert.deepEqual(await page.evaluate(() => __readingPrint), { blocks: 2, layout: 'card-stream', mode: 'translation-full-width', originalDisplay: 'block' });
       await page.waitForFunction(() => document.querySelector('#viewModeSelect').value === 'translation-full-width' &&
         document.querySelector('#layoutStyleSelect').value === 'card-stream');
       assert.equal(await page.locator('.left-pane').isVisible(), false);

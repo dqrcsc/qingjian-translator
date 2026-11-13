@@ -1008,7 +1008,7 @@ export function normalizeFigureLabelsToCrop(figureLabels, figureBox2d) {
     const trans = String(raw.translation || '').trim();
     if (!trans) continue;
     if (/^[\d\s.,:%+\-*/=<>()[\]~±×÷]+$/.test(orig || trans)) continue;
-    if ((orig || trans).length <= 2 && !/[\u4e00-\u9fa5]/.test(trans)) continue;
+    if (!/\p{L}/u.test(orig || trans)) continue;
 
     let [ymin, xmin, ymax, xmax] = Array.isArray(raw.box_2d) ? raw.box_2d : [100, 100, 180, 350];
     if (usePageRelativeTransform) {

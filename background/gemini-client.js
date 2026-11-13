@@ -864,8 +864,18 @@ Return a JSON object with:
     });
   }
   settings.requestSignal?.throwIfAborted();
+  const result = safeParseJson(raw);
+  const nonempty = value => typeof value === 'string' && value.trim().length > 0;
+  if (!result || Array.isArray(result) || typeof result !== 'object' ||
+      !nonempty(result.translation) || !nonempty(result.contextualMeaning) ||
+      !Array.isArray(result.breakdown) || result.breakdown.length > 4 ||
+      result.breakdown.some(item => !item || !nonempty(item.term) || !nonempty(item.meaning) ||
+        (item.role !== undefined && typeof item.role !== 'string')) ||
+      ['phonetic', 'example'].some(key => result[key] !== undefined && typeof result[key] !== 'string')) {
+    throw new Error('划词解释响应格式无效：缺少有效译文或语境解释，请重试。');
+  }
   await incrementUsageStats({ requests: 1, paragraphs: 1, chars: text.length }, settings.requestSignal);
-  return safeParseJson(raw);
+  return result;
 }
 
 /**
@@ -1119,9 +1129,9 @@ export async function analyzePdfWithGemini(
 1. Whenever the page contains a visual Figure, Chart, Plot, or Architecture Diagram:
    - Emit a block with "page": ${Number(pageNumber) || 1}, "type": "figure", "original": brief title of the figure, "translation": translated title in ${targetLangName}.
    - Provide "figureBox2d": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page bounding ONLY the visual graphic/chart/diagram area (do NOT include the text paragraph caption below the figure inside figureBox2d).
-   - Provide "figureLabels": an array of ONLY the key English text phrases/titles/axis names/node labels inside the figure (at most 10 key text labels; NEVER include numbers, percentages like "85.2" or "100%", axis tick numbers, or single symbols). Each label has:
+   - Provide "figureLabels": an array of ALL meaningful text phrases/titles/axis names/node labels inside the figure, in ANY source language. Include short words and abbreviations; do not cap the number of labels. Exclude pure numbers, percentages, numeric axis ticks, and standalone mathematical symbols. Each label has:
      * "box_2d": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page
-     * "original": original English text phrase
+     * "original": original text phrase in its source language
      * "translation": concise ${targetLangName} translation
 2. Emit the figure's text caption ("Figure N: ...") as a separate block right after the figure with "type": "caption".
 3. For the paper title on Page 1, use "type": "heading". For the author names, institutional affiliations, and corresponding author emails on Page 1, use "type": "author" and separate the author list, affiliations, and corresponding author line with "\\n".

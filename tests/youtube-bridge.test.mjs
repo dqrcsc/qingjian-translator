@@ -41,7 +41,7 @@ function harness(tracks = [], selected = null) {
   };
   const fire = (type, data) => { for (const listener of listeners.get(type) || []) listener(data || {}); };
   vm.runInNewContext(source, {
-    window, XMLHttpRequest: FakeXHR, URL, AbortController,
+    window, XMLHttpRequest: FakeXHR, URL, AbortController, TextEncoder, TextDecoder, clearTimeout,
     document: { title: 'Bridge fixture - YouTube', getElementById: () => player, querySelector: () => null },
     setTimeout() {}, setInterval() {}
   });

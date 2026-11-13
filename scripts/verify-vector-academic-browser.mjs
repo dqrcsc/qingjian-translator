@@ -100,7 +100,7 @@ export async function verifyVectorAcademicBrowser(context, sw) {
       await page.emulateMedia({ media: 'print' });
       await page.locator('#confirmPdfExportBtn').evaluate(el => el.click());
       await page.waitForFunction(() => window.__vectorPrint === 1);
-      await assertContent(page);
+      await assertContent(page.locator('#documentPrintSnapshot'));
       const pdfBytes = await page.pdf({ format: 'A4', printBackground: true });
       assert.ok(pdfBytes.length > 1000); assert.equal(pdfBytes.subarray(0,5).toString(), '%PDF-');
       // Re-open the generated print PDF with the bundled worker and inspect its

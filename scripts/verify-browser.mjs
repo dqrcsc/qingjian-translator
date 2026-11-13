@@ -35,6 +35,7 @@ import { verifyDocumentRoundtripBrowser } from './verify-document-roundtrip-brow
 import { verifyMarkerBrowser } from './verify-marker-browser.mjs';
 import { verifyAcademicTableBrowser } from './verify-academic-table-browser.mjs';
 import { verifyVectorAcademicBrowser } from './verify-vector-academic-browser.mjs';
+import { verifyV126Browser } from './verify-v126-browser.mjs';
 import { verifyV125Browser } from './verify-v125-browser.mjs';
 import { verifyV124IntegrityBrowser } from './verify-v124-integrity-browser.mjs';
 import { verifySitePauseBrowser } from './verify-site-pause-browser.mjs';
@@ -298,7 +299,8 @@ try {
     ['Vector PDF formulas, tables and exports', verifyVectorAcademicBrowser],
     ['Session-wide site pause', verifySitePauseBrowser],
     ['v1.0.24 PDF and rule integrity', verifyV124IntegrityBrowser],
-    ['v1.0.25 content boundaries and resources', verifyV125Browser]
+    ['v1.0.25 content boundaries and resources', verifyV125Browser],
+    ['v1.0.26 export concurrency and multilingual integrity', verifyV126Browser]
   ]) {
     stage = label;
     await resetSitePause();

@@ -23,10 +23,10 @@ test('Markdown preserves closed and EOF fences, tildes and shorter nested backti
 
 test('export snapshots include every block and restore search/chapter/layout without observing lazy pages', () => {
   const main = { innerHTML: 'filtered', scrollTop: 17 };
-  const ctx = vm.createContext({ bilingualStreamContainer: main, streamSearchInput: { value: 'alpha' },
+  const ctx = vm.createContext({ document: { createElement: () => ({ innerHTML: '' }) }, bilingualStreamContainer: main, streamSearchInput: { value: 'alpha' },
     epubChapterSelect: { value: '2' }, layoutStyleSelect: { value: 'card-stream' },
     renderWorkspaceBlocks: (filter, options) => {
-      if (options?.forExport) { assert.equal(options.allChapters, true); assert.equal(options.forcePaperLayout, true); assert.equal(filter, ''); main.innerHTML = 'alpha beta'; }
+      if (options?.forExport) { assert.equal(options.allChapters, true); assert.equal(options.forcePaperLayout, true); assert.equal(filter, ''); options.outputContainer.innerHTML = 'alpha beta'; }
       else { assert.equal(filter, 'alpha'); main.innerHTML = 'filtered'; }
     }
   });
@@ -238,36 +238,30 @@ test('dense born-digital PDF page uses fast parallel small batches instead of a 
   }
 });
 
-test('PDF printing limits both translated sheets and untranslated placeholders; an empty selection never prints all pages', async () => {
-  for (const secondPageType of ['paper-sheet-page', 'paper-untranslated-page']) {
-    const pages = [1, 2].map((number, index) => {
-      const classes = new Set([index ? secondPageType : 'paper-sheet-page']);
-      return { number, getAttribute: () => String(number), classes,
-        classList: { add: value => classes.add(value), remove: value => classes.delete(value) } };
-    });
-    const printed = [];
-    const ctx = vm.createContext({ currentDoc: { fileName: 'fixture' }, documentSession: 1,
-      isDocumentReady: () => true, getExportViewMode: mode => mode, docStatusSubtitle: {},
-      layoutStyleSelect: { value: 'card-stream' }, viewModeSelect: { value: 'translation-full-width' }, streamSearchInput: { value: 'search' },
-      document: { title: 'Reader' }, applyDocumentViewMode() {}, renderWorkspaceBlocks() {}, waitForAllPaperImagesLoaded: async () => {},
-      setTimeout: callback => callback(), window: { print: () => printed.push(pages.filter(page => !page.classes.has('is-print-excluded-page')).map(page => page.number)) },
-      bilingualStreamContainer: { classList: { add() {}, toggle() {} }, querySelectorAll: selector => {
-        if (selector === '[data-paper-page]') return pages;
-        if (selector.includes('is-print-excluded-page')) return pages.filter(page => page.classes.has('is-print-excluded-page'));
-        if (selector === '.paper-sheet-page') return pages.filter(page => page.classes.has('paper-sheet-page'));
-        throw Error(selector);
-      } }
-    });
-    vm.runInContext(section('async function executeLayoutPreservingPdfExport(', '\nfunction snapshotCompleteDocumentHtml('), ctx);
-    await ctx.executeLayoutPreservingPdfExport('translation-only', [1]);
-    assert.deepEqual(printed, [[1]], `range excludes page 2 when it is ${secondPageType}`);
-    assert.equal(ctx.viewModeSelect.value, 'translation-full-width'); assert.equal(ctx.layoutStyleSelect.value, 'card-stream');
-    await ctx.executeLayoutPreservingPdfExport('translation-only', []);
-    assert.equal(printed.length, 1, 'explicit empty range is not all pages');
-    assert.match(ctx.docStatusSubtitle.textContent, /没有.*页面/);
-    await ctx.executeLayoutPreservingPdfExport('translation-only', null);
-    assert.deepEqual(printed[1], [1, 2], 'null retains the explicit all-pages default');
-  }
+test('PDF print snapshot limits the range without mutating reader controls; empty selection never prints', async () => {
+  const printed = [];
+  let root;
+  const classes = { add() {}, remove() {}, toggle() {} };
+  const ctx = vm.createContext({ AbortController, currentDoc: { fileName: 'fixture' }, documentSession: 1,
+    isDocumentReady: () => true, getExportViewMode: mode => mode, docStatusSubtitle: {},
+    layoutStyleSelect: { value: 'card-stream' }, viewModeSelect: { value: 'translation-full-width' },
+    document: { title: 'Reader', body: { classList: classes, appendChild() {} },
+      createElement: () => (root = { classList: classes, remove() {}, querySelectorAll: () => [] }) },
+    renderWorkspaceBlocks(_filter, options) { options.outputContainer.pages = options.exportPages ? [...options.exportPages] : [1, 2]; },
+    waitForAllPaperImagesLoaded: async () => {}, clearTimeout() {},
+    setTimeout: callback => callback(),
+    window: { addEventListener() {}, removeEventListener() {}, print: () => printed.push(root.pages) }
+  });
+  vm.runInContext(section('let activePrintSnapshot =', '\nfunction snapshotCompleteDocumentHtml('), ctx);
+  await ctx.executeLayoutPreservingPdfExport('translation-only', [1]);
+  assert.deepEqual(printed, [[1]]);
+  assert.equal(ctx.viewModeSelect.value, 'translation-full-width');
+  assert.equal(ctx.layoutStyleSelect.value, 'card-stream');
+  await ctx.executeLayoutPreservingPdfExport('translation-only', []);
+  assert.equal(printed.length, 1);
+  assert.match(ctx.docStatusSubtitle.textContent, /没有.*页面/);
+  await ctx.executeLayoutPreservingPdfExport('translation-only', null);
+  assert.deepEqual(Array.from(printed[1]), [1, 2]);
 });
 
 test('PDF opening that completes after the import deadline destroys its retired worker result', async () => {

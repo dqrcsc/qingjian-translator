@@ -14,6 +14,91 @@
   let navigationGeneration = 0;
   let navigationPending = false;
   let trackController = new AbortController();
+  const CAPTION_DOWNLOAD_MS = 90000;
+  const CAPTION_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+  const pendingTracks = new Map();
+  const failedTracks = new Map();
+
+  // One budget owns both format attempts and every byte actually read.
+  function createCaptionBudget(parentSignal, startedAt = Date.now()) {
+    const controller = new AbortController();
+    const abort = () => controller.abort(parentSignal.reason);
+    if (parentSignal.aborted) abort();
+    else parentSignal.addEventListener('abort', abort, { once: true });
+    const timeout = () => controller.abort(new Error('字幕下载超过 90 秒总时间预算，请重试。'));
+    const remaining = CAPTION_DOWNLOAD_MS - (Date.now() - startedAt);
+    const timer = setTimeout(timeout, Math.max(0, remaining));
+    if (remaining <= 0) timeout();
+    let bytes = 0;
+    const check = () => {
+      if (Date.now() - startedAt >= CAPTION_DOWNLOAD_MS) timeout();
+      controller.signal.throwIfAborted();
+    };
+    const consume = count => {
+      check();
+      bytes += count;
+      if (bytes > CAPTION_DOWNLOAD_BYTES) {
+        controller.abort(new Error('字幕下载超过 8 MiB 字节预算，未加载不完整字幕。'));
+        check();
+      }
+    };
+    const wait = async promise => {
+      check();
+      let rejectAbort;
+      const aborted = new Promise((_, reject) => {
+        rejectAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+      try { const value = await Promise.race([promise, aborted]); check(); return value; }
+      finally { controller.signal.removeEventListener('abort', rejectAbort); }
+    };
+    return {
+      signal: controller.signal, wait, check,
+      async read(response) {
+        const reader = response.body?.getReader();
+        const cancel = () => { if (reader) void reader.cancel(controller.signal.reason).catch(() => {}); };
+        controller.signal.addEventListener('abort', cancel, { once: true });
+        try {
+          check();
+          const length = Number(response.headers?.get('content-length'));
+          if (Number.isFinite(length) && length > CAPTION_DOWNLOAD_BYTES - bytes) {
+            consume(length);
+          }
+          // Browser fetch responses expose streams; fallback supports body-less adapters.
+          if (!reader) {
+            const text = await wait(response.text());
+            consume(new TextEncoder().encode(text).byteLength);
+            return text;
+          }
+          const decoder = new TextDecoder();
+          const parts = [];
+          while (true) {
+            const { done, value } = await wait(reader.read());
+            if (done) break;
+            consume(value.byteLength);
+            parts.push(decoder.decode(value, { stream: true }));
+          }
+          parts.push(decoder.decode());
+          return parts.join('');
+        } catch (error) {
+          cancel();
+          throw error;
+        } finally {
+          controller.signal.removeEventListener('abort', cancel);
+          reader?.releaseLock();
+        }
+      },
+      close() { clearTimeout(timer); parentSignal.removeEventListener('abort', abort); }
+    };
+  }
+
+  function reportCaptionFailure(error, session, trackMeta) {
+    if (!session.signal.aborted && isCurrentVideoSession(session) && isSelectedSource(trackMeta)) {
+      window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CAPTION_DOWNLOAD_FAILED',
+        payload: { videoId: session.videoId, error: String(error?.message || error) } }, '*');
+    }
+  }
+
 
   function getVideoIdFromUrl() {
     try {
@@ -217,6 +302,8 @@
     lastKnownClient = '';
     for (const key of Object.keys(lastKnownSessionParams)) delete lastKnownSessionParams[key];
     trackController.abort();
+    pendingTracks.clear();
+    failedTracks.clear();
     trackController = new AbortController();
   }
 
@@ -319,44 +406,52 @@
 
   async function fetchAndDispatchTrack(baseUrl, trackMeta = {}, session = captureVideoSession()) {
     if (!baseUrl || !isCurrentTrackRequest(session, baseUrl)) return false;
-    try {
-      capturePotFromTimedTextUrl(baseUrl);
-      const urlObj = new URL(baseUrl, window.location.origin);
-      urlObj.searchParams.set('fmt', 'json3');
-      // Translate the chosen base track ourselves; leave the player's display choice intact.
-      urlObj.searchParams.delete('tlang');
-      applySessionParamsToUrl(urlObj);
-      const finalUrl = urlObj.toString();
-      if (finalUrl === lastDispatchedTrackUrl && lastDispatchedPayload && isSelectedSource(trackMeta)) {
-        window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CUES_LOADED', payload: lastDispatchedPayload }, '*');
-        return true;
-      }
-
-      // Bypass our fetch interceptor instead of suppressing unrelated concurrent requests.
-      const response = await origFetch.call(window, finalUrl, { credentials: 'same-origin', signal: session.signal });
-      if (!isCurrentTrackRequest(session, baseUrl)) return false;
-      if (response.ok) {
-        const rawText = await response.text();
-        if (!isCurrentTrackRequest(session, baseUrl)) return false;
-        const cues = parseTimedTextPayload(rawText);
-        if (cues.length) return dispatchCuesToContentScript(cues, trackMeta, finalUrl, session);
-      }
-
-      const fallbackUrl = new URL(baseUrl, window.location.origin);
-      fallbackUrl.searchParams.delete('tlang');
-      applySessionParamsToUrl(fallbackUrl);
-      const fallbackResponse = await origFetch.call(window, fallbackUrl.toString(), {
-        credentials: 'same-origin', signal: session.signal
-      });
-      if (!isCurrentTrackRequest(session, baseUrl)) return false;
-      if (fallbackResponse.ok) {
-        const rawText = await fallbackResponse.text();
-        return dispatchCuesToContentScript(parseTimedTextPayload(rawText), trackMeta, finalUrl, session);
-      }
-    } catch {
-      // Navigation aborts and temporary timedtext failures are recovered by the next extraction.
+    capturePotFromTimedTextUrl(baseUrl);
+    const urlObj = new URL(baseUrl, window.location.origin);
+    urlObj.searchParams.set('fmt', 'json3');
+    urlObj.searchParams.delete('tlang');
+    applySessionParamsToUrl(urlObj);
+    const finalUrl = urlObj.toString();
+    const key = `${session.generation}:${finalUrl}`;
+    if (finalUrl === lastDispatchedTrackUrl && lastDispatchedPayload && isSelectedSource(trackMeta)) {
+      window.postMessage({ source: 'IG_YT_MAIN_BRIDGE', type: 'YT_CUES_LOADED', payload: lastDispatchedPayload }, '*');
+      return true;
     }
-    return false;
+    if (pendingTracks.has(key)) return pendingTracks.get(key);
+    if (failedTracks.has(key)) {
+      reportCaptionFailure(failedTracks.get(key), session, trackMeta);
+      return false;
+    }
+    const budget = createCaptionBudget(session.signal);
+    const task = (async () => {
+      try {
+        const fallback = new URL(baseUrl, window.location.origin);
+        fallback.searchParams.delete('tlang');
+        applySessionParamsToUrl(fallback);
+        for (const url of [...new Set([finalUrl, fallback.toString()])]) {
+          const response = await budget.wait(origFetch.call(window, url, { credentials: 'same-origin', signal: budget.signal }));
+          const rawText = await budget.read(response);
+          if (!isCurrentTrackRequest(session, baseUrl)) return false;
+          if (response.ok) {
+            const cues = parseTimedTextPayload(rawText);
+            budget.check();
+            if (cues.length) return dispatchCuesToContentScript(cues, trackMeta, finalUrl, session);
+          }
+        }
+        throw new Error('字幕下载未返回有效内容，请重试或切换字幕轨道。');
+      } catch (error) {
+        if (!session.signal.aborted) {
+          failedTracks.set(key, error);
+          reportCaptionFailure(error, session, trackMeta);
+        }
+        return false;
+      } finally {
+        budget.close();
+        if (pendingTracks.get(key) === task) pendingTracks.delete(key);
+      }
+    })();
+    pendingTracks.set(key, task);
+    return task;
   }
 
   async function extractCaptionTracksFromPlayer(session = captureVideoSession()) {
@@ -417,6 +512,10 @@
         else if (url.searchParams.has('tlang')) fetchAndDispatchTrack(reqUrl, requestTrack, session);
         return;
       }
+      if (rawResponseText.length > CAPTION_DOWNLOAD_BYTES || new TextEncoder().encode(rawResponseText).byteLength > CAPTION_DOWNLOAD_BYTES) {
+        reportCaptionFailure(new Error('字幕下载超过 8 MiB 字节预算，未加载不完整字幕。'), session, preferred || requestTrack);
+        return;
+      }
       const cues = parseTimedTextPayload(rawResponseText);
       if (cues.length && dispatchCuesToContentScript(cues, preferred || requestTrack, reqUrl, session)) return;
       if (reqUrl !== lastDispatchedTrackUrl) fetchAndDispatchTrack(reqUrl, preferred || requestTrack, session);
@@ -456,10 +555,14 @@
       const session = captureVideoSession();
       const intercept = reqUrl.includes('/api/timedtext') && isCurrentTrackRequest(session, reqUrl);
       if (intercept) capturePotFromTimedTextUrl(reqUrl);
+      const startedAt = Date.now();
       const response = await origFetch.apply(this, args);
       if (intercept && isCurrentTrackRequest(session, reqUrl)) {
         try {
-          response.clone().text().then((rawText) => handleInterceptedTimedText(reqUrl, rawText, session)).catch(() => {});
+          const copy = response.clone();
+          const budget = createCaptionBudget(session.signal, startedAt);
+          budget.read(copy).then(rawText => handleInterceptedTimedText(reqUrl, rawText, session))
+            .catch(error => reportCaptionFailure(error, session, selectCaptionTrack() || {})).finally(() => budget.close());
         } catch {
           // Opaque or already consumed responses cannot be inspected.
         }
@@ -474,6 +577,7 @@
     if (event.data.source !== 'IG_YT_CONTENT_SCRIPT') return;
 
     if (event.data.type === 'REQUEST_YT_TRACKS') {
+      if (event.data.retry) failedTracks.clear();
       extractCaptionTracksFromPlayer();
     } else if (event.data.type === 'SEEK_VIDEO_TO') {
       const seconds = Number(event.data.seconds);

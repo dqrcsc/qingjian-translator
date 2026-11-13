@@ -72,7 +72,7 @@ export async function verifyAcademicTableBrowser(context, sw) {
     check('Dark stream and translation-only modes retain comfortable table/formula colors and column structure without retranslating');
 
     await page.evaluate(()=>{window.__tablePrint=null;window.print=()=>{
-      const sheet=document.querySelector('.paper-sheet-page'),table=sheet.querySelector('.stream-trans table');
+      const sheet=document.querySelector('#documentPrintSnapshot .paper-sheet-page'),table=sheet.querySelector('.stream-trans table');
       window.__tablePrint={tableColor:getComputedStyle(sheet.querySelector('.paper-table-block .stream-trans')).color,
         originalColor:getComputedStyle(sheet.querySelector('.paper-table-block .stream-orig')).color,
         formulaColor:getComputedStyle(sheet.querySelector('.paper-equation-block .math-expr')).color,

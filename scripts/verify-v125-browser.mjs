@@ -82,7 +82,7 @@ export async function verifyV125Browser(context, sw) {
     await page.locator('#layoutStyleSelect').selectOption('card-stream');
     assert.match(await page.locator('#bilingualStreamContainer').textContent(), /PageSentinel9/);
     check('Off-window PDF text remains searchable; actual partial MD/HTML/EPUB downloads include distant translated pages and explicit missing-page coverage without requests');
-    await page.evaluate(()=>{window.__v125Print=null;window.print=()=>{window.__v125Print={pages:document.querySelectorAll('#bilingualStreamContainer .paper-sheet-page').length,text:document.querySelector('#bilingualStreamContainer').textContent};};});
+    await page.evaluate(()=>{window.__v125Print=null;window.print=()=>{window.__v125Print={pages:document.querySelectorAll('#documentPrintSnapshot .paper-sheet-page').length,text:document.querySelector('#documentPrintSnapshot').textContent};};});
     await page.locator('#exportMenuBtn').click();await page.locator('[data-export="pdf-bilingual"]').click();
     await page.locator('input[name="pdfExportScope"][value="all"]').check();await page.locator('#confirmPdfExportBtn').click();
     await page.waitForFunction(()=>window.__v125Print?.pages===9);

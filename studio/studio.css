@@ -1946,3 +1946,10 @@ body {
     color: #335f65 !important;
   }
 }
+
+/* Immutable export snapshot: ordinary translations keep updating the reader. */
+#documentPrintSnapshot { display: none; }
+@media print {
+  body.has-print-snapshot > :not(#documentPrintSnapshot) { display: none !important; }
+  body.has-print-snapshot > #documentPrintSnapshot { display: block !important; }
+}
