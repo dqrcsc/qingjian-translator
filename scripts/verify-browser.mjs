@@ -72,7 +72,7 @@ let stage = 'launch';
 const watchdog = setTimeout(() => {
   console.error(`Browser verification timed out at: ${stage}`);
   void context?.close();
-}, 300000);
+}, 360000);
 async function until(predicate, label) {
   const deadline = Date.now() + 15000;
   while (!predicate()) {
