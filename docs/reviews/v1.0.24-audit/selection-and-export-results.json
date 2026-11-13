@@ -1,0 +1,16 @@
+{
+  "selection": {
+    "sourceLength": 1693,
+    "selectionPosition": 1660,
+    "requests": [
+      {
+        "prompt": "Analyze and translate the selected text in the context of its surrounding paragraph.\nTarget Explanation Language: Simplified Chinese (zh-CN)\nPage Title: Webpage\nSurrounding Context Paragraph: \"\"\"This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different topic. This introductory discussion covers a different to\"\"\"\nSelected Text: \"\"\"bank\"\"\"\n\nReturn a JSON object with:\n- \"translation\": Direct, natural translation of the Selected Text fitting the context.\n- \"phonetic\": IPA phonetic transcription or core lemma if it is a word/short phrase, otherwise a 2-4 word summary tag.\n- \"contextualMeaning\": 1-2 sentences explaining the exact nuance or meaning in this specific context (in Simplified Chinese (zh-CN)).\n- \"breakdown\": Up to 4 key vocabulary terms, idioms, or grammar structures from the selection, each with {\"term\", \"meaning\", \"role\"}.\n- \"example\": A natural bilingual example sentence showing how the key expression is used."
+      }
+    ]
+  },
+  "trackExport": {
+    "fileName": "Audit long track.bilingual.srt",
+    "cueCount": 20000,
+    "hasLast": false
+  }
+}

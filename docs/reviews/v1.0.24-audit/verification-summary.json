@@ -1,0 +1,13 @@
+{
+  "date": "2026-11-13",
+  "commit": "be3dd6e0d3fb99dced4dd4055480296cc95f5f29",
+  "version": "1.0.24",
+  "baseChecks": 48,
+  "nodeTests": 231,
+  "nodeFailures": 0,
+  "browserPassed": true,
+  "browser": "148.0.7778.96",
+  "browserChecks": 177,
+  "browserErrors": [],
+  "modelEndpoints": "isolated local fixtures; no user API key"
+}

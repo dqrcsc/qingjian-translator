@@ -1,0 +1,104 @@
+{
+  "untranslatedMd": {
+    "text": "﻿",
+    "status": "已加载文档：not-yet-translated.pdf"
+  },
+  "labelCap": {
+    "visionReplies": [
+      20
+    ],
+    "figureText": "\n      \n        \n          🖼️ 图中文字覆盖译文 (16 处)\n        \n        \n          \n            \n              👁️ 对比原图\n            \n          \n          ↻ 重译图中文字\n          \n            ↻ 重译图注\n          \n        \n      \n      \n      \n        \n          \n          \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n          \n        \n        \n      \n      \n        Figure 1: Raster chart with English labels.\n        译文：Figure 1: Raster chart with English labels.\n      \n    ",
+    "hasFinalLabel": false,
+    "hasSixteenth": true,
+    "status": "✓ 全部 1 页翻译完成"
+  },
+  "htmlToggle": {
+    "before": true,
+    "hidden": false,
+    "after": true
+  },
+  "mixedExtraction": [
+    {
+      "type": "heading",
+      "original": "Vector academic regression"
+    },
+    {
+      "type": "paragraph",
+      "original": "This paragraph preserves the original scientific context and the reading order of this page. This paragraph preserves the original scientific context and the reading order of this page. This paragraph preserves the original scientific context and the reading order of this page. This paragraph preserves the original scientific context and the reading order of this page. This paragraph preserves the original scientific context and the reading order of this page."
+    },
+    {
+      "type": "paragraph",
+      "original": "The final layer produces outputs of dimension d$_{model}$ = 512."
+    },
+    {
+      "type": "figure",
+      "original": "Figure 1: Raster chart with English labels.",
+      "figureBox2d": [
+        298,
+        169,
+        567,
+        514
+      ],
+      "vectorLabels": [
+        {
+          "original": "Attention(Q, K, V) = softmax( √",
+          "translation": "",
+          "lines": [
+            {
+              "str": "Attention(Q, K, V) = softmax( √",
+              "x": 112,
+              "top": 43.19999999999999,
+              "right": 390.98,
+              "bottom": 66,
+              "width": 278.98,
+              "height": 22.80000000000001,
+              "yBaseline": 62,
+              "fontPx": 20
+            }
+          ],
+          "lineRects": [
+            {
+              "str": "Attention(Q, K, V) = softmax( √",
+              "x": 112,
+              "top": 43.19999999999999,
+              "right": 390.98,
+              "bottom": 66,
+              "width": 278.98,
+              "height": 22.80000000000001,
+              "yBaseline": 62,
+              "fontPx": 20
+            }
+          ],
+          "x": 112,
+          "top": 43.19999999999999,
+          "right": 390.98,
+          "bottom": 66,
+          "width": 278.98,
+          "height": 22.80000000000001,
+          "fontPx": 20,
+          "align": "center",
+          "box_2d": [
+            92,
+            253,
+            141,
+            883
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "original": "After the figure, this paragraph must remain visible."
+    }
+  ],
+  "mixedScreen": {
+    "equations": 0,
+    "visionCalls": 0,
+    "figureText": "\n      \n        \n          🖼️ 图中文字覆盖译文 (1 处)\n        \n        \n          \n            \n              👁️ 对比原图\n            \n          \n          ↻ 重译图中文字\n          \n            ↻ 重译图注\n          \n        \n      \n      \n      \n        \n          \n          \n          \n        \n        \n      \n      \n        Figure 1: Raster chart with English labels.\n        译文：Figure 1: Raster chart with English labels.\n      \n    ",
+    "status": "✓ 全部 1 页翻译完成"
+  },
+  "trackCap": {
+    "lastRows": 0,
+    "panelText": "\n      \n        ✦ 双语字幕时间轴\n        \n          🎙️ 切片听译\n          导出字幕\n          ✕\n        \n      \n      \n        📄 导出 .txt (直接打开)\n        📋 复制已记录字幕\n        🎬 导出 .srt\n      \n      已加载字幕轨道：20000 条，已有译文 0 条\n      \n        \n        返回当前句\n      \n      \n    "
+  }
+}
