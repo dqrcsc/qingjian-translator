@@ -89,7 +89,8 @@ export async function verifyAcademicTableBrowser(context, sw) {
     assert.equal(printed.originalColor,'rgb(71, 85, 105)');assert.ok(printed.tableWidth<=printed.availableWidth+1);
     for(const row of printed.columns.slice(1))for(let c=0;c<6;c++)assert.ok(Math.abs(row[c]-printed.columns[0][c])<1);
     await page.emulateMedia({media:'screen'});
-    await page.waitForTimeout(450);
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+    assert.equal(await page.locator('#documentPrintSnapshot').count(), 0);
     check('The actual PDF export confirmation reaches print with aligned, unclipped table columns and explicit muted teal colors despite generic print color rules');
 
     const event=page.waitForEvent('download');await page.locator('#exportMenuBtn').click();await page.locator('[data-export="html"]').click();

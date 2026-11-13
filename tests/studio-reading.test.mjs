@@ -240,7 +240,7 @@ test('dense born-digital PDF page uses fast parallel small batches instead of a 
 
 test('PDF print snapshot limits the range without mutating reader controls; empty selection never prints', async () => {
   const printed = [];
-  let root;
+  let root, finishPrint;
   const classes = { add() {}, remove() {}, toggle() {} };
   const ctx = vm.createContext({ AbortController, currentDoc: { fileName: 'fixture' }, documentSession: 1,
     isDocumentReady: () => true, getExportViewMode: mode => mode, docStatusSubtitle: {},
@@ -250,18 +250,23 @@ test('PDF print snapshot limits the range without mutating reader controls; empt
     renderWorkspaceBlocks(_filter, options) { options.outputContainer.pages = options.exportPages ? [...options.exportPages] : [1, 2]; },
     waitForAllPaperImagesLoaded: async () => {}, clearTimeout() {},
     setTimeout: callback => callback(),
-    window: { addEventListener() {}, removeEventListener() {}, print: () => printed.push(root.pages) }
+    window: { addEventListener(name, callback) { if (name === 'afterprint') finishPrint = callback; }, removeEventListener() {}, print: () => printed.push(root.pages) }
   });
   vm.runInContext(section('let activePrintSnapshot =', '\nfunction snapshotCompleteDocumentHtml('), ctx);
   await ctx.executeLayoutPreservingPdfExport('translation-only', [1]);
   assert.deepEqual(printed, [[1]]);
   assert.equal(ctx.viewModeSelect.value, 'translation-full-width');
   assert.equal(ctx.layoutStyleSelect.value, 'card-stream');
+  await ctx.executeLayoutPreservingPdfExport('translation-only', [2]);
+  assert.equal(printed.length, 1, 'returning from print alone must not release the snapshot');
+  assert.match(ctx.docStatusSubtitle.textContent, /已有 PDF 导出/);
+  finishPrint();
   await ctx.executeLayoutPreservingPdfExport('translation-only', []);
   assert.equal(printed.length, 1);
   assert.match(ctx.docStatusSubtitle.textContent, /没有.*页面/);
   await ctx.executeLayoutPreservingPdfExport('translation-only', null);
   assert.deepEqual(Array.from(printed[1]), [1, 2]);
+  finishPrint();
 });
 
 test('PDF opening that completes after the import deadline destroys its retired worker result', async () => {

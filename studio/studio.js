@@ -344,6 +344,7 @@ configNotice.querySelector('[data-config-restore]').addEventListener('click', ()
   docStatusSubtitle.textContent = '已恢复上一版译文；继续翻译将使用该版原配置。';
 }));
 window.addEventListener('pagehide', () => {
+  activePrintSnapshot?.cleanup();
   cancelDocumentRequests();
   disposePdfPreviewResources();
   void currentDoc.pdfDoc?.destroy().catch(() => {});
@@ -3230,10 +3231,8 @@ async function executeLayoutPreservingPdfExport(targetViewMode = 'translation-on
   root.classList.toggle('mode-translation-only', getExportViewMode(targetViewMode) === 'translation-only');
   const controller = new AbortController();
   const snapshot = { root, cleanup: null };
-  let cleanupTimer;
   const cleanup = () => {
     if (activePrintSnapshot !== snapshot) return;
-    clearTimeout(cleanupTimer);
     controller.abort();
     window.removeEventListener('afterprint', cleanup);
     root.remove();
@@ -3258,8 +3257,8 @@ async function executeLayoutPreservingPdfExport(targetViewMode = 'translation-on
     if (session !== documentSession || activePrintSnapshot !== snapshot) { cleanup(); return; }
     window.addEventListener('afterprint', cleanup, { once: true });
     window.print();
-    // print() blocks while the dialog is open; fallback also supports headless print stubs.
-    if (activePrintSnapshot === snapshot) cleanupTimer = setTimeout(cleanup, 400);
+    // Retain the snapshot until the browser reports that printing has ended.
+    // A fixed delay can release it before a non-blocking print implementation consumes it.
   } catch (error) {
     cleanup();
     if (session === documentSession) docStatusSubtitle.textContent = error.name === 'TimeoutError'

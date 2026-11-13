@@ -87,6 +87,8 @@ export async function verifyV125Browser(context, sw) {
     await page.locator('input[name="pdfExportScope"][value="all"]').check();await page.locator('#confirmPdfExportBtn').click();
     await page.waitForFunction(()=>window.__v125Print?.pages===9);
     const printed=await page.evaluate(()=>window.__v125Print.text);for(let n=1;n<=9;n++)assert.ok(printed.includes(`PageSentinel${n}`));
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+    assert.equal(await page.locator('#documentPrintSnapshot').count(), 0);
     await page.waitForFunction(()=>document.querySelector('#streamSearchInput').value==='PageSentinel9'&&document.querySelectorAll('#bilingualStreamContainer .paper-sheet-page').length===0);
     assert.match(await page.locator('#bilingualStreamContainer').textContent(),/PageSentinel9/);
     check('Actual PDF export confirmation completes all 9 pages beyond the reading window, reaches print with every page, and restores filtered card reading');

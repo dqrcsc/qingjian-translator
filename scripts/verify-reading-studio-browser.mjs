@@ -349,7 +349,8 @@ export async function verifyReadingStudioBrowser(context, sw) {
           return await page.evaluate(() => __readingPrintedPages);
         } finally {
           await page.emulateMedia({ media: 'screen' });
-          await page.waitForTimeout(450); // Production restores the pre-print view after 400 ms.
+          await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+          assert.equal(await page.locator('#documentPrintSnapshot').count(), 0);
         }
       };
       const translatedOnly = await printPages('translated-only');
@@ -430,6 +431,8 @@ export async function verifyReadingStudioBrowser(context, sw) {
       await page.locator('#confirmPdfExportBtn').click();
       await page.waitForFunction(() => Boolean(globalThis.__readingPrint));
       assert.deepEqual(await page.evaluate(() => __readingPrint), { blocks: 2, layout: 'card-stream', mode: 'translation-full-width', originalDisplay: 'block' });
+      await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+      assert.equal(await page.locator('#documentPrintSnapshot').count(), 0);
       await page.waitForFunction(() => document.querySelector('#viewModeSelect').value === 'translation-full-width' &&
         document.querySelector('#layoutStyleSelect').value === 'card-stream');
       assert.equal(await page.locator('.left-pane').isVisible(), false);
