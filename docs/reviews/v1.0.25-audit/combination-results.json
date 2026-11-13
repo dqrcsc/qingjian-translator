@@ -1,0 +1,553 @@
+{
+  "errors": [],
+  "shortLabels": {
+    "input": [
+      {
+        "original": "Up",
+        "translation": "Arriba",
+        "box_2d": [
+          50,
+          50,
+          160,
+          250
+        ]
+      },
+      {
+        "original": "Go",
+        "translation": "Ir",
+        "box_2d": [
+          300,
+          50,
+          410,
+          250
+        ]
+      },
+      {
+        "original": "AI",
+        "translation": "IA",
+        "box_2d": [
+          550,
+          50,
+          660,
+          250
+        ]
+      }
+    ],
+    "spanish": [],
+    "chinese": [
+      {
+        "box_2d": [
+          50,
+          50,
+          160,
+          250
+        ],
+        "original": "Up",
+        "translation": "有效中文"
+      },
+      {
+        "box_2d": [
+          300,
+          50,
+          410,
+          250
+        ],
+        "original": "Go",
+        "translation": "有效中文"
+      },
+      {
+        "box_2d": [
+          550,
+          50,
+          660,
+          250
+        ],
+        "original": "AI",
+        "translation": "有效中文"
+      }
+    ],
+    "uiStatus": "未发现需要翻译的图中文字（可能无可识别文字或已是目标语言），已保留原图。",
+    "uiText": "\n          \n            \n            \n              short-labels\n              Page 1 / 1\n            \n            \n              \n    \n      \n        \n          🖼️ 图中文字覆盖译文 (0 处)\n        \n        \n          \n            \n              👁️ 对比原图\n            \n          \n          ↻ 重译图中文字\n          \n            ↻ 重译图注\n          \n        \n      \n      \n      \n        \n          \n          \n        \n      \n      \n        Figure (short.png): Uploaded Diagram\n        Arriba Ir IA\n      \n    \n  \n            \n          \n        "
+  },
+  "selection-openai": {
+    "response": {},
+    "card": "\n        \n          ✦ AI 语境精解 \n          \n            🔊 朗读\n            复制\n            ✕\n          \n        \n        bank\n        \n        \n        \n      ",
+    "before": {},
+    "after": {
+      "immersive_gemini_stats_v1": {
+        "batchRetries": 0,
+        "cacheHits": 0,
+        "estimatedCharsTranslated": 4,
+        "totalParagraphs": 1,
+        "totalRequests": 1
+      }
+    }
+  },
+  "selection-gemini": {
+    "response": {},
+    "card": "\n        \n          ✦ AI 语境精解 \n          \n            🔊 朗读\n            复制\n            ✕\n          \n        \n        bank\n        \n        \n        \n      ",
+    "before": {
+      "immersive_gemini_stats_v1": {
+        "batchRetries": 0,
+        "cacheHits": 0,
+        "estimatedCharsTranslated": 4,
+        "totalParagraphs": 1,
+        "totalRequests": 1
+      }
+    },
+    "after": {
+      "immersive_gemini_stats_v1": {
+        "batchRetries": 0,
+        "cacheHits": 0,
+        "estimatedCharsTranslated": 8,
+        "totalParagraphs": 2,
+        "totalRequests": 2
+      }
+    }
+  },
+  "attachedUntranslatedPdf": {
+    "progress": "0 / 1 页",
+    "md": "﻿PDF 导出范围：共 1 页；未处理或失败页：无。\n\nFigure (attached.png): Uploaded Diagram\n\n> 图（attached.png）：已处理 0 处图中文字。",
+    "htmlHasSourceBody": false,
+    "htmlHasMissingPage": false,
+    "epubCoverage": [
+      "PDF 导出范围：共 1 页；未处理或失败页：无。",
+      "PDF 导出范围：共 1 页；未处理或失败页：无。"
+    ],
+    "requests": 1
+  },
+  "windowNext": {
+    "pageInput": "1",
+    "visiblePages": [
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15",
+      "16"
+    ],
+    "pager": "第 2 / 3 组 · 9–16 / 17 页"
+  },
+  "printRace": {
+    "confirmedScope": "仅导出目前已翻译完成的 2 页（第 1, 2 页），不消耗新 Token",
+    "pages": [
+      "9"
+    ],
+    "text": "\n          \n            \n            \n              printing-race\n              Page 9 / 9\n            \n            \n              \n              \n                \n                  P9 定位左页\n                  ↻ 重译\n                \n                PageSentinel9 Scientific prose preserves original page content and paragraph ordering.\n                译文：PageSentinel9 Scientific prose preserves original page content and paragraph ordering.\n              \n            \n            \n          \n        ",
+    "generatedPdf": {
+      "pages": 1,
+      "contains1": false,
+      "contains2": false,
+      "contains9": true
+    }
+  },
+  "nativeSparse": {
+    "prompt": "Carefully read the attached academic page (Page 1) and extract ALL content in logical reading order so we can reconstruct a layout-preserving translated page:\n1. Whenever the page contains a visual Figure, Chart, Plot, or Architecture Diagram:\n   - Emit a block with \"page\": 1, \"type\": \"figure\", \"original\": brief title of the figure, \"translation\": translated title in Simplified Chinese (zh-CN).\n   - Provide \"figureBox2d\": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page bounding ONLY the visual graphic/chart/diagram area (do NOT include the text paragraph caption below the figure inside figureBox2d).\n   - Provide \"figureLabels\": an array of ONLY the key English text phrases/titles/axis names/node labels inside the figure (at most 10 key text labels; NEVER include numbers, percentages like \"85.2\" or \"100%\", axis tick numbers, or single symbols). Each label has:\n     * \"box_2d\": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page\n     * \"original\": original English text phrase\n     * \"translation\": concise Simplified Chinese (zh-CN) translation\n2. Emit the figure's text caption (\"Figure N: ...\") as a separate block right after the figure with \"type\": \"caption\".\n3. For the paper title on Page 1, use \"type\": \"heading\". For the author names, institutional affiliations, and corresponding author emails on Page 1, use \"type\": \"author\" and separate the author list, affiliations, and corresponding author line with \"\\n\".\n4. For section titles (e.g. \"Abstract\", \"1 Introduction\", \"2 Related Work\"), use \"type\": \"heading\".\n5. For body paragraphs, merge broken lines within the same paragraph and set \"column\": \"left\" or \"right\" if the page uses a 2-column layout, or \"full\" if single-column.\n6. For tables, emit a block with \"type\": \"table\". Both \"original\" and \"translation\" must be complete Markdown pipe tables with a header row, separator row, and the same number and order of cells in every row. Preserve empty cells, numeric values, checkmarks, and column alignment; escape literal pipes inside cells as \\|. Do not flatten a table into prose or invent merged-cell values.\n7. For standalone mathematical equations, emit a block with \"type\": \"equation\" and LaTeX $$...$$ notation; for inline mathematical expressions or variables inside paragraphs, use LaTeX $...$ notation.",
+    "status": "✓ 全部 1 页翻译完成",
+    "progress": "1 / 1 页"
+  },
+  "calls": [
+    {
+      "gemini": false,
+      "prompt": "Analyze and translate the selected text in the context of its surrounding paragraph.\nTarget Explanation Language: Simplified Chinese (zh-CN)\nPage Title: Audit\nSurrounding Context Paragraph: \"\"\"The river bank was flooded.\"\"\"\nSelected Text: \"\"\"bank\"\"\"\n\nReturn a JSON object with:\n- \"translation\": Direct, natural translation of the Selected Text fitting the context.\n- \"phonetic\": IPA phonetic transcription or core lemma if it is a word/short phrase, otherwise a 2-4 word summary tag.\n- \"contextualMeaning\": 1-2 sentences explaining the exact nuance or meaning in this specific context (in Simplified Chinese (zh-CN)).\n- \"breakdown\": Up to 4 key vocabulary terms, idioms, or grammar structures from the selection, each with {\"term\", \"meaning\", \"role\"}.\n- \"example\": A natural bilingual example sentence showing how the key expression is used.",
+      "answer": {},
+      "mode": "empty-selection"
+    },
+    {
+      "gemini": true,
+      "prompt": "Analyze and translate the selected text in the context of its surrounding paragraph.\nTarget Explanation Language: Simplified Chinese (zh-CN)\nPage Title: Audit\nSurrounding Context Paragraph: \"\"\"The river bank was flooded.\"\"\"\nSelected Text: \"\"\"bank\"\"\"\n\nReturn a JSON object with:\n- \"translation\": Direct, natural translation of the Selected Text fitting the context.\n- \"phonetic\": IPA phonetic transcription or core lemma if it is a word/short phrase, otherwise a 2-4 word summary tag.\n- \"contextualMeaning\": 1-2 sentences explaining the exact nuance or meaning in this specific context (in Simplified Chinese (zh-CN)).\n- \"breakdown\": Up to 4 key vocabulary terms, idioms, or grammar structures from the selection, each with {\"term\", \"meaning\", \"role\"}.\n- \"example\": A natural bilingual example sentence showing how the key expression is used.",
+      "answer": {},
+      "mode": "empty-selection"
+    },
+    {
+      "gemini": false,
+      "prompt": "Detect all visible text blocks inside this image (from page \"untranslated\") and translate them into Simplified Chinese (zh-CN).\nRules:\n1. If there is no readable text in the image, or if all text is already in Simplified Chinese (zh-CN), return {\"hasText\": false, \"sourceLang\": \"\", \"summaryTranslation\": \"\", \"regions\": []}.\n2. Group adjacent words belonging to the same label, sentence, paragraph, or UI element into a single logical region so the in-place overlay looks clean and structured.\n3. For each text region, provide:\n   - \"box_2d\": [ymin, xmin, ymax, xmax] normalized to 0..1000 (where 0,0 is top-left and 1000,1000 is bottom-right of the image)\n   - \"original\": The recognized original text\n   - \"translation\": Concise, natural translation in Simplified Chinese (zh-CN) suitable for in-place visual replacement\n4. Also provide \"summaryTranslation\": a full combined translation of all text in the image in reading order.",
+      "answer": {
+        "hasText": false,
+        "regions": [],
+        "summaryTranslation": ""
+      },
+      "mode": "no-text"
+    },
+    {
+      "gemini": false,
+      "prompt": "Detect all visible text blocks inside this image (from page \"short-labels\") and translate them into Spanish.\nRules:\n1. If there is no readable text in the image, or if all text is already in Spanish, return {\"hasText\": false, \"sourceLang\": \"\", \"summaryTranslation\": \"\", \"regions\": []}.\n2. Group adjacent words belonging to the same label, sentence, paragraph, or UI element into a single logical region so the in-place overlay looks clean and structured.\n3. For each text region, provide:\n   - \"box_2d\": [ymin, xmin, ymax, xmax] normalized to 0..1000 (where 0,0 is top-left and 1000,1000 is bottom-right of the image)\n   - \"original\": The recognized original text\n   - \"translation\": Concise, natural translation in Spanish suitable for in-place visual replacement\n4. Also provide \"summaryTranslation\": a full combined translation of all text in the image in reading order.",
+      "answer": {
+        "hasText": true,
+        "regions": [
+          {
+            "original": "Up",
+            "translation": "Arriba",
+            "box_2d": [
+              50,
+              50,
+              160,
+              250
+            ]
+          },
+          {
+            "original": "Go",
+            "translation": "Ir",
+            "box_2d": [
+              300,
+              50,
+              410,
+              250
+            ]
+          },
+          {
+            "original": "AI",
+            "translation": "IA",
+            "box_2d": [
+              550,
+              50,
+              660,
+              250
+            ]
+          }
+        ],
+        "summaryTranslation": "Arriba Ir IA"
+      },
+      "mode": "short-labels"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":0,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":1,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":2,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 0,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 1,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 2,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":3,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":4,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":5,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 3,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 4,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 5,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":6,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":7,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":8,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 6,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 7,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 8,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":9,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":10,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":11,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 9,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 10,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 11,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (2 items in, 2 items out).\n\nInput JSON:\n[{\"id\":12,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":13,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 12,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 13,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":0,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":1,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":2,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 0,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 1,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 2,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":3,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":4,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":5,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 3,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 4,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 5,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":6,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":7,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":8,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 6,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 7,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 8,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (3 items in, 3 items out).\n\nInput JSON:\n[{\"id\":9,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":10,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":11,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 9,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 10,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 11,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"window\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (2 items in, 2 items out).\n\nInput JSON:\n[{\"id\":12,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"},{\"id\":13,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 12,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        },
+        {
+          "id": 13,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"printing-race\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (1 items in, 1 items out).\n\nInput JSON:\n[{\"id\":0,\"text\":\"PageSentinel1 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 0,
+          "translation": "译文：PageSentinel1 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"printing-race\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (1 items in, 1 items out).\n\nInput JSON:\n[{\"id\":0,\"text\":\"PageSentinel2 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 0,
+          "translation": "译文：PageSentinel2 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "normal"
+    },
+    {
+      "gemini": false,
+      "prompt": "Page/Document Context: \"printing-race\"\nTranslate each item in the following JSON array into Simplified Chinese (zh-CN).\nReturn a JSON array where each element has the exact same \"id\" (integer) and its \"translation\" (string).\nMaintain exact 1-to-1 correspondence (1 items in, 1 items out).\n\nInput JSON:\n[{\"id\":0,\"text\":\"PageSentinel9 Scientific prose preserves original page content and paragraph ordering.\"}]",
+      "answer": [
+        {
+          "id": 0,
+          "translation": "译文：PageSentinel9 Scientific prose preserves original page content and paragraph ordering."
+        }
+      ],
+      "mode": "print-race"
+    },
+    {
+      "gemini": true,
+      "prompt": "Carefully read the attached academic page (Page 1) and extract ALL content in logical reading order so we can reconstruct a layout-preserving translated page:\n1. Whenever the page contains a visual Figure, Chart, Plot, or Architecture Diagram:\n   - Emit a block with \"page\": 1, \"type\": \"figure\", \"original\": brief title of the figure, \"translation\": translated title in Simplified Chinese (zh-CN).\n   - Provide \"figureBox2d\": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page bounding ONLY the visual graphic/chart/diagram area (do NOT include the text paragraph caption below the figure inside figureBox2d).\n   - Provide \"figureLabels\": an array of ONLY the key English text phrases/titles/axis names/node labels inside the figure (at most 10 key text labels; NEVER include numbers, percentages like \"85.2\" or \"100%\", axis tick numbers, or single symbols). Each label has:\n     * \"box_2d\": [ymin, xmin, ymax, xmax] normalized 0-1000 on the page\n     * \"original\": original English text phrase\n     * \"translation\": concise Simplified Chinese (zh-CN) translation\n2. Emit the figure's text caption (\"Figure N: ...\") as a separate block right after the figure with \"type\": \"caption\".\n3. For the paper title on Page 1, use \"type\": \"heading\". For the author names, institutional affiliations, and corresponding author emails on Page 1, use \"type\": \"author\" and separate the author list, affiliations, and corresponding author line with \"\\n\".\n4. For section titles (e.g. \"Abstract\", \"1 Introduction\", \"2 Related Work\"), use \"type\": \"heading\".\n5. For body paragraphs, merge broken lines within the same paragraph and set \"column\": \"left\" or \"right\" if the page uses a 2-column layout, or \"full\" if single-column.\n6. For tables, emit a block with \"type\": \"table\". Both \"original\" and \"translation\" must be complete Markdown pipe tables with a header row, separator row, and the same number and order of cells in every row. Preserve empty cells, numeric values, checkmarks, and column alignment; escape literal pipes inside cells as \\|. Do not flatten a table into prose or invent merged-cell values.\n7. For standalone mathematical equations, emit a block with \"type\": \"equation\" and LaTeX $$...$$ notation; for inline mathematical expressions or variables inside paragraphs, use LaTeX $...$ notation.",
+      "answer": [
+        {
+          "page": 1,
+          "type": "figure",
+          "column": "full",
+          "original": "Twenty labels",
+          "translation": "二十标签图",
+          "figureBox2d": [
+            100,
+            100,
+            900,
+            900
+          ],
+          "figureLabels": [
+            {
+              "original": "Label 0",
+              "translation": "标签0",
+              "box_2d": [
+                150,
+                120,
+                250,
+                240
+              ]
+            },
+            {
+              "original": "Label 1",
+              "translation": "标签1",
+              "box_2d": [
+                150,
+                260,
+                250,
+                380
+              ]
+            },
+            {
+              "original": "Label 2",
+              "translation": "标签2",
+              "box_2d": [
+                150,
+                400,
+                250,
+                520
+              ]
+            },
+            {
+              "original": "Label 3",
+              "translation": "标签3",
+              "box_2d": [
+                150,
+                540,
+                250,
+                660
+              ]
+            },
+            {
+              "original": "Label 4",
+              "translation": "标签4",
+              "box_2d": [
+                150,
+                680,
+                250,
+                800
+              ]
+            },
+            {
+              "original": "Label 5",
+              "translation": "标签5",
+              "box_2d": [
+                450,
+                120,
+                550,
+                240
+              ]
+            },
+            {
+              "original": "Label 6",
+              "translation": "标签6",
+              "box_2d": [
+                450,
+                260,
+                550,
+                380
+              ]
+            },
+            {
+              "original": "Label 7",
+              "translation": "标签7",
+              "box_2d": [
+                450,
+                400,
+                550,
+                520
+              ]
+            },
+            {
+              "original": "Label 8",
+              "translation": "标签8",
+              "box_2d": [
+                450,
+                540,
+                550,
+                660
+              ]
+            },
+            {
+              "original": "Label 9",
+              "translation": "标签9",
+              "box_2d": [
+                450,
+                680,
+                550,
+                800
+              ]
+            }
+          ]
+        }
+      ],
+      "mode": "sparse"
+    }
+  ]
+}

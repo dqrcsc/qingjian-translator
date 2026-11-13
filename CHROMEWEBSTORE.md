@@ -13,6 +13,8 @@
 **Detailed Description**
 青简 · 津梁 (QingJian) 助您在阅读外文网页、浏览社交媒体推文配图、观看 YouTube 视频以及研读学术论文 PDF 与 EPUB 电子书时获得自然流畅的双语对照阅读体验。
 
+v1.0.26：独立 PDF 打印快照保护已确认页范围；附图不代表正文完成。PDF 目录每组最多 100 项，切换阅读页组同步页码和原文。字幕下载及格式回退共享 90 秒/8 MiB 预算，超限明确提示并支持手动重试。多语言短标签和 Gemini 原生标签识别不再受旧的中文/10 条限制，效果仍取决于模型和图像质量。
+
 核心功能亮点：
 1. 纯粹开放多模型自由接入（自带密钥 BYOK，无内置模型绑定）：支持 Google Gemini、DeepSeek、OpenCode Go、OpenRouter、OpenAI、硅基流动、阿里云百炼、Moonshot Kimi、智谱 GLM 及任意兼容接口。支持一键从接口拉取可用模型或手动输入任意模型 ID，各服务商密钥与模型配置独立保存、一键切换。
 2. 网页段落级双语对照与贴图原位翻译：尽力保持原网页排版，在原文下方呈现译文，内置清爽对照、引用竖线、精致虚线、外语学习模糊遮罩、荧光马克笔及仅看译文 6 种视觉样式；支持网页插图与社交媒体配图文字原位识别与翻译。
@@ -95,6 +97,8 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.26 | 2026-11-13 | Isolate print snapshots, preserve unfinished PDF coverage and multilingual labels, validate selection output, bound caption downloads, paginate PDF indexes and synchronize page groups. | GitHub release; Chrome Web Store submission not performed |
+| 1.0.25 | 2026-11-13 | Preserve PDF formulas and complete figure labels, mark partial exports, retain long subtitle tracks, enforce response byte limits and bound right-side PDF reading. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.24 | 2026-11-07 | Preserve blank PDF table cells, render bare formulas, recover raster figure OCR, cancel failed page batches, retain reconnect budgets, and align inherited site rules and capability wording. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.23 | 2026-11-06 | Preserve rotated PDF text and Method table headers, deduplicate local formulas, restore academic HTML styles, and add real PDF entry/export regressions. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.22 | 2026-11-04 | Reconstruct stacked fractions, radicals, inline equation tails and regular tables. | GitHub release |

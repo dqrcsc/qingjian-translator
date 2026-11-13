@@ -1,0 +1,14 @@
+{
+  "version": "1.0.25",
+  "commit": "a6afbebcd880c9ad33c7290a2f29d158b88e1418",
+  "date": "2026-11-13",
+  "node": "v25.2.1",
+  "baseChecks": 48,
+  "nodeTests": 244,
+  "browserChecks": 187,
+  "browser": "148.0.7778.96",
+  "browserPassed": true,
+  "browserErrors": [],
+  "scope": "isolated MV3 extension, real PDF upload/download/print PDF readback, local mock HTTP; no real API keys or live YouTube network",
+  "runtimeFilesChanged": false
+}
