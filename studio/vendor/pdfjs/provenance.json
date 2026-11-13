@@ -2,7 +2,7 @@
   "version": "6.4.299",
   "source": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz",
   "integrity": "sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==",
-  "build": "legacy ES modules (unmodified)",
+  "build": "legacy ES modules + acknowledged closed-stream cancellation",
   "files": {
     "cmaps/LICENSE": {
       "source": "package/cmaps/LICENSE",
@@ -734,11 +734,15 @@
     },
     "pdf.mjs": {
       "source": "package/legacy/build/pdf.mjs",
-      "sha256": "bc51f4874a66e3853189cb5d50aba4b3096afa83ed433b885d293a3d94583cdc"
+      "sha256": "c27c915c99c2272fd660e387a03ed2b920b6425745e4ba092ea05398611c7ab9",
+      "upstreamSha256": "bc51f4874a66e3853189cb5d50aba4b3096afa83ed433b885d293a3d94583cdc",
+      "patch": "acknowledge-closed-stream-cancel"
     },
     "pdf.worker.mjs": {
       "source": "package/legacy/build/pdf.worker.mjs",
-      "sha256": "bb422f60804477de4a0b09091d8347a916a387755ed1cbad24ccaec1d09c78bf"
+      "sha256": "c33466e43a0d84bf42e231d4890a76013529fc396dbbcc4e53bea105d151687d",
+      "upstreamSha256": "bb422f60804477de4a0b09091d8347a916a387755ed1cbad24ccaec1d09c78bf",
+      "patch": "acknowledge-closed-stream-cancel"
     },
     "standard_fonts/FoxitDingbats.pfb": {
       "source": "package/standard_fonts/FoxitDingbats.pfb",

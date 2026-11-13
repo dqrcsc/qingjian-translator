@@ -3,6 +3,7 @@
 // curl -fsSL https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz -o /tmp/pdfjs.tgz
 // node scripts/vendor-pdfjs.mjs /tmp/pdfjs.tgz
 import fs from 'node:fs';
+import { patchName, patchPdfjsStream } from './pdfjs-stream-patch.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -27,10 +28,12 @@ for (const member of members) {
   const bytes = execFileSync('tar', ['-xOf', archive, member], { maxBuffer: 16 * 1024 * 1024 });
   const target = path.join(root, name);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, bytes);
-  files[name] = { source: member, sha256: digest('sha256', bytes) };
+  const patched = name.endsWith('.mjs') ? Buffer.from(patchPdfjsStream(bytes.toString('utf8'))) : bytes;
+  fs.writeFileSync(target, patched);
+  files[name] = { source: member, sha256: digest('sha256', patched),
+    ...(patched !== bytes ? { upstreamSha256: digest('sha256', bytes), patch: patchName } : {}) };
 }
 fs.writeFileSync(path.join(root, 'provenance.json'), JSON.stringify({ version,
   source: `https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-${version}.tgz`, integrity,
-  build: 'legacy ES modules (unmodified)', files }, null, 2) + '\n');
+  build: 'legacy ES modules + acknowledged closed-stream cancellation', files }, null, 2) + '\n');
 console.log(`Vendored PDF.js ${version}: ${Object.keys(files).length} verified upstream files`);

@@ -15236,6 +15236,9 @@ class MessageHandler {
         break;
       case StreamKind.CANCEL:
         if (!streamSink) {
+          // QingJian patch: a completed producer still acknowledges a late cancel.
+          comObj.postMessage({ sourceName, targetName,
+            stream: StreamKind.CANCEL_COMPLETE, streamId, success: true });
           break;
         }
         const dataReason = wrapReason(data.reason);
