@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — 青简 · 津梁 (QingJian) — 双语精读与智译
 
-> Last Updated: 2026-11-13
+> Last Updated: 2026-11-15
 
 ## Store Listing
 
@@ -13,7 +13,7 @@
 **Detailed Description**
 青简 · 津梁 (QingJian) 助您在阅读外文网页、浏览社交媒体推文配图、观看 YouTube 视频以及研读学术论文 PDF 与 EPUB 电子书时获得自然流畅的双语对照阅读体验。
 
-v1.0.26：独立 PDF 打印快照保护已确认页范围；附图不代表正文完成。PDF 目录每组最多 100 项，切换阅读页组同步页码和原文。字幕下载及格式回退共享 90 秒/8 MiB 预算，超限明确提示并支持手动重试。多语言短标签和 Gemini 原生标签识别不再受旧的中文/10 条限制，效果仍取决于模型和图像质量。
+v1.0.27：网页与推文配图的译图按钮改为悬停按需显示，鼠标移出图片区域或滚离图片后自动隐藏，不再常驻遮挡画面或拦截底层图片点击；支持同一容器内多图独立译图与键盘焦点可见，关闭图片翻译开关时自动清理页面译图浮层。延续 v1.0.26 独立 PDF 打印快照、目录与阅读页组联动及 90 秒/8 MiB 字幕预算保护。
 
 核心功能亮点：
 1. 纯粹开放多模型自由接入（自带密钥 BYOK，无内置模型绑定）：支持 Google Gemini、DeepSeek、OpenCode Go、OpenRouter、OpenAI、硅基流动、阿里云百炼、Moonshot Kimi、智谱 GLM 及任意兼容接口。支持一键从接口拉取可用模型或手动输入任意模型 ID，各服务商密钥与模型配置独立保存、一键切换。
@@ -97,6 +97,7 @@ Automatic translation settings can trigger requests without a separate click for
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.0.27 | 2026-11-15 | Auto-hide webpage image translation controls when the pointer leaves the image bounds, align per-image controls in shared containers, preserve keyboard focus/loading visibility, and clear image overlays when disabled. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.26 | 2026-11-13 | Isolate print snapshots, preserve unfinished PDF coverage and multilingual labels, validate selection output, bound caption downloads, paginate PDF indexes and synchronize page groups. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.25 | 2026-11-13 | Preserve PDF formulas and complete figure labels, mark partial exports, retain long subtitle tracks, enforce response byte limits and bound right-side PDF reading. | GitHub release; Chrome Web Store submission not performed |
 | 1.0.24 | 2026-11-07 | Preserve blank PDF table cells, render bare formulas, recover raster figure OCR, cancel failed page batches, retain reconnect budgets, and align inherited site rules and capability wording. | GitHub release; Chrome Web Store submission not performed |

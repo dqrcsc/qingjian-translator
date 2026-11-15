@@ -252,7 +252,15 @@ export async function verifyContentBrowser(context, sw) {
       const img = document.querySelector('#fixture-image'); img.parentElement.insertBefore(host, img); host.appendChild(img);
     });
     await toggle();
-    await page.locator('#replacement-image-host .ig-img-control-bar').waitFor();
+    await page.locator('#replacement-image-host .ig-img-control-bar').waitFor({ state: 'attached' });
+    assert.deepEqual(
+      await page.locator('#replacement-image-host .ig-img-control-bar').evaluate(el => {
+        const s = getComputedStyle(el);
+        return { visible: el.classList.contains('is-visible'), opacity: s.opacity, pointerEvents: s.pointerEvents };
+      }),
+      { visible: false, opacity: '0', pointerEvents: 'none' },
+      'mounted image control bar stays hidden and non-blocking before pointer enters image'
+    );
     const oldBar = await page.locator('#replacement-image-host .ig-img-control-bar').elementHandle();
     await page.evaluate(() => {
       const old = document.querySelector('#fixture-image'); const fresh = document.createElement('img');
@@ -260,6 +268,7 @@ export async function verifyContentBrowser(context, sw) {
     });
     await wait(async () => !(await oldBar.evaluate(node => node.isConnected)), 'old image controls released');
     await oldBar.dispose();
+    await page.locator('#fixture-image').hover();
     await page.locator('#replacement-image-host .ig-img-control-bar [data-role="trigger"]').click();
     await wait(() => evaluate('__decoded.length === 1'), 'replacement image decode');
     await evaluate('__decoded.shift()()');
@@ -331,6 +340,65 @@ export async function verifyContentBrowser(context, sw) {
     assert.equal(await page.locator('.ig-img-control-bar').count(), 1);
     await imageTrigger.click(); await imageDone();
     recordCheck('Disable/re-hover: release clears hover ownership; repeated hover recreates exactly one working image translation control');
+
+    // Real pointer enter/leave: control bar must disappear when leaving the image area (including onto figcaption or outside page)
+    // and reappear when re-entering the image, its overlay hotspots, or the control bar itself.
+    await page.evaluate(() => {
+      const host = document.querySelector('#replacement-image-host');
+      const cap = document.createElement('figcaption');
+      cap.id = 'fixture-figcaption';
+      cap.style.cssText = 'padding:18px 8px;margin-top:12px;background:#f1f5f9';
+      cap.textContent = 'Figure caption outside image bounds';
+      host.appendChild(cap);
+      const outside = document.createElement('div');
+      outside.id = 'outside-image-zone';
+      outside.style.cssText = 'height:80px;margin-top:24px;background:#e2e8f0';
+      outside.textContent = 'Outside image area';
+      document.body.appendChild(outside);
+    });
+    const controlBar = page.locator('#replacement-image-host .ig-img-control-bar');
+    const barState = () => controlBar.evaluate(el => ({
+      visible: el.classList.contains('is-visible'),
+      opacity: getComputedStyle(el).opacity,
+      pointerEvents: getComputedStyle(el).pointerEvents
+    }));
+    // Reset to untranslated manual state with pointer outside the image
+    await page.locator('#outside-image-zone').hover();
+    await toggle(); await toggle();
+    assert.equal(await controlBar.count(), 0);
+
+    // 1. Hover untranslated image -> icon appears; move onto control bar -> stays visible; move to figcaption / outside -> disappears
+    await imageNode.hover({ position: { x: 40, y: 80 } });
+    assert.equal(await controlBar.count(), 1);
+    await wait(async () => (await barState()).opacity === '1', 'untranslated bar fades in on image hover');
+    assert.deepEqual(await barState(), { visible: true, opacity: '1', pointerEvents: 'auto' });
+    await imageTrigger.hover();
+    assert.deepEqual(await barState(), { visible: true, opacity: '1', pointerEvents: 'auto' });
+    await page.locator('#fixture-figcaption').hover();
+    await wait(async () => (await barState()).opacity === '0', 'untranslated bar fades out on figcaption hover');
+    assert.deepEqual(await barState(), { visible: false, opacity: '0', pointerEvents: 'none' });
+    const hitThroughHiddenBar = await page.evaluate(() => {
+      const bar = document.querySelector('#replacement-image-host .ig-img-control-bar');
+      const r = bar.getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.id || '';
+    });
+    assert.equal(hitThroughHiddenBar, 'fixture-image', 'hidden control bar must not intercept clicks over the image');
+
+    // 2. Re-enter image, translate it, verify hotspot hover keeps bar visible, leaving image hides bar while keeping overlay
+    await imageNode.hover({ position: { x: 40, y: 80 } });
+    await wait(async () => (await barState()).opacity === '1', 'bar reappears on re-entering image');
+    await imageTrigger.click();
+    await imageDone();
+    const hotspot = page.locator('#replacement-image-host .ig-img-overlay-layer > div').first();
+    await hotspot.hover();
+    assert.deepEqual(await barState(), { visible: true, opacity: '1', pointerEvents: 'auto' });
+    await page.locator('#outside-image-zone').hover();
+    await wait(async () => (await barState()).opacity === '0', 'translated bar hides when mouse leaves image area');
+    assert.deepEqual(await barState(), { visible: false, opacity: '0', pointerEvents: 'none' });
+    assert.equal(await page.locator('#replacement-image-host .ig-img-overlay-layer').isVisible(), true);
+    await imageNode.hover({ position: { x: 40, y: 80 } });
+    await wait(async () => (await barState()).opacity === '1', 'translated bar reappears when mouse re-enters image');
+    recordCheck('Image hover visibility: icon appears on image/hotspot/bar hover and disappears cleanly on leaving image area without blocking image clicks or removing translation overlay');
     await page.close();
 
     // The URL selects the real YouTube integration; all YouTube traffic is fulfilled locally.

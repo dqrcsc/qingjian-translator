@@ -234,6 +234,7 @@
         }
         if ((change.oldValue?.inputTargetLang ?? 'en') !== (change.newValue?.inputTargetLang ?? 'en')) { invalidateInputTranslation(); inputRequests.cancel(); }
         settings = sanitizeContentSettings(change.newValue);
+        if (settings.enableImageTranslate === false) cleanupAllImageOverlays();
         syncYoutubePreferences(previous);
         applyStyleAttribute(settings.translationStyle);
         applyYoutubeCssVariables();
@@ -4564,6 +4565,50 @@
   const imageControlBars = new WeakMap();
   const imageControlOwners = new WeakMap();
   const imageSources = new WeakMap();
+  let activeHoveredImage = null;
+  let lastPointerClient = null;
+  let suppressedHoverPoint = null;
+
+  function setBarClassFlag(bar, className, enabled) {
+    if (!bar) return;
+    if (bar.classList) {
+      bar.classList.toggle(className, Boolean(enabled));
+      return;
+    }
+    const tokens = new Set(String(bar.className || '').split(/\s+/).filter(Boolean));
+    if (enabled) tokens.add(className);
+    else tokens.delete(className);
+    bar.className = [...tokens].join(' ');
+  }
+
+  function syncImageControlBarPosition(img, bar = imageControlBars.get(img)) {
+    const host = bar?.parentElement;
+    if (!img || !bar?.style || !host) return;
+    if (img.offsetParent === host && img.offsetWidth > 0 && host.clientWidth > 0) {
+      const topPx = Math.max(8, Math.round(img.offsetTop) + 8);
+      const rightPx = Math.max(8, Math.round(host.clientWidth - (img.offsetLeft + img.offsetWidth)) + 8);
+      bar.style.top = `${topPx}px`;
+      bar.style.right = `${rightPx}px`;
+      return;
+    }
+    if (typeof img.getBoundingClientRect !== 'function' || typeof host.getBoundingClientRect !== 'function') {
+      return;
+    }
+    const imgRect = img.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    if (!(imgRect.width > 0 && imgRect.height > 0 && hostRect.width > 0 && hostRect.height > 0)) {
+      return;
+    }
+    const scaleX = host.offsetWidth > 0 ? hostRect.width / host.offsetWidth : 1;
+    const scaleY = host.offsetHeight > 0 ? hostRect.height / host.offsetHeight : 1;
+    const padLeft = hostRect.left + (host.clientLeft || 0) * scaleX;
+    const padTop = hostRect.top + (host.clientTop || 0) * scaleY;
+    const padRight = padLeft + (host.clientWidth ? host.clientWidth * scaleX : hostRect.width);
+    const topPx = Math.max(8, Math.round((imgRect.top - padTop) / (scaleY || 1)) + 8);
+    const rightPx = Math.max(8, Math.round((padRight - imgRect.right) / (scaleX || 1)) + 8);
+    bar.style.top = `${topPx}px`;
+    bar.style.right = `${rightPx}px`;
+  }
 
   function imageSourceSignature(img) {
     return [img.currentSrc || '', img.src || '', img.srcset || '', img.sizes || ''].join('\n');
@@ -4574,10 +4619,15 @@
     const previous = imageSources.get(img);
     imageSources.set(img, signature);
     if (previous === undefined || previous === signature) return false;
+    const wasHovered = activeHoveredImage === img;
     imageTranslationTasks.delete(img);
     viewportObserver?.unobserve(img);
     delete img.dataset.igImgStatus;
     releaseImageControls(imageControlBars.get(img));
+    if (wasHovered && img.isConnected !== false) {
+      activeHoveredImage = img;
+      suppressedHoverPoint = null;
+    }
     return true;
   }
 
@@ -4585,6 +4635,10 @@
     if (!bar) return;
     const owner = imageControlOwners.get(bar);
     if (owner) {
+      if (activeHoveredImage === owner) {
+        activeHoveredImage = null;
+        suppressedHoverPoint = lastPointerClient ? { ...lastPointerClient } : null;
+      }
       imageControlBars.delete(owner);
       delete owner.dataset.igHoverBound;
     }
@@ -4598,12 +4652,19 @@
     invalidateChangedImageSource(img);
     const host = ensureImageHostContainer(img);
     if (!host) return null;
-    let bar = host.querySelector(':scope > .ig-img-control-bar');
-    if (bar && imageControlOwners.get(bar)?.isConnected === false) {
-      releaseImageControls(bar);
-      bar = null;
+    const existingBar = host.querySelector(':scope > .ig-img-control-bar');
+    if (existingBar && imageControlOwners.get(existingBar)?.isConnected === false) {
+      releaseImageControls(existingBar);
     }
-    if (bar) return bar;
+    let bar = imageControlBars.get(img);
+    if (bar && bar.parentElement === host) {
+      syncImageControlBarPosition(img, bar);
+      if (activeHoveredImage === img) {
+        img.dataset.igHoverBound = '1';
+        setBarClassFlag(bar, 'is-visible', true);
+      }
+      return bar;
+    }
 
     bar = document.createElement('div');
     bar.className = 'notranslate ig-img-control-bar';
@@ -4637,6 +4698,11 @@
 
     bar.appendChild(actionBtn);
     host.appendChild(bar);
+    syncImageControlBarPosition(img, bar);
+    if (activeHoveredImage === img) {
+      img.dataset.igHoverBound = '1';
+      setBarClassFlag(bar, 'is-visible', true);
+    }
     return bar;
   }
 
@@ -4695,6 +4761,9 @@
     const bar = img ? mountImageControlBar(img) : null;
     const triggerBtn = bar?.querySelector('[data-role="trigger"]');
 
+    if (bar?.dataset) {
+      bar.dataset.loading = '1';
+    }
     if (triggerBtn) {
       triggerBtn.textContent = '⏳ 识别译图中…';
     } else if (!isAuto) {
@@ -4703,6 +4772,7 @@
 
     const resetCancelledImageState = () => {
       if (!ownsImage()) return;
+      if (bar?.dataset) delete bar.dataset.loading;
       if (img && img.dataset.igImgStatus === 'loading') delete img.dataset.igImgStatus;
       if (triggerBtn) triggerBtn.textContent = '🖼️ AI 译图';
     };
@@ -4775,7 +4845,10 @@
         showPageToast(`图片翻译失败: ${err?.message || err}`, 'warn');
       }
     } finally {
-      if (img && ownsImage()) imageTranslationTasks.delete(img);
+      if (ownsImage()) {
+        if (bar?.dataset) delete bar.dataset.loading;
+        if (img) imageTranslationTasks.delete(img);
+      }
     }
   }
 
@@ -5043,6 +5116,89 @@
   }
 
   function initImageTranslationEngine() {
+    let hoverScrollCheckRaf = null;
+
+    const resolveHoveredImage = (node) => {
+      const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+      if (!el || typeof el.closest !== 'function') return null;
+
+      const bar = el.closest('.ig-img-control-bar');
+      if (bar) {
+        return imageControlOwners.get(bar) || null;
+      }
+
+      const layer = el.closest('.ig-img-overlay-layer, .ig-img-bilingual-drawer');
+      if (layer) {
+        if (activeHoveredImage && imageControlBars.get(activeHoveredImage)?.parentElement === layer.parentElement) {
+          return activeHoveredImage;
+        }
+        const siblingBar = layer.parentElement?.querySelector?.(':scope > .ig-img-control-bar');
+        return siblingBar ? imageControlOwners.get(siblingBar) || null : null;
+      }
+
+      const directImg = el.closest('img');
+      if (directImg && !directImg.classList?.contains('ig-img-seamless-img')) {
+        return directImg;
+      }
+
+      const tweetPhoto = el.closest('[data-testid="tweetPhoto"]');
+      if (tweetPhoto) {
+        const tweetImg = tweetPhoto.querySelector('img:not(.ig-img-seamless-img)');
+        if (tweetImg) return tweetImg;
+      }
+
+      return null;
+    };
+
+    const setHoveredImage = (nextImg) => {
+      if (activeHoveredImage === nextImg) {
+        if (nextImg) {
+          const currentBar = imageControlBars.get(nextImg);
+          if (currentBar) {
+            syncImageControlBarPosition(nextImg, currentBar);
+            setBarClassFlag(currentBar, 'is-visible', true);
+          }
+        }
+        return;
+      }
+
+      if (activeHoveredImage) {
+        const prevBar = imageControlBars.get(activeHoveredImage);
+        setBarClassFlag(prevBar, 'is-visible', false);
+        activeHoveredImage = null;
+      }
+
+      if (!nextImg || settings.enableImageTranslate === false || nextImg.isConnected === false) {
+        return;
+      }
+
+      let bar = imageControlBars.get(nextImg);
+      if (!bar || bar.isConnected === false) {
+        if (!isTranslatableContentImage(nextImg, false)) {
+          return;
+        }
+        nextImg.dataset.igHoverBound = '1';
+        bar = mountImageControlBar(nextImg);
+      } else if (!nextImg.dataset.igHoverBound) {
+        nextImg.dataset.igHoverBound = '1';
+      }
+
+      if (!bar) return;
+      activeHoveredImage = nextImg;
+      syncImageControlBarPosition(nextImg, bar);
+      setBarClassFlag(bar, 'is-visible', true);
+    };
+
+    const recordPointerClient = (e) => {
+      if (
+        Number.isFinite(e?.clientX) &&
+        Number.isFinite(e?.clientY) &&
+        (e.isTrusted || e.clientX !== 0 || e.clientY !== 0)
+      ) {
+        lastPointerClient = { x: e.clientX, y: e.clientY };
+      }
+    };
+
     // This observer remains active for manual image translation when paragraph translation is off.
     const refresh = img => {
       if (!img || !imageSources.has(img) || !invalidateChangedImageSource(img)) return;
@@ -5065,7 +5221,11 @@
       subtree: true, attributes: true, attributeFilter: ['src', 'srcset', 'sizes', 'media', 'type']
     });
     document.addEventListener('load', event => {
-      if (event.target?.tagName === 'IMG') refresh(event.target);
+      if (event.target?.tagName === 'IMG') {
+        refresh(event.target);
+        const bar = imageControlBars.get(event.target);
+        if (bar) syncImageControlBarPosition(event.target, bar);
+      }
     }, true);
     document.addEventListener(
       'contextmenu',
@@ -5081,15 +5241,79 @@
     document.addEventListener(
       'mouseover',
       (e) => {
-        if (settings.enableImageTranslate === false) return;
-        const img = e.target?.closest?.('img');
-        if (!img || img.dataset.igHoverBound) return;
-        if (isTranslatableContentImage(img, false)) {
-          img.dataset.igHoverBound = '1';
-          mountImageControlBar(img);
+        if (suppressedHoverPoint) {
+          if (
+            e.isTrusted &&
+            e.clientX === suppressedHoverPoint.x &&
+            e.clientY === suppressedHoverPoint.y
+          ) {
+            return;
+          }
+          suppressedHoverPoint = null;
+        }
+        recordPointerClient(e);
+        if (settings.enableImageTranslate === false) {
+          if (activeHoveredImage) setHoveredImage(null);
+          return;
+        }
+        setHoveredImage(resolveHoveredImage(e.target));
+      },
+      { capture: true, passive: true }
+    );
+
+    document.addEventListener(
+      'mouseout',
+      (e) => {
+        recordPointerClient(e);
+        const prevImg = resolveHoveredImage(e.target);
+        if (!prevImg) return;
+        const nextImg = resolveHoveredImage(e.relatedTarget);
+        if (prevImg !== nextImg) {
+          setHoveredImage(nextImg);
         }
       },
+      { capture: true, passive: true }
+    );
+
+    document.addEventListener(
+      'pointerdown',
+      (e) => {
+        recordPointerClient(e);
+        if (!activeHoveredImage) return;
+        const targetImg = resolveHoveredImage(e.target);
+        if (targetImg !== activeHoveredImage) {
+          setHoveredImage(targetImg);
+        }
+      },
+      { capture: true, passive: true }
+    );
+
+    document.documentElement?.addEventListener(
+      'mouseleave',
+      () => {
+        lastPointerClient = null;
+        if (activeHoveredImage) setHoveredImage(null);
+      },
       { passive: true }
+    );
+
+    window.addEventListener(
+      'scroll',
+      () => {
+        if (!activeHoveredImage || !lastPointerClient || hoverScrollCheckRaf) return;
+        hoverScrollCheckRaf = requestAnimationFrame(() => {
+          hoverScrollCheckRaf = null;
+          if (!activeHoveredImage || !lastPointerClient) return;
+          const hit = document.elementFromPoint(lastPointerClient.x, lastPointerClient.y);
+          const nextImg = resolveHoveredImage(hit);
+          if (nextImg !== activeHoveredImage) {
+            setHoveredImage(nextImg);
+          } else {
+            syncImageControlBarPosition(activeHoveredImage);
+          }
+        });
+      },
+      { capture: true, passive: true }
     );
   }
 

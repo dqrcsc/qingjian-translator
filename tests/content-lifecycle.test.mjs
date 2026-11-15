@@ -323,3 +323,165 @@ test('leaving YouTube for home then returning to the same live video clears canc
   await resumed;
   assert.equal(vm.runInContext("ytLiveCaptionCache.get('Hello fixture')", h.ctx), '恢复译文');
 });
+
+test('image control bar appears on hover across image/bar/overlay/drawer and disappears on leaving image region', () => {
+  const docListeners = new Map(), rootListeners = new Map(), winListeners = new Map();
+  let hitNode = null, rafCb = null;
+  const makeEl = (tag, cls = '') => {
+    const classes = new Set(cls.split(/\s+/).filter(Boolean));
+    let rawClassName = cls;
+    const el = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      get className() { return rawClassName; },
+      set className(val) {
+        rawClassName = String(val || '');
+        classes.clear();
+        rawClassName.split(/\s+/).filter(Boolean).forEach(c => classes.add(c));
+      },
+      style: {},
+      dataset: {},
+      children: [],
+      parentElement: null,
+      isConnected: true,
+      classList: {
+        add: c => { classes.add(c); el.className = [...classes].join(' '); },
+        remove: c => { classes.delete(c); el.className = [...classes].join(' '); },
+        toggle: (c, force) => {
+          const next = force === undefined ? !classes.has(c) : Boolean(force);
+          if (next) classes.add(c); else classes.delete(c);
+          el.className = [...classes].join(' ');
+          return next;
+        },
+        contains: c => classes.has(c)
+      },
+      setAttribute() {},
+      addEventListener(type, fn) { this[type] = fn; },
+      appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+      remove() {
+        if (this.parentElement) {
+          this.parentElement.children = this.parentElement.children.filter(n => n !== this);
+          this.parentElement = null;
+        }
+        this.isConnected = false;
+      },
+      querySelector(sel) {
+        if (sel.includes('ig-img-control-bar')) return this.children.find(n => n.classList?.contains('ig-img-control-bar')) || null;
+        if (sel.startsWith('img')) return this.children.find(n => n.tagName === 'IMG' && !n.classList?.contains('ig-img-seamless-img')) || null;
+        return null;
+      },
+      querySelectorAll() {
+        return this.children.filter(n => n.classList?.contains('ig-img-overlay-layer') || n.classList?.contains('ig-img-bilingual-drawer'));
+      },
+      closest(sel) {
+        const parts = sel.split(',').map(s => s.trim());
+        for (let cur = this; cur; cur = cur.parentElement) {
+          for (const part of parts) {
+            if (part === 'img' && cur.tagName === 'IMG') return cur;
+            if (part.startsWith('.') && cur.classList?.contains(part.slice(1))) return cur;
+            if (part === '[data-testid="tweetPhoto"]' && cur.dataset?.testid === 'tweetPhoto') return cur;
+          }
+        }
+        return null;
+      }
+    };
+    return el;
+  };
+
+  const host = makeEl('figure');
+  host.clientWidth = 600;
+  const img1 = makeEl('img');
+  img1.src = 'https://example.com/a.png';
+  img1.offsetParent = host; img1.offsetTop = 10; img1.offsetLeft = 100; img1.offsetWidth = 300;
+  const img2 = makeEl('img');
+  img2.src = 'https://example.com/b.png';
+  img2.offsetParent = host; img2.offsetTop = 240; img2.offsetLeft = 50; img2.offsetWidth = 400;
+  const caption = makeEl('figcaption');
+  const outside = makeEl('p');
+  host.appendChild(img1); host.appendChild(img2); host.appendChild(caption);
+
+  const ctx = vm.createContext({
+    Node: { ELEMENT_NODE: 1 },
+    WeakMap,
+    MutationObserver: class { observe() {} },
+    settings: { enableImageTranslate: true, autoTranslatePageImages: false },
+    isPageTranslated: false,
+    viewportObserver: null,
+    imageTranslationTasks: new WeakMap(),
+    lastContextMenuImage: null,
+    ensureImageHostContainer: () => host,
+    isTranslatableContentImage: () => true,
+    translateImageElement() {},
+    requestAnimationFrame: fn => { rafCb = fn; return 1; },
+    window: { addEventListener: (t, fn) => winListeners.set(t, fn) },
+    document: {
+      documentElement: { addEventListener: (t, fn) => rootListeners.set(t, fn) },
+      createElement: tag => makeEl(tag),
+      addEventListener: (t, fn) => docListeners.set(t, fn),
+      elementFromPoint: () => hitNode
+    }
+  });
+  vm.runInContext(
+    section('  const imageControlBars =', '\n  async function extractImagePayload(') + '\n' +
+    section('  function initImageTranslationEngine(', '\n  // ============================================================================\n  // 9. Message Listener'),
+    ctx
+  );
+  ctx.initImageTranslationEngine();
+
+  // Entering img1 mounts bar1 aligned to img1's box and reveals it
+  docListeners.get('mouseover')({ target: img1, clientX: 150, clientY: 50, isTrusted: true });
+  const barsAfterImg1 = host.children.filter(n => n.classList.contains('ig-img-control-bar'));
+  assert.equal(barsAfterImg1.length, 1);
+  const [bar1] = barsAfterImg1;
+  assert.equal(bar1.classList.contains('is-visible'), true);
+  assert.equal(bar1.style.top, '18px');
+  assert.equal(bar1.style.right, '208px');
+
+  // Moving from img1 onto bar1's trigger button keeps bar1 visible
+  const triggerBtn = bar1.children[0];
+  docListeners.get('mouseout')({ target: img1, relatedTarget: triggerBtn, clientX: 380, clientY: 20, isTrusted: true });
+  docListeners.get('mouseover')({ target: triggerBtn, clientX: 380, clientY: 20, isTrusted: true });
+  assert.equal(bar1.classList.contains('is-visible'), true);
+
+  // Moving onto overlay hotspot or bilingual drawer keeps bar1 visible
+  const overlay = makeEl('div', 'ig-img-overlay-layer');
+  const hotspot = makeEl('div', 'ig-img-region-hotspot');
+  overlay.appendChild(hotspot);
+  host.appendChild(overlay);
+  docListeners.get('mouseout')({ target: triggerBtn, relatedTarget: hotspot, clientX: 200, clientY: 60, isTrusted: true });
+  docListeners.get('mouseover')({ target: hotspot, clientX: 200, clientY: 60, isTrusted: true });
+  assert.equal(bar1.classList.contains('is-visible'), true);
+
+  // Moving from hotspot onto figcaption inside same <figure> hides bar1
+  docListeners.get('mouseout')({ target: hotspot, relatedTarget: caption, clientX: 200, clientY: 220, isTrusted: true });
+  assert.equal(bar1.classList.contains('is-visible'), false);
+
+  // Re-entering img1 re-shows existing bar1 without creating a duplicate bar
+  docListeners.get('mouseover')({ target: img1, clientX: 150, clientY: 50, isTrusted: true });
+  assert.equal(host.children.filter(n => n.classList.contains('ig-img-control-bar')).length, 1);
+  assert.equal(bar1.classList.contains('is-visible'), true);
+
+  // Moving directly to sibling img2 in same host hides bar1 and mounts/shows bar2 at img2's bounds
+  docListeners.get('mouseout')({ target: img1, relatedTarget: img2, clientX: 150, clientY: 260, isTrusted: true });
+  docListeners.get('mouseover')({ target: img2, clientX: 150, clientY: 260, isTrusted: true });
+  const allBars = host.children.filter(n => n.classList.contains('ig-img-control-bar'));
+  assert.equal(allBars.length, 2);
+  const [, bar2] = allBars;
+  assert.equal(bar1.classList.contains('is-visible'), false);
+  assert.equal(bar2.classList.contains('is-visible'), true);
+  assert.equal(bar2.style.top, '248px');
+  assert.equal(bar2.style.right, '158px');
+
+  // Stationary cursor while page scrolls away hides bar2 on animation frame
+  hitNode = outside;
+  winListeners.get('scroll')();
+  assert.ok(rafCb);
+  rafCb();
+  assert.equal(bar2.classList.contains('is-visible'), false);
+
+  // Leaving documentElement also hides active bar
+  docListeners.get('mouseover')({ target: img1, clientX: 150, clientY: 50, isTrusted: true });
+  assert.equal(bar1.classList.contains('is-visible'), true);
+  rootListeners.get('mouseleave')();
+  assert.equal(bar1.classList.contains('is-visible'), false);
+});

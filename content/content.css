@@ -570,11 +570,28 @@ html[data-ig-style="translation-only"] .ig-trans-node {
   padding: 4px 6px;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.86);
-  backdrop-filter: blur(8px);
+  backdrop-filter: none;
   border: 1px solid rgba(148, 163, 184, 0.3);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  pointer-events: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.ig-img-control-bar.is-visible,
+.ig-img-control-bar[data-loading="1"],
+.ig-img-control-bar:has(:focus-visible) {
+  opacity: 1;
+  pointer-events: auto;
+  backdrop-filter: blur(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ig-img-control-bar,
+  .ig-img-ctrl-btn {
+    transition: none;
+  }
 }
 
 .ig-img-ctrl-btn {
@@ -589,12 +606,21 @@ html[data-ig-style="translation-only"] .ig-trans-node {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, scale 0.12s ease;
   white-space: nowrap;
 }
 
 .ig-img-ctrl-btn:hover {
   background: rgba(99, 102, 241, 0.35);
+}
+
+.ig-img-ctrl-btn:active {
+  scale: 0.97;
+}
+
+.ig-img-ctrl-btn:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
 }
 
 .ig-img-ctrl-btn.is-active {
