@@ -418,12 +418,25 @@ test('image control bar appears on hover across image/bar/overlay/drawer and dis
       documentElement: { addEventListener: (t, fn) => rootListeners.set(t, fn) },
       createElement: tag => makeEl(tag),
       addEventListener: (t, fn) => docListeners.set(t, fn),
-      elementFromPoint: () => hitNode
+      elementFromPoint: () => hitNode,
+      querySelectorAll(sel) {
+        if (sel === '.ig-img-control-bar') {
+          return host.children.filter(n => n.classList?.contains('ig-img-control-bar'));
+        }
+        if (sel.includes('.ig-img-overlay-layer')) {
+          return host.children.filter(n =>
+            n.classList?.contains('ig-img-overlay-layer') ||
+            n.classList?.contains('ig-img-bilingual-drawer') ||
+            n.classList?.contains('ig-img-control-bar')
+          );
+        }
+        return [img1, img2].filter(n => n.dataset?.igImgStatus);
+      }
     }
   });
   vm.runInContext(
     section('  const imageControlBars =', '\n  async function extractImagePayload(') + '\n' +
-    section('  function initImageTranslationEngine(', '\n  // ============================================================================\n  // 9. Message Listener'),
+    section('  function cleanupAllImageOverlays(', '\n  // ============================================================================\n  // 9. Message Listener'),
     ctx
   );
   ctx.initImageTranslationEngine();
@@ -484,4 +497,17 @@ test('image control bar appears on hover across image/bar/overlay/drawer and dis
   assert.equal(bar1.classList.contains('is-visible'), true);
   rootListeners.get('mouseleave')();
   assert.equal(bar1.classList.contains('is-visible'), false);
+
+  // Stationary layout-shift mouseover after cleanupAllImageOverlays (including fractional PointerEvent vs integer MouseEvent)
+  // stays suppressed until real pointer movement (>1px) or explicit untrusted hover
+  docListeners.get('pointerdown')({ target: img1, clientX: 254.6, clientY: 85.4, isTrusted: true });
+  docListeners.get('mouseout')({ target: img1, relatedTarget: outside, clientX: 255, clientY: 85, isTrusted: true });
+  ctx.cleanupAllImageOverlays();
+  assert.equal(host.children.filter(n => n.classList.contains('ig-img-control-bar')).length, 0);
+  docListeners.get('mouseover')({ target: img1, clientX: 255, clientY: 85, isTrusted: true });
+  assert.equal(host.children.filter(n => n.classList.contains('ig-img-control-bar')).length, 0);
+  docListeners.get('pointermove')({ target: img1, clientX: 262, clientY: 88, isTrusted: true });
+  const remountedBars = host.children.filter(n => n.classList.contains('ig-img-control-bar'));
+  assert.equal(remountedBars.length, 1);
+  assert.equal(remountedBars[0].classList.contains('is-visible'), true);
 });

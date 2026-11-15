@@ -293,9 +293,9 @@ export async function verifyContentBrowser(context, sw) {
       await imageTrigger.waitFor();
     };
     await replaceSource('src', 'new-src');
-    await imageTrigger.click(); await imageDone();
+    await hoverImage(); await imageTrigger.click(); await imageDone();
     await replaceSource('srcset', 'new-srcset');
-    await imageTrigger.click(); await imageDone();
+    await hoverImage(); await imageTrigger.click(); await imageDone();
     assert.equal((await send(tabId, { type: 'GET_PAGE_STATUS' })).isPageTranslated, false);
     assert.equal(await page.locator('.ig-img-overlay-layer').count(), 1);
     recordCheck('Manual image session: same IMG src and srcset replacements remove completed stale layers and permit new translation without paragraph activation');
@@ -307,21 +307,21 @@ export async function verifyContentBrowser(context, sw) {
       img.srcset = `${base}/image.svg?responsive-small 240w, ${base}/image.svg?responsive-large 960w`;
     }, base);
     await page.waitForFunction(() => document.querySelector('#fixture-image').currentSrc.includes('responsive-small'));
-    await imageTrigger.click(); await imageDone();
+    await hoverImage(); await imageTrigger.click(); await imageDone();
     const responsiveAttributes = await imageNode.evaluate(img => [img.src, img.srcset, img.sizes]);
     await page.setViewportSize({ width: 1200, height: 1200 });
     await page.waitForFunction(() => document.querySelector('#fixture-image').currentSrc.includes('responsive-large'));
     await page.waitForFunction(() => !document.querySelector('.ig-img-overlay-layer'));
     assert.deepEqual(await imageNode.evaluate(img => [img.src, img.srcset, img.sizes]), responsiveAttributes);
-    await imageTrigger.click(); await imageDone();
+    await hoverImage(); await imageTrigger.click(); await imageDone();
     recordCheck('Responsive image load: viewport-only currentSrc change invalidates old translation with unchanged src/srcset/sizes attributes');
 
     await replaceSource('srcset', 'inflight-old');
     holdImageReplies = true;
-    await imageTrigger.click();
+    await hoverImage(); await imageTrigger.click();
     await wait(() => heldImageReplies.length === 1, 'old source image request held');
     await replaceSource('srcset', 'inflight-new');
-    await imageTrigger.click();
+    await hoverImage(); await imageTrigger.click();
     await wait(() => heldImageReplies.length === 2, 'new source image request held');
     heldImageReplies.shift()();
     await page.waitForTimeout(180);

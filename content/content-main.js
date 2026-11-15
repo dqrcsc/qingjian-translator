@@ -4568,6 +4568,27 @@
   let activeHoveredImage = null;
   let lastPointerClient = null;
   let suppressedHoverPoint = null;
+  let suppressedHoverToken = 0;
+
+  function clearSuppressedHoverPoint() {
+    suppressedHoverPoint = null;
+    suppressedHoverToken++;
+  }
+
+  function suppressStationaryHoverAtCurrentPointer() {
+    if (!lastPointerClient) return;
+    suppressedHoverPoint = { ...lastPointerClient };
+    const token = ++suppressedHoverToken;
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (suppressedHoverToken === token) {
+            suppressedHoverPoint = null;
+          }
+        });
+      });
+    }
+  }
 
   function setBarClassFlag(bar, className, enabled) {
     if (!bar) return;
@@ -4626,7 +4647,7 @@
     releaseImageControls(imageControlBars.get(img));
     if (wasHovered && img.isConnected !== false) {
       activeHoveredImage = img;
-      suppressedHoverPoint = null;
+      clearSuppressedHoverPoint();
     }
     return true;
   }
@@ -4637,8 +4658,8 @@
     if (owner) {
       if (activeHoveredImage === owner) {
         activeHoveredImage = null;
-        suppressedHoverPoint = lastPointerClient ? { ...lastPointerClient } : null;
       }
+      suppressStationaryHoverAtCurrentPointer();
       imageControlBars.delete(owner);
       delete owner.dataset.igHoverBound;
     }
@@ -5244,12 +5265,14 @@
         if (suppressedHoverPoint) {
           if (
             e.isTrusted &&
-            e.clientX === suppressedHoverPoint.x &&
-            e.clientY === suppressedHoverPoint.y
+            Number.isFinite(e.clientX) &&
+            Number.isFinite(e.clientY) &&
+            Math.abs(e.clientX - suppressedHoverPoint.x) <= 1 &&
+            Math.abs(e.clientY - suppressedHoverPoint.y) <= 1
           ) {
             return;
           }
-          suppressedHoverPoint = null;
+          clearSuppressedHoverPoint();
         }
         recordPointerClient(e);
         if (settings.enableImageTranslate === false) {
@@ -5257,6 +5280,27 @@
           return;
         }
         setHoveredImage(resolveHoveredImage(e.target));
+      },
+      { capture: true, passive: true }
+    );
+
+    document.addEventListener(
+      'pointermove',
+      (e) => {
+        if (!suppressedHoverPoint) return;
+        if (
+          !Number.isFinite(e.clientX) ||
+          !Number.isFinite(e.clientY) ||
+          (Math.abs(e.clientX - suppressedHoverPoint.x) <= 1 &&
+            Math.abs(e.clientY - suppressedHoverPoint.y) <= 1)
+        ) {
+          return;
+        }
+        clearSuppressedHoverPoint();
+        recordPointerClient(e);
+        if (settings.enableImageTranslate !== false) {
+          setHoveredImage(resolveHoveredImage(e.target));
+        }
       },
       { capture: true, passive: true }
     );
